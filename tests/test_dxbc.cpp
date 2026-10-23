@@ -2,7 +2,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
-#include "pure.h"
+#include "core/pure.h"
 static int fails;
 static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
 static uint32_t opnd(uint32_t type, uint32_t ncomp = 2, uint32_t mode = 1) {

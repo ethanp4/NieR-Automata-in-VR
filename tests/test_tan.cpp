@@ -1,4 +1,4 @@
-#include "../src/pure.h"
+#include "core/pure.h"
 #include <cstdio>
 #include <cmath>
 int main(){ int f=0; for(float x=-1.55f;x<=1.55f;x+=0.0005f){ float a=pure::ftan(x), b=tanf(x); if(fabsf(a-b)>2e-6f*fmaxf(1.f,fabsf(b))){printf("tan %f: %g vs %g\n",x,a,b);f++;break;} }

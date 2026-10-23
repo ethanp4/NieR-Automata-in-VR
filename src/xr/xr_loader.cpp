@@ -6,7 +6,7 @@
 //  2. Otherwise we do what that loader would do for the runtime part: read the active runtime's
 //     manifest from the registry and negotiate with the runtime DLL directly. This needs no extra
 //     files and works with SteamVR, Meta/Oculus, Virtual Desktop (VDXR), Pimax, Pico, WMR, etc.
-#include "xr.h"
+#include "xr/xr.h"
 
 static bool IsAbsolute(const wchar_t* p) { return p[0] && (p[1] == L':' || (p[0] == L'\\' && p[1] == L'\\')); }
 

@@ -1,5 +1,5 @@
 // Checks the stereo matrix maths against the real camera captured from NieR (capture 1).
-#include "../src/pure.h"
+#include "core/pure.h"
 #include <cstdio>
 #include <cmath>
 using namespace pure;

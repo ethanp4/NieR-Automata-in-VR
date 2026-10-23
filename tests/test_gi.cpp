@@ -1,7 +1,7 @@
 // GI volumes: which slots stay on, and how long the game's loop must be (pure::gi_pick).
 #include <cstdio>
 #include <cstring>
-#include "pure.h"
+#include "core/pure.h"
 static int fails;
 static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
 static float buf[128 * 24];

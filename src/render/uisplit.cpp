@@ -23,7 +23,7 @@
 // another full-size texture, then draws pieces of that copy back over the UI target, shifted and
 // tinted. On the HUD layer that is a flat copy of the whole screen flashing in front of the 3D view.
 // In stereo those draws are skipped (DistortionEffects=0) or kept in the 3D image (=1).
-#include "common.h"
+#include "core/common.h"
 
 namespace {
 ID3D11Texture2D* g_bb;            // the swapchain backbuffer (raw pointer: identity only, never called)

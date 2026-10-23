@@ -19,7 +19,7 @@
 // used ones, or the GIVolumes nearest to the camera); the copy pass marks the others empty, and the
 // game's pass gets a view that ends right after the last slot left on. With all volumes kept this
 // only cuts the empty tail of the loop (no visual change).
-#include "common.h"
+#include "core/common.h"
 #include <d3dcompiler.h>
 
 namespace {

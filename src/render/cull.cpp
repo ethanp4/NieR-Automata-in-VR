@@ -10,7 +10,7 @@
 // Also here: a background memory scan for the camera object and a hardware-breakpoint "watch"
 // (Ctrl+F5) that logs which game code reads/writes the camera fov: the diagnostic that found the
 // setter (0.3.10).
-#include "common.h"
+#include "core/common.h"
 
 namespace {
 struct Cand {

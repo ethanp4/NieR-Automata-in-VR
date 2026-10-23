@@ -2,7 +2,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cstring>
-#include "pure.h"
+#include "core/pure.h"
 static int fails;
 static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
 static void apply(const pure::M4& m, const float p[4], float o[4]) {

@@ -8,7 +8,7 @@
 //
 // The first time a full-screen depth buffer is seen its format is logged too: the depth-based
 // correction for alternate-eye mode will need to read it.
-#include "common.h"
+#include "core/common.h"
 
 namespace {
 const int kMax = 320;

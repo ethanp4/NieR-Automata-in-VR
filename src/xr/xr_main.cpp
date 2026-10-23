@@ -5,7 +5,7 @@
 // frame submits the newest left and right images in a projection layer, each with the eye pose it
 // was rendered from, and the runtime reprojects them to the current head pose.
 // Flat: the newest game frame on a quad layer floating in front of the user (menus, F12, startup).
-#include "xr.h"
+#include "xr/xr.h"
 #include <d3dcompiler.h>
 
 volatile DWORD g_xrThreadId;

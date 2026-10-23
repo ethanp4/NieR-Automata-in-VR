@@ -6,7 +6,7 @@
 // analysed offline (tools/analyze_capture.py) to find where NieR keeps its camera matrices.
 //
 // Hooks cost almost nothing while not capturing: one pointer compare and a flag check per call.
-#include "common.h"
+#include "core/common.h"
 #include <d3dcompiler.h>
 
 namespace {

@@ -21,7 +21,7 @@
 // Pico 4 controllers use the Touch layout (their own profile when the runtime offers
 // XR_BD_controller_interaction). PSVR2 Sense, Pico via SteamVR etc. are mapped onto one of these
 // profiles by the runtime (SteamVR does this for any controller).
-#include "xr.h"
+#include "xr/xr.h"
 #include <xinput.h>
 
 namespace {

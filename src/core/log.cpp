@@ -1,5 +1,5 @@
 // log.cpp - thread-safe, crash-tolerant log file (NieRVR.log).
-#include "common.h"
+#include "core/common.h"
 
 static HANDLE g_logFile = INVALID_HANDLE_VALUE;
 static CRITICAL_SECTION g_logCs;

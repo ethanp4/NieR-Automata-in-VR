@@ -15,7 +15,7 @@
 //
 // The hooks always log how the game enumerates and applies resolutions (first few calls), so we
 // can see which path NieR takes even with the option off.
-#include "common.h"
+#include "core/common.h"
 
 namespace {
 typedef HRESULT(WINAPI* PFN_CreateFactory)(REFIID, void**);

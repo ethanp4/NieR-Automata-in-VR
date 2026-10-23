@@ -1,5 +1,5 @@
 // config.cpp - NieRVR.ini handling.
-#include "common.h"
+#include "core/common.h"
 
 Config g_cfg;
 

@@ -1,5 +1,5 @@
 // main.cpp - DLL entry, one-time initialisation, crash reporting.
-#include "common.h"
+#include "core/common.h"
 #include <dbghelp.h>
 
 HMODULE g_hSelf;

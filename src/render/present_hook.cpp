@@ -1,6 +1,6 @@
 // present_hook.cpp - hooks IDXGISwapChain::Present (inline detour via MinHook) and copies each
 // finished game frame into a texture shared with the VR thread. The game is never made to wait.
-#include "common.h"
+#include "core/common.h"
 #include "MinHook.h"
 
 FrameShare g_share;

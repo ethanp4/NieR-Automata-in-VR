@@ -8,8 +8,8 @@
 //
 // The menu is drawn on the CPU into a small RGBA image (font: DejaVu Sans, pre-rendered into
 // src/gen/font.h by tools/make_font.py) which the VR thread shows on a quad in front of you.
-#include "common.h"
-#include "gamepad.h"
+#include "core/common.h"
+#include "input/gamepad.h"
 #include "gen/font.h"
 
 namespace {

@@ -12,7 +12,8 @@ project(NieRVR LANGUAGES C CXX ASM)
 
 option(NIERVR_TESTS "Build the unit tests" ON)
 
-file(GLOB NIERVR_SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.S)
+file(GLOB_RECURSE NIERVR_SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.S)
+list(FILTER NIERVR_SOURCES EXCLUDE REGEX "/src/gen/")  # thunks.S is listed below
 add_library(nier_vr SHARED
     ${NIERVR_SOURCES}
     src/gen/thunks.S

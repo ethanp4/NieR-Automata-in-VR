@@ -7,7 +7,7 @@
 // g_CameraVec = camera position. On alternate frames we rewrite both for the left or right eye,
 // using the headset's eye pose (relative to the recentred reference) on top of the game camera.
 // See DEVELOPMENT.md and tools/analyze_capture.py for how these were found.
-#include "common.h"
+#include "core/common.h"
 
 StereoShared g_stereo;
 

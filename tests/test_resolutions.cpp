@@ -1,6 +1,6 @@
 // Extra resolutions (pure::supersample_sizes): based on the desktop size, no duplicates, D3D11 limit.
 #include <cstdio>
-#include "pure.h"
+#include "core/pure.h"
 static int fails;
 static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
 static uint32_t key(uint32_t w, uint32_t h) { return w << 16 | h; }

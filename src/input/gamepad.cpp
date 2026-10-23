@@ -1,5 +1,5 @@
-#include "common.h"
-#include "gamepad.h"
+#include "core/common.h"
+#include "input/gamepad.h"
 
 namespace {
 // ---------------------------------------------------------------------------------------------

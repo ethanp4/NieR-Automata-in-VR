@@ -1,6 +1,6 @@
 // xr.h - OpenXR includes and runtime entry-point discovery.
 #pragma once
-#include "common.h"
+#include "core/common.h"
 
 #define XR_NO_PROTOTYPES
 #define XR_USE_PLATFORM_WIN32

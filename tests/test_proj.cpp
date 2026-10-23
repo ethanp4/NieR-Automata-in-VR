@@ -1,4 +1,4 @@
-#include "../src/pure.h"
+#include "core/pure.h"
 #include <cstdio>
 #include <cmath>
 #include <initializer_list>

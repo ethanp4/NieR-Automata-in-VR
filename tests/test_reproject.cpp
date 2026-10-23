@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <cmath>
 #include <initializer_list>
-#include "pure.h"
+#include "core/pure.h"
 static int fails;
 static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
 static pure::M4 pose(float yawDeg, float pitchDeg, pure::V3 p) {

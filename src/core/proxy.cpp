@@ -1,5 +1,5 @@
 // proxy.cpp - stands in for d3d11.dll: loads the real one and forwards every export to it.
-#include "common.h"
+#include "core/common.h"
 
 static const char* const kThunkNames[] = {
 #include "gen/export_names.inc"

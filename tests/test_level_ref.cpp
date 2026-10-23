@@ -1,7 +1,7 @@
 // Level reference (pure::level_reference): upright for the player in a normal and in a flipped space.
 #include <cstdio>
 #include <cmath>
-#include "pure.h"
+#include "core/pure.h"
 static int fails;
 static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
 static pure::Q axisAngle(float x, float y, float z, float deg) {

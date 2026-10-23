@@ -1,6 +1,6 @@
 // VR controllers as a gamepad: the left menu button (tap = Start, hold = Back, + stick = D-pad).
 #include <cstdio>
-#include "pure.h"
+#include "core/pure.h"
 static int fails;
 static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
 using MB = pure::MenuButton;
