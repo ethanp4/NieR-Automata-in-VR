@@ -47,6 +47,17 @@ size_t strlen(const char* s) {
     return n;
 }
 
+// GCC inlines the constant strncmp calls in vrinput.cpp; Clang calls the function.
+int strncmp(const char* a, const char* b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        unsigned char x = (unsigned char)a[i], y = (unsigned char)b[i];
+        if (x != y) return x < y ? -1 : 1;
+        if (!x) return 0;
+        __asm__ volatile("" ::: "memory");  // keep this a plain loop
+    }
+    return 0;
+}
+
 // Required by the MinGW headers' inline helpers / C++ ABI when no CRT is linked.
 int _fltused = 0;
 void __cxa_pure_virtual() { __builtin_trap(); }

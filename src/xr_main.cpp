@@ -1404,7 +1404,7 @@ static void Frame() {
     MenuTick(GameIsForeground());
     if (MenuTakeRecenter()) X.recenterRequested = true;
     UpdateEyePoses(fs.predictedDisplayTime);
-    WatchSpace();
+    WatchSpace(); // TODO: i dont think this function works perfectly
     if (fs.shouldRender) {
         if (!X.placed || X.recenterRequested) PlaceScreen(fs.predictedDisplayTime);
         UpdateContent();

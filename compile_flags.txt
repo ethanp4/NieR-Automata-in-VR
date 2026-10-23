@@ -1,0 +1,9 @@
+--target=x86_64-w64-mingw32
+--sysroot=C:/msys64/ucrt64
+-xc++
+-std=c++17
+-msse4.1
+-fno-exceptions
+-fno-rtti
+-Isrc
+-Ithird_party/minhook/include

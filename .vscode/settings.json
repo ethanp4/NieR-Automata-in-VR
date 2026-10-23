@@ -1,0 +1,6 @@
+{
+    "clangd.path": "C:\\msys64\\ucrt64\\bin\\clangd.exe",
+    "clangd.arguments": ["--header-insertion=never"],
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "files.associations": { "*.S": "asm" }
+}

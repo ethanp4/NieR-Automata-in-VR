@@ -108,7 +108,6 @@ void GpuProfFrameEnd(ID3D11DeviceContext* c);
 void GpuProfPoll(ID3D11DeviceContext* c);
 void CapturePollMidFrame();
 void FrameLatencyTick();  // probe.cpp: applies [Render] MaxFrameLatency to the game's device  // present_hook.cpp: publish finished frames without waiting for Present
-void MenuInstallInput();
 void MenuTick(bool foreground);
 void MenuSetInfo(int line, const char* text);
 bool MenuIsOpen();

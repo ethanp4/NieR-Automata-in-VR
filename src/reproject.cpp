@@ -401,7 +401,7 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
         p.size[3] = (float)gw;
         // gaps: depth jumps by more than 3% inside a triangle that the motion stretched to more
         // than 2.5 grid steps (a normal triangle's longest side is 1.4 steps)
-        p.edge[0] = g_cfg.reprojectEdges ? 1.03f : 0.f;
+        p.edge[0] = g_cfg.reprojectEdges ? 1.03f : 0.f; //TODO this has a strange borderline useless effect
         p.edge[1] = 2.5f;
         p.edge[2] = p.edge[3] = 0;
         g_replaying = true;  // our own calls: the hooks pass them straight through
