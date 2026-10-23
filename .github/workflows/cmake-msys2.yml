@@ -122,6 +122,44 @@ jobs:
           name: release-zip
           path: ${{ needs.version.outputs.zip }}
 
+  lint:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-clang-tools-extra
+            mingw-w64-ucrt-x86_64-openxr-sdk
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+
+      - uses: actions/cache@v4
+        with:
+          path: .deps
+          key: deps-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_ASM_COMPILER=clang
+          -DNIERVR_DLSS=OFF
+
+      - name: Format check
+        continue-on-error: true
+        run: cmake --build build --target format-check
+
+      - name: clang-tidy
+        continue-on-error: true
+        run: cmake --build build --target tidy
+
   release:
     needs: [version, build]
     if: needs.version.outputs.tag != ''

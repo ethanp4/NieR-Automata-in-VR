@@ -114,7 +114,7 @@ bool ReadPhysicalPad(XINPUT_GAMEPAD* g) {
 			tried = true;
 			HMODULE m = LoadLibraryW(L"xinput1_4.dll");
 			if (!m) m = LoadLibraryW(L"xinput1_3.dll");
-			if (m) g_ReadGamepad = (PFN_XInputGetState)GetProcAddress(m, "XInputGetState");
+			if (m) g_ReadGamepad = (PFN_XInputGetState)(void*)GetProcAddress(m, "XInputGetState");
 		}
 		if (!g_ReadGamepad) return false;
 	}

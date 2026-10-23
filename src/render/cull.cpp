@@ -22,8 +22,6 @@ SRWLOCK g_lock = SRWLOCK_INIT;
 Cand g_cands[8];
 int g_count;
 volatile LONG g_scanning;
-DWORD g_lastScan;
-int g_invalidRun;
 bool g_loggedEffect;
 
 bool ReadMem(uintptr_t a, void* out, size_t n) {
@@ -84,7 +82,6 @@ DWORD WINAPI ScanThread(void*) {
 	AcquireSRWLockExclusive(&g_lock);
 	memcpy(g_cands, found, sizeof(found));
 	g_count = n;
-	g_invalidRun = 0;
 	ReleaseSRWLockExclusive(&g_lock);
 	Log("culling: scan found %d camera%s (%u MB in %u ms)%s", n, n == 1 ? "" : "s", (unsigned)(scanned >> 20),
 		(unsigned)(GetTickCount() - t0), n ? "" : "; the game's culling stays as it is");
@@ -97,7 +94,6 @@ DWORD WINAPI ScanThread(void*) {
 
 void StartScan() {
 	if (InterlockedCompareExchange(&g_scanning, 1, 0) != 0) return;
-	g_lastScan = GetTickCount();
 	HANDLE h = CreateThread(nullptr, 1 << 20, ScanThread, nullptr, 0, nullptr);
 	if (h) CloseHandle(h);
 	else InterlockedExchange(&g_scanning, 0);

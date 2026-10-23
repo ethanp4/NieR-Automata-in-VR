@@ -68,7 +68,7 @@ ID3D11Texture2D* g_scene;
 ID3D11RenderTargetView* g_sceneRTV;
 D3D11_TEXTURE2D_DESC g_sceneDesc;
 D3D11_RENDER_TARGET_VIEW_DESC g_sceneRTVDesc;
-unsigned g_framesWithScene, g_framesWithUI;
+unsigned g_framesWithUI;
 bool g_loggedOk, g_loggedNoFinal;
 volatile LONG g_budget;
 
@@ -504,7 +504,6 @@ void UiAfterDraw(ID3D11DeviceContext* c, const DrawArgs& args) {
 		ReplayInto(c, g_sceneRTV, args, 1);
 		c->PSSetShaderResources(slot, 1, &srvs[slot]);
 		g_sceneReady = true;
-		g_framesWithScene++;
 		if (!g_loggedOk) {
 			g_loggedOk = true;
 			Log("ui split: working (final pass reads the UI target at slot t%d); HUD and menus go to a flat layer",

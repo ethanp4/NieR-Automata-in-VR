@@ -92,8 +92,8 @@ Item kRender[] = {
 	{"DLSS file", T_ACTION, (void*)A_DLSS_FILE, 0, 0, nullptr, 0,
 	 "NVIDIA's DLSS isn't included with the mod. Download gets nvngx_dlss.dll (59 MB) from NVIDIA's GitHub "
 	 "(github.com/NVIDIA/DLSS) into the game's folder, with NVIDIA's licence next to it (nvngx_dlss_LICENSE.txt), "
-	 "which you accept by downloading. DLSS starts as soon as it is there. Press again to cancel a download; once "
-	 "installed, press twice to delete it."},
+	 "which you accept by downloading. DLSS starts as soon as it is there. Press again to cancel a download. "
+	 "Redownload replaces the file if it got damaged; Update appears when the mod expects a newer DLSS."},
 	{"Upscaler output", T_FLOAT, &g_cfg.upscaleOutput, 50, 150, "%.0f%% of the headset's detail", 0,
 	 "Size of the image DLSS makes, compared with what your headset recommends (100% = its own). It stays put while "
 	 "you change the game's resolution. Less is a little faster, more is sharper (supersampling)."},
@@ -147,7 +147,7 @@ Item kScreen[] = {
 	{"Screen height", T_FLOAT, &g_cfg.heightOffset, -2, 2, "%.2f m", F_RECENTER,
 	 "Moves the flat screen and the HUD up or down."},
 	{"HUD on its own layer", T_BOOL, &g_cfg.uiSplit, 0, 1, nullptr, 0,
-	 "Shows the HUD and menus on a flat layer in front of you instead of inside the 3D image."},
+	 "Shows the HUD and menus on a flat layer in front of you instead of inside the 3D image."}, // TODO wreck your eyes mode
 	{"Stats overlay", T_BOOL, &g_cfg.statsOverlay, 0, 1, nullptr, 0,
 	 "Live numbers in the corner of your view (placed with the two settings below): frame rates, the game's resolution and how sharp it is "
 	 "compared with what the headset recommends, and the head-pose delay."},
@@ -284,10 +284,11 @@ void Saved(const Item& it) {
 
 // Settings that do nothing in the current eye mode say so.
 const char* Tag(const Item& it) {
-	if (it.type == T_ACTION && (intptr_t)it.ptr == A_DLSS_FILE) {  // why the last download failed
-		static DlssFileState f;
-		DlssFileGet(&f);
-		return f.state == DF_MISSING && f.text[0] ? f.text : nullptr;
+	if (it.type == T_ACTION && (intptr_t)it.ptr == A_DLSS_FILE) {
+		static DlssFileState file;
+		DlssFileGet(&file);
+		if (file.state == DF_UPDATE_AVAILABLE) return "(update available)";
+		return file.state == DF_MISSING && file.text[0] ? file.text : nullptr;  // why the last download failed
 	}
 	if ((it.flags & F_ALTERNATE) && g_cfg.bothEyes) return "(not used: both eyes is on)";
 	if ((it.flags & F_BOTHEYES) && !g_cfg.bothEyes) return "(not used: alternate eyes)";
@@ -304,7 +305,10 @@ ImVec4 Col(const float* c) { return ImVec4(c[0], c[1], c[2], c[3]); }
 void ChoiceName(const Item& it, int v, char* out, size_t cap) {
 	snprintf(out, cap, "?");
 	const char* n = it.fmt;
-	for (int i = 0; n && i < v; i++) n = (n = strchr(n, '|')) ? n + 1 : nullptr;
+	for (int i = 0; n && i < v; i++) {  // skip v names
+		n = strchr(n, '|');
+		if (n) n++;
+	}
 	if (n && v >= 0) snprintf(out, cap, "%.*s", (int)strcspn(n, "|"), n);
 }
 
@@ -335,53 +339,39 @@ void ResetToDefault(Item& it) {
 	Saved(it);
 }
 
-// The DLSS file row: one button that shows the state and turns into the progress bar while downloading.
-// Missing: download. Downloading: cancel. Installed: press twice (within 3 s) to delete.
-void DlssFileButton() {
-	static DWORD armedUntil;
-	DlssFileState f;
-	DlssFileGet(&f);
-	bool armed = armedUntil && GetTickCount() - (armedUntil - 3000) < 3000;
-	if (f.state != DF_INSTALLED) armedUntil = 0, armed = false;
-	char label[96];
-	float frac = -1;
-	switch (f.state) {
-		case DF_DOWNLOADING:
-			frac = f.total > 0 ? (float)((double)f.got / (double)f.total) : 0;
-			snprintf(label, sizeof(label), "%.0f / %.0f MB  (%.0f%%)", f.got / 1e6, f.total / 1e6,
-					 (double)(frac * 100));
-			break;
-		case DF_DELETING: snprintf(label, sizeof(label), "Deleting..."); break;
-		case DF_INSTALLED:
-			snprintf(label, sizeof(label), armed ? "Press again to delete" : "%s installed: delete", f.text);
-			break;
-		default: snprintf(label, sizeof(label), f.text[0] ? "Try again (59 MB)" : "Download (59 MB)"); break;
-	}
+// While downloading, the button is the progress bar; pressing it cancels.
+bool DownloadProgressButton(const DlssFileState& file) {
+	float progress = file.total > 0 ? (float)((double)file.got / (double)file.total) : 0;
+	char label[64];
+	snprintf(label, sizeof(label), "%.0f / %.0f MB  (%.0f%%)", file.got / 1e6, file.total / 1e6, (double)(progress * 100));
 	ImVec2 pos = ImGui::GetCursorScreenPos();
-	float w = ImGui::GetContentRegionAvail().x, h = ImGui::GetFrameHeight();
-	bool pressed = ImGui::Button("##dlss", ImVec2(w, h));
-	ImDrawList* dl = ImGui::GetWindowDrawList();
-	if (frac >= 0) {  // the button fills up as the file arrives
-		const float* a = ui::Colors::accent;
-		dl->AddRectFilled(pos, ImVec2(pos.x + w * frac, pos.y + h), ImGui::GetColorU32(ImVec4(a[0], a[1], a[2], 0.55f)),
-						  ImGui::GetStyle().FrameRounding);
+	float width = ImGui::GetContentRegionAvail().x, height = ImGui::GetFrameHeight();
+	bool pressed = ImGui::Button("##dlss", ImVec2(width, height));
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	const float* accent = ui::Colors::accent;
+	drawList->AddRectFilled(pos, ImVec2(pos.x + width * progress, pos.y + height),
+							ImGui::GetColorU32(ImVec4(accent[0], accent[1], accent[2], 0.55f)), ImGui::GetStyle().FrameRounding);
+	ImVec2 textSize = ImGui::CalcTextSize(label);
+	drawList->AddText(ImVec2(pos.x + (width - textSize.x) * 0.5f, pos.y + (height - textSize.y) * 0.5f),
+					  ImGui::GetColorU32(ImGuiCol_Text), label);
+	return pressed;
+}
+
+void DlssFileButton() {
+	DlssFileState file;
+	DlssFileGet(&file);
+	if (file.state == DF_DOWNLOADING) {
+		if (DownloadProgressButton(file)) DlssFileCancel();
+		return;
 	}
-	ImVec2 ts = ImGui::CalcTextSize(label);
-	dl->AddText(ImVec2(pos.x + (w - ts.x) * 0.5f, pos.y + (h - ts.y) * 0.5f),
-				ImGui::GetColorU32(armed ? Col(ui::Colors::warn) : ImGui::GetStyleColorVec4(ImGuiCol_Text)), label);
-	if (!pressed) return;
-	switch (f.state) {
-		case DF_MISSING: DlssFileDownload(); break;
-		case DF_DOWNLOADING: DlssFileCancel(); break;
-		case DF_INSTALLED:
-			if (armed) {
-				armedUntil = 0;
-				DlssFileDelete();
-			} else {
-				armedUntil = GetTickCount() + 3000;
-			}
-			break;
-	}
+	const char* label = "Download (59 MB)###dlss";
+	if (file.state == DF_INSTALLED)
+		label = "Redownload###dlss";
+	else if (file.state == DF_UPDATE_AVAILABLE)
+		label = "Update (59 MB)###dlss";
+	else if (file.text[0])
+		label = "Try again (59 MB)###dlss";
+	if (ImGui::Button(label, ImVec2(-FLT_MIN, 0))) DlssFileDownload();
 }
 
 // The widget of one setting; true if it changed.
@@ -633,7 +623,8 @@ void MenuTick(bool foreground) {
 	bool comboFire = !g_comboLocked && (b & XINPUT_GAMEPAD_B) && (pressed & XINPUT_GAMEPAD_A);
 	bool keyToggle = KeyEdge(g_cfg.keyMenu, foreground);
 	bool pgKeyL = KeyEdge(VK_PRIOR, foreground), pgKeyR = KeyEdge(VK_NEXT, foreground);
-	bool resetKey = KeyEdge(VK_DELETE, foreground) | KeyEdge(VK_BACK, foreground);
+	bool delKey = KeyEdge(VK_DELETE, foreground), backKey = KeyEdge(VK_BACK, foreground);  // both read every frame
+	bool resetKey = delKey || backKey;
 	if (!g_open) {
 		if (keyToggle || comboFire) Open(true);
 	} else if (keyToggle || (!g_uiActive && (pressed & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START)))) {

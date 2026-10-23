@@ -1,10 +1,10 @@
 {
     "clangd.path": "C:\\msys64\\ucrt64\\bin\\clangd.exe",
-    // compile_commands.json is written by CMake on configure: exact flags and include paths per file
-    "clangd.arguments": ["--header-insertion=never", "--compile-commands-dir=build"],
+    "clangd.arguments": ["--header-insertion=never", "--compile-commands-dir=build", "--clang-tidy"],
+    "[cpp]": { "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd", "editor.formatOnSave": false },
+    "[c]": { "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd", "editor.formatOnSave": false },
     "C_Cpp.intelliSenseEngine": "disabled",
     "files.associations": { "*.S": "asm" },
-    // indentation is tabs (4 wide); continuation lines are aligned with spaces after them
     "editor.insertSpaces": false,
     "editor.tabSize": 4,
     "editor.detectIndentation": false

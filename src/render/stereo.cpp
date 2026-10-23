@@ -83,7 +83,6 @@ int g_lowRun, g_highRun;
 bool g_simpleScene;
 float g_loggedSep;
 volatile LONG g_sepBudget;
-unsigned g_patchCount;
 bool g_loggedFirstPatch, g_loggedMismatch;
 
 struct Pending {
@@ -259,7 +258,6 @@ void PatchScene(float* d) {
 		s.halfW = g_frame.halfW;
 		s.halfH = g_frame.halfH;
 	}
-	g_patchCount++;
 	if (!g_loggedFirstPatch) {
 		g_loggedFirstPatch = true;
 		Log("stereo: first camera patch. game camera at (%.2f, %.2f, %.2f), game vfov %.1f deg; eye frustum "

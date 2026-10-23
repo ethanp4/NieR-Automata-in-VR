@@ -122,3 +122,16 @@ bool HttpDownload(const wchar_t* url, const wchar_t* path, const char* sha256, v
 	if (!ok) DeleteFileW(part);
 	return ok;
 }
+
+bool FileSha256(const wchar_t* path, char hex[65]) {
+	HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+						   FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+	if (f == INVALID_HANDLE_VALUE) return false;
+	Sha256 hash;
+	static char buf[1 << 16];
+	DWORD n = 0;
+	bool ok = true;
+	while ((ok = ReadFile(f, buf, sizeof(buf), &n, nullptr)) && n > 0) hash.Add(buf, n);
+	CloseHandle(f);
+	return ok && hash.Hex(hex);
+}

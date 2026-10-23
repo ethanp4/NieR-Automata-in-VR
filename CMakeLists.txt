@@ -45,6 +45,10 @@ if(NIERVR_DLSS)
 endif()
 
 file(GLOB_RECURSE NIERVR_SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.S)
+# Compiler warnings for the mod's own code (not ImGui's or MinHook's, which have their own).
+# "missing field initializers" is off: brace-initialising a struct partly (= {a, b}) is used on purpose.
+set(NIERVR_WARNINGS -Wall -Wextra -Wno-missing-field-initializers)
+set_source_files_properties(${NIERVR_SOURCES} PROPERTIES COMPILE_OPTIONS "${NIERVR_WARNINGS}")
 list(FILTER NIERVR_SOURCES EXCLUDE REGEX "/src/gen/")  # thunks.S is listed below
 add_library(nier_vr SHARED
 	${NIERVR_SOURCES}
@@ -99,6 +103,24 @@ add_custom_target(launch
 	VERBATIM)
 add_dependencies(launch nier_vr)
 
+# format targets
+find_program(CLANG_FORMAT clang-format)
+find_program(CLANG_TIDY clang-tidy)
+file(GLOB NIERVR_STYLE_FILES CONFIGURE_DEPENDS src/*/*.cpp src/*/*.h tests/*.cpp)
+list(FILTER NIERVR_STYLE_FILES EXCLUDE REGEX "/src/gen/")
+if(CLANG_FORMAT)
+	add_custom_target(format COMMAND ${CLANG_FORMAT} -i ${NIERVR_STYLE_FILES}
+		WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMENT "clang-format: formatting src/ and tests/" VERBATIM)
+	add_custom_target(format-check COMMAND ${CLANG_FORMAT} --dry-run --Werror ${NIERVR_STYLE_FILES}
+		WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMENT "clang-format: checking src/ and tests/" VERBATIM)
+endif()
+if(CLANG_TIDY)
+	set(NIERVR_TIDY_FILES ${NIERVR_STYLE_FILES})
+	list(FILTER NIERVR_TIDY_FILES INCLUDE REGEX "\\.cpp$")
+	add_custom_target(tidy COMMAND ${CLANG_TIDY} -p ${CMAKE_BINARY_DIR} --quiet ${NIERVR_TIDY_FILES}
+		WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMENT "clang-tidy: checking src/ and tests/" VERBATIM)
+endif()
+
 if(NIERVR_TESTS)
 	enable_testing()
 	file(GLOB NIERVR_TESTS_SOURCES CONFIGURE_DEPENDS tests/test_*.cpp)
@@ -106,7 +128,7 @@ if(NIERVR_TESTS)
 		get_filename_component(test_name ${test_src} NAME_WE)
 		add_executable(${test_name} ${test_src})
 		target_include_directories(${test_name} PRIVATE src)
-		target_compile_options(${test_name} PRIVATE -msse4.1)
+		target_compile_options(${test_name} PRIVATE -msse4.1 ${NIERVR_WARNINGS})
 		set_target_properties(${test_name} PROPERTIES
 			CXX_STANDARD 17
 			RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)

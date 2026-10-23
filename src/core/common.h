@@ -301,16 +301,17 @@ bool UpscaleWantsDepth();                                    // the scene depth 
 void UpscaleRelease();                                       // before a resize
 void UpscaleStatus(char* out, size_t cap);                   // for the stats overlay / Info page
 // dlss.cpp: NVIDIA's DLSS file (nvngx_dlss.dll in the game's folder), downloaded from the menu
-enum { DF_MISSING, DF_DOWNLOADING, DF_INSTALLED, DF_DELETING };
+// DF_UPDATE_AVAILABLE: installed, but not the file the mod's SHA256 names
+enum { DF_MISSING, DF_DOWNLOADING, DF_INSTALLED, DF_UPDATE_AVAILABLE };
 struct DlssFileState {
 	int state;
 	long long got, total;  // bytes, while downloading
 	char text[96];         // installed: its version; missing: why the last try failed ("" = none)
 };
 void DlssFileGet(DlssFileState* s);
-void DlssFileDownload();  // starts a background download (licence, then the DLL, checked by SHA256)
+void DlssFileDownload();  // starts a background download (licence, then the DLL, checked by SHA256); also redownloads
 void DlssFileCancel();
-void DlssFileDelete();    // removes it (DLSS is shut down first if it runs)
+bool FileSha256(const wchar_t* path, char hex[65]);  // download.cpp: lowercase hex; false if the file can't be read
 // download.cpp: HTTPS download to `path` (via path.part), only kept when its SHA256 matches. got/total:
 // progress in bytes (total 0 = unknown); *cancel stops it. err: why it failed.
 bool HttpDownload(const wchar_t* url, const wchar_t* path, const char* sha256, volatile LONG64* got,

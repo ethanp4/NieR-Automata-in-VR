@@ -22,4 +22,3 @@ bool DlssPrepare(ID3D11DeviceContext* c, int eye, UINT rw, UINT rh, UINT ow, UIN
 bool DlssEvaluate(ID3D11DeviceContext* c, int eye, const DlssInputs& in);
 void DlssReleaseFeatures();
 const char* DlssStatus();  // "DLSS 310.9.16" or why it isn't available
-void DlssPoll(ID3D11Device* dev);  // game thread, every Present: carries out a delete asked for in the menu
