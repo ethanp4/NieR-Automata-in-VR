@@ -43,6 +43,7 @@ jobs:
             mingw-w64-ucrt-x86_64-openxr-sdk
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
+            zip
 
       - uses: actions/cache@v4
         with:
@@ -69,7 +70,7 @@ jobs:
         run: |
           cmake --install build
           cp LICENSE FONT-LICENSE.txt README.md dist/
-          cd dist && 7z a ../NieRVR-${{ github.ref_name }}.zip *
+          cd dist && zip -r "../NieRVR-${GITHUB_REF_NAME//\//-}.zip" .
 
       - uses: actions/upload-artifact@v4
         with:
