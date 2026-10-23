@@ -388,6 +388,7 @@ bool UiBeforeDraw(ID3D11DeviceContext* c) {
     ReplayStop(true);  // BothEyes: the scene is finished, the HUD is drawn once (not recorded)
     GpuProfMark(c, "UI start");
     ReprojectAtUiStart(c);
+    UpscaleAtUiStart(c);
     g_uiSeen = true;
     if (!g_preUI || !SameDesc(d, g_preDesc)) {
         Rel(g_preSRV);

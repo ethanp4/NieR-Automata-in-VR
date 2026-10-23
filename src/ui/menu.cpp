@@ -1,7 +1,8 @@
 // menu.cpp - the in-headset settings menu.
 //
 // Opened with the menu key ([Keys] Menu, default Insert) or, on a gamepad or the VR controllers, by
-// holding B and pressing A; B, Start or the menu key close it. While it is open the game doesn't see
+// holding B and pressing A; B, Start or the menu key close it. X (or Delete) puts the highlighted setting
+// back to its default. While it is open the game doesn't see
 // the gamepad (XInputGetState is hooked and returns a neutral pad). Every change applies at once and
 // is written to NieRVR.ini; a few settings only take effect after a restart and say so.
 //
@@ -17,7 +18,7 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------------------------
-enum Type { T_BOOL, T_INT, T_FLOAT, T_ACTION, T_TEXT };
+enum Type { T_BOOL, T_INT, T_FLOAT, T_ACTION, T_TEXT, T_CHOICE };  // T_CHOICE: fmt holds the names, "Off|On"
 enum Flags { F_RESTART = 1, F_LOG = 2, F_RECENTER = 4, F_ALTERNATE = 8, F_BOTHEYES = 16 };  // ALTERNATE/BOTHEYES: only used in that mode
 enum Action { A_RECENTER = 1, A_BOTHEYES_STATS };
 struct Item {
@@ -74,6 +75,17 @@ Item kView[] = {
      "Places the screen and the view straight ahead of you again (also F8)."},
 };
 Item kRender[] = {
+    {"Upscaler (experimental)", T_CHOICE, &g_cfg.upscaler, 0, 1, "Off|DLSS", 0,
+     "DLSS turns the game's image into a sharp one at the size your headset wants, without jagged, shimmering edges. "
+     "As in other games, the game's resolution picks the mode: lower it for more speed (Quality, Balanced, "
+     "Performance). The Info page shows which resolution gives which mode. Needs an NVIDIA RTX "
+     "card and nvngx_dlss.dll in the game's folder."},
+    {"Upscaler output", T_FLOAT, &g_cfg.upscaleOutput, 50, 150, "%.0f%% of the headset's detail", 0,
+     "Size of the image DLSS makes, compared with what your headset recommends (100% = its own). It stays put while "
+     "you change the game's resolution. Less is a little faster, more is sharper (supersampling)."},
+    {"DLSS model", T_CHOICE, &g_cfg.dlssModel, 0, 1, "Fast (CNN)|Best (transformer)", 0,
+     "Fast: about 1 ms per eye on an RTX 2070. Best: sharper in motion, about 3 ms per eye on an RTX 2070 (much "
+     "less on RTX 30 cards and newer)."},
     {"Ambient occlusion", T_BOOL, &g_cfg.ambientOcclusion, 0, 1, nullptr, 0,
      "NieR's ambient occlusion (soft contact shadows). Off removes it (it is half resolution and can look blotchy "
      "up close). Also Ctrl+F11."},
@@ -126,9 +138,13 @@ Item kScreen[] = {
      "Live numbers in the corner of your view (placed with the two settings below): frame rates, the game's resolution and how sharp it is "
      "compared with what the headset recommends, and the head-pose delay."},
     {"Overlay left / right", T_FLOAT, &g_cfg.overlayX, -0.6f, 0.6f, "%.2f m", 0,
-     "Moves the stats overlay sideways: negative = left. It sits 0.8 m in front of your eyes and moves with your head."},
+     "Moves the stats overlay sideways: negative = left (metres at 0.8 m away). It moves with your head."},
     {"Overlay up / down", T_FLOAT, &g_cfg.overlayY, -0.6f, 0.6f, "%.2f m", 0,
      "Moves the stats overlay up (positive) or down."},
+    {"Overlay distance", T_FLOAT, &g_cfg.overlayDistance, 0.3f, 3.0f, "%.2f m", 0,
+     "How far in front of your eyes the stats overlay floats. It keeps its size and place in your view."},
+    {"Menu distance", T_FLOAT, &g_cfg.menuDistance, 0.4f, 3.0f, "%.2f m", 0,
+     "How far in front of you this menu opens. It keeps its size in your view, and moves as you change this."},
     {"Recenter", T_ACTION, (void*)A_RECENTER, 0, 0, nullptr, 0, "Places the screen straight ahead of you again (also F8)."},
 };
 Item kInput[] = {
@@ -149,7 +165,7 @@ Item kInput[] = {
      "or just lowered from it. Raising your arm for a swing then only attacks on the way down. Off: every fast "
      "movement attacks."},
 };
-const int kInfoLines = 16;
+const int kInfoLines = 18;
 
 struct Page {
     const char* name;
@@ -187,6 +203,8 @@ WORD g_prevButtons;
 bool g_comboLocked;   // B closed the menu: B + A can't open it again until B is let go
 bool g_keyPrev[256];
 const char* g_help;   // help text of the focused setting
+char g_helpDefault[96];  // and its default value, "" for actions
+bool g_resetPending;  // X / Delete was pressed: the focused setting goes back to its default
 
 // ---------------------------------------------------------------------------------------------
 // Keys
@@ -242,7 +260,7 @@ void Saved(const Item& it) {
     char v[48];
     if (it.type == T_BOOL)
         snprintf(v, sizeof(v), "%s", *(int*)it.ptr ? "on" : "off");
-    else if (it.type == T_INT)
+    else if (it.type == T_INT || it.type == T_CHOICE)
         snprintf(v, sizeof(v), "%d", *(int*)it.ptr);
     else
         snprintf(v, sizeof(v), "%.3f", (double)*(float*)it.ptr);
@@ -262,6 +280,41 @@ const char* Tag(const Item& it) {
 // Drawing (ImGui; runs on the VR thread every headset frame while the menu is open)
 // ---------------------------------------------------------------------------------------------
 ImVec4 Col(const float* c) { return ImVec4(c[0], c[1], c[2], c[3]); }
+
+// The v-th name of a T_CHOICE item ("Off|DLSS").
+void ChoiceName(const Item& it, int v, char* out, size_t cap) {
+    snprintf(out, cap, "?");
+    const char* n = it.fmt;
+    for (int i = 0; n && i < v; i++) n = (n = strchr(n, '|')) ? n + 1 : nullptr;
+    if (n && v >= 0) snprintf(out, cap, "%.*s", (int)strcspn(n, "|"), n);
+}
+
+// A value of a setting as the menu shows it.
+void ValueText(const Item& it, float v, char* out, size_t cap) {
+    switch (it.type) {
+        case T_BOOL: snprintf(out, cap, "%s", v != 0 ? "On" : "Off"); return;
+        case T_CHOICE: ChoiceName(it, (int)v, out, cap); return;
+        case T_INT: snprintf(out, cap, it.fmt ? it.fmt : "%d", (int)v); return;
+        case T_FLOAT: snprintf(out, cap, it.fmt ? it.fmt : "%.2f", (double)v); return;
+        default: out[0] = 0;
+    }
+}
+
+// Puts a setting back to its default (NieRVR.ini's table) and saves it.
+void ResetToDefault(Item& it) {
+    float d;
+    if ((it.type != T_BOOL && it.type != T_INT && it.type != T_FLOAT && it.type != T_CHOICE) || !ConfigDefault(it.ptr, &d))
+        return;
+    if (it.type == T_FLOAT) {
+        if (*(float*)it.ptr == d) return;
+        *(float*)it.ptr = d;
+    } else {
+        if (*(int*)it.ptr == (int)d) return;
+        *(int*)it.ptr = (int)d;
+    }
+    if (it.flags & F_RECENTER) g_wantRecenter = true;
+    Saved(it);
+}
 
 // The widget of one setting; true if it changed.
 bool Widget(Item& it) {
@@ -287,6 +340,14 @@ bool Widget(Item& it) {
             float v = *(float*)it.ptr;
             if (!ImGui::SliderFloat("##v", &v, it.min, it.max, it.fmt ? it.fmt : "%.2f", sf)) return false;
             *(float*)it.ptr = v;
+            return true;
+        }
+        case T_CHOICE: {  // a slider over the names
+            int v = *(int*)it.ptr;
+            char name[64];
+            ChoiceName(it, v, name, sizeof(name));
+            if (!ImGui::SliderInt("##v", &v, (int)it.min, (int)it.max, name, sf)) return false;
+            *(int*)it.ptr = v;
             return true;
         }
         case T_ACTION:
@@ -326,7 +387,18 @@ void Row(Item& it, int index) {
     if (changed && (it.flags & F_RECENTER)) g_wantRecenter = true;
     if (done) Saved(it);
     if (focused) {
+        if (g_resetPending) {
+            g_resetPending = false;
+            ResetToDefault(it);
+        }
         g_help = it.help;
+        float d;
+        char v[64];
+        g_helpDefault[0] = 0;
+        if (it.type != T_ACTION && ConfigDefault(it.ptr, &d)) {
+            ValueText(it, d, v, sizeof(v));
+            snprintf(g_helpDefault, sizeof(g_helpDefault), "Default: %s  (X or Delete: back to it)", v);
+        }
         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(Col(ui::Colors::bar)));
     }
 }
@@ -357,9 +429,10 @@ void Draw() {
 
     // footer size, so the page gets the rest
     const float smallLine = kSmall * 1.35f;
-    const float footer = ImGui::GetFontSize() * 1.3f * 3 + smallLine * 2 + ImGui::GetStyle().ItemSpacing.y * 6;
+    const float footer = ImGui::GetFontSize() * 1.3f * 3 + smallLine * 3 + ImGui::GetStyle().ItemSpacing.y * 6;
 
     g_help = nullptr;
+    g_helpDefault[0] = 0;
     int shown = -1;
     if (ImGui::BeginTabBar("pages")) {
         for (int i = 0; i < kPages; i++) {
@@ -384,17 +457,23 @@ void Draw() {
 
     // help for the focused setting, then the controls
     ImGui::Separator();
-    ImGui::BeginChild("help", ImVec2(0, ImGui::GetFontSize() * 1.3f * 3), ImGuiChildFlags_None, ImGuiWindowFlags_NoNav);
+    ImGui::BeginChild("help", ImVec2(0, ImGui::GetFontSize() * 1.3f * 3 + smallLine), ImGuiChildFlags_None, ImGuiWindowFlags_NoNav);
     if (g_help) ImGui::TextWrapped("%s", g_help);
+    if (g_help && g_helpDefault[0]) {
+        ImGui::PushFont(nullptr, kSmall);
+        ImGui::TextDisabled("%s", g_helpDefault);
+        ImGui::PopFont();
+    }
     ImGui::EndChild();
+    g_resetPending = false;  // a reset press with nothing to reset
     ImGui::Separator();
     ImGui::PushFont(nullptr, kSmall);
     ImGui::TextDisabled("Gamepad:  left stick / D-pad move   right stick scroll   A switch / adjust a slider (A again: done)");
-    ImGui::TextDisabled("LB/RB or triggers page   B close");
+    ImGui::TextDisabled("X default   LB/RB or triggers page   B close");
     char key[64];
     KeyName(g_cfg.keyMenu, key, sizeof(key));
     ImGui::SameLine();
-    ImGui::TextDisabled("      Keyboard:  arrows   Enter   PgUp/PgDn   %s close", key);
+    ImGui::TextDisabled("      Keyboard:  arrows   Enter   Delete   PgUp/PgDn   %s close", key);
     ImGui::PopFont();
 }
 
@@ -482,6 +561,7 @@ void MenuTick(bool foreground) {
     bool comboFire = !g_comboLocked && (b & XINPUT_GAMEPAD_B) && (pressed & XINPUT_GAMEPAD_A);
     bool keyToggle = KeyEdge(g_cfg.keyMenu, foreground);
     bool pgKeyL = KeyEdge(VK_PRIOR, foreground), pgKeyR = KeyEdge(VK_NEXT, foreground);
+    bool resetKey = KeyEdge(VK_DELETE, foreground) | KeyEdge(VK_BACK, foreground);
     if (!g_open) {
         if (keyToggle || comboFire) Open(true);
     } else if (keyToggle || (!g_uiActive && (pressed & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START)))) {
@@ -495,6 +575,8 @@ void MenuTick(bool foreground) {
         }
         return;
     }
+    // X / Delete: the highlighted setting back to its default (not while a slider is being adjusted)
+    if (!g_uiActive && ((pressed & XINPUT_GAMEPAD_X) || resetKey)) g_resetPending = true;
     // pages (while a slider is being adjusted, LB/RB make it finer/coarser instead)
     bool pgL = pgKeyL || (!g_uiActive && ((pressed & XINPUT_GAMEPAD_LEFT_SHOULDER) || ltPull));
     bool pgR = pgKeyR || (!g_uiActive && ((pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER) || rtPull));

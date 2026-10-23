@@ -597,4 +597,70 @@ inline int supersample_sizes(uint32_t bw, uint32_t bh, const uint32_t* listed, i
     return n;
 }
 
+// Upscaling (upscale.cpp): the i-th number (i >= 1) of the Halton sequence in base b, in [0, 1).
+// Bases 2 and 3 together spread the sub-pixel offsets evenly over a pixel.
+inline float halton(uint32_t i, uint32_t b) {
+    float f = 1, r = 0;
+    for (; i > 0; i /= b) {
+        f /= (float)b;
+        r += f * (float)(i % b);
+    }
+    return r;
+}
+
+// How much each upscaler mode enlarges the image: DLAA, Quality, Balanced, Performance, Ultra
+// performance (NVIDIA's ratios).
+inline float upscale_ratio(int mode) {
+    static const float kR[5] = {1.0f, 1.5f, 1.7241f, 2.0f, 3.0f};
+    return kR[mode < 0 ? 0 : mode > 4 ? 4 : mode];
+}
+
+// The mode a game image enlarged `ratio` times is in (the nearest of the ratios above, by their
+// geometric middles): what games call the mode for that render size.
+inline int upscale_mode(float ratio) {
+    if (ratio < 1.22f) return 0;   // up to ~sqrt(1.0 * 1.5)
+    if (ratio < 1.61f) return 1;   // sqrt(1.5 * 1.72)
+    if (ratio < 1.86f) return 2;   // sqrt(1.72 * 2)
+    if (ratio < 2.45f) return 3;   // sqrt(2 * 3)
+    return 4;
+}
+
+// Output size, as games do it: the target size (the headset's own detail x OutputScale, the game's
+// shape) stays put and the game's resolution is the input. Enlarges 1x to 3x (a game image larger
+// than the target is only smoothed, DLAA), even pixels, at most 8192. False if too small to upscale.
+inline bool upscale_output(uint32_t w, uint32_t h, uint32_t targetW, uint32_t targetH, uint32_t* ow, uint32_t* oh) {
+    if (w < 64 || h < 64) return false;
+    float r = 1;
+    if (targetW && targetH) {
+        float rw = (float)targetW / w, rh = (float)targetH / h;
+        r = rw > rh ? rw : rh;
+    }
+    if (r < 1.02f) r = 1;  // about the target already: anti-aliasing only
+    if (r > 3) r = 3;
+    float big = (float)(w > h ? w : h) * r;
+    if (big > 8192) r *= 8192 / big;
+    if (r <= 1) {
+        *ow = w, *oh = h;
+        return true;
+    }
+    *ow = ((uint32_t)(w * r + 1)) & ~1u;
+    *oh = ((uint32_t)(h * r + 1)) & ~1u;
+    if (*ow < w) *ow = w;
+    if (*oh < h) *oh = h;
+    return true;
+}
+
+// The game resolution that gives `mode` for an output of ow x oh (rounded to 8 pixels).
+inline void upscale_input_for(uint32_t ow, uint32_t oh, int mode, uint32_t* w, uint32_t* h) {
+    float r = upscale_ratio(mode);
+    *w = ((uint32_t)(ow / r + 4)) & ~7u;
+    *h = ((uint32_t)(oh / r + 4)) & ~7u;
+}
+
+// Number of different jitter offsets for an enlargement (NVIDIA: 8 x ratio squared), 8 to 72.
+inline uint32_t jitter_phases(float ratio) {
+    float n = 8 * ratio * ratio;
+    return n < 8 ? 8u : n > 72 ? 72u : (uint32_t)(n + 0.5f);
+}
+
 }  // namespace pure

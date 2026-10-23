@@ -31,6 +31,22 @@ FetchContent_Declare(imgui    # Dear ImGui: the stats overlay (ui/overlay.cpp)
     SOURCE_SUBDIR none)
 FetchContent_MakeAvailable(minhook imgui)  # sets minhook_SOURCE_DIR, imgui_SOURCE_DIR
 
+# NVIDIA DLSS runtime for the upscaler ([Upscaler] Mode=1). render/dlss.cpp loads it at run time
+# through the graphics driver; nothing of NVIDIA's is compiled into the mod. It is downloaded for your
+# own install only: NVIDIA's SDK licence doesn't let it become part of a GPL release, so don't put it
+# in a release archive. Pinned to a commit of github.com/NVIDIA/DLSS and checked by SHA256 (DLSS 310.9.16).
+option(NIERVR_DLSS "Download nvngx_dlss.dll (NVIDIA DLSS) and install it next to the mod" ON)
+if(NIERVR_DLSS)
+    set(DLSS_COMMIT 9981c6350dc58c0ce21f024fd65e31e851c31689)
+    set(DLSS_DIR ${FETCHCONTENT_BASE_DIR}/dlss)
+    file(DOWNLOAD https://github.com/NVIDIA/DLSS/raw/${DLSS_COMMIT}/lib/Windows_x86_64/rel/nvngx_dlss.dll
+        ${DLSS_DIR}/nvngx_dlss.dll
+        EXPECTED_HASH SHA256=d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e)
+    file(DOWNLOAD https://raw.githubusercontent.com/NVIDIA/DLSS/${DLSS_COMMIT}/LICENSE.txt
+        ${DLSS_DIR}/LICENSE.txt
+        EXPECTED_HASH SHA256=d4216e39ebef5f9b50a6712ebb37beeb5379862a67733a9999c651f21592aaf0)
+endif()
+
 file(GLOB_RECURSE NIERVR_SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.S)
 list(FILTER NIERVR_SOURCES EXCLUDE REGEX "/src/gen/")  # thunks.S is listed below
 add_library(nier_vr SHARED
@@ -67,10 +83,14 @@ target_compile_options(nier_vr PRIVATE
 # winpthread into the DLL, so nothing has to be shipped next to it.
 target_link_options(nier_vr PRIVATE -static -Wl,--enable-stdcall-fixup -s
     -Wl,-Map=${CMAKE_BINARY_DIR}/d3d11.map)  # what the linker pulled in, and from which library
-target_link_libraries(nier_vr PRIVATE kernel32 user32 advapi32)
+target_link_libraries(nier_vr PRIVATE kernel32 user32 advapi32)  # advapi32: also the DLSS driver path (registry)
 
 # install target
 install(TARGETS nier_vr RUNTIME DESTINATION .)   # just d3d11.dll, not the import library
+if(NIERVR_DLSS)
+    install(FILES ${DLSS_DIR}/nvngx_dlss.dll DESTINATION .)
+    install(FILES ${DLSS_DIR}/LICENSE.txt DESTINATION . RENAME nvngx_dlss_LICENSE.txt)
+endif()
 
 # launch target will isntall
 add_custom_target(launch

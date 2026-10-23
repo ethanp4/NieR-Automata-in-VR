@@ -18,7 +18,11 @@ void Contents(const OverlayStats& s) {
     ImGui::SameLine();
     ImGui::TextColored(dim, "  %s", s.mode);
     ImGui::Text("Headset %.0f fps    game L %.0f  R %.0f  flat %.0f", s.headsetFps, s.gameFps[0], s.gameFps[1], s.gameFps[2]);
-    ImGui::Text("Game image %ux%u", s.gameW, s.gameH);
+    if (s.sceneW && (s.sceneW != s.gameW || s.sceneH != s.gameH))
+        ImGui::Text("Game image %ux%u, upscaled to %ux%u", s.gameW, s.gameH, s.sceneW, s.sceneH);
+    else
+        ImGui::Text("Game image %ux%u", s.gameW, s.gameH);
+    if (s.upscaler && s.upscaler[0]) ImGui::TextColored(dim, "%s", s.upscaler);
     if (s.sharpX > 0)
         ImGui::Text("Sharpness %.0f%% across, %.0f%% up-down", s.sharpX, s.sharpY);
     else

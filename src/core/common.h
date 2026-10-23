@@ -47,7 +47,9 @@ struct Config {
     float width;         // metres
     float heightOffset;  // metres, relative to eye height
     int statsOverlay;    // live stats in the corner of your view (ui/overlay.cpp)
-    float overlayX, overlayY;  // its position: metres right / up of straight ahead, 0.8 m in front
+    float overlayX, overlayY;  // its position: metres right / up of straight ahead (at 0.8 m; scaled with the distance)
+    float overlayDistance;     // metres in front of your eyes (it keeps its size in your view)
+    float menuDistance;        // the settings menu: metres in front of you when it opens (keeps its size in your view)
     // [Keys]  (Windows virtual-key codes)
     int keyRecenter, keySmaller, keyLarger, keyCloser, keyFarther;
     int keyCapture;  // [Debug] CaptureKey: camera probe frame capture
@@ -88,6 +90,11 @@ struct Config {
     int lateWarp;          // [Stereo] LateWarp: submit the headset's pose/fov, eye images re-aimed to it (0.5.1)
     int maxFrameLatency;   // [Render] MaxFrameLatency: frames the game's CPU may queue ahead of the GPU; 0 = game's (0.4.5)
     int giVolumes;         // [Render] GIVolumes: GI volumes the game's GI pass reads (nearest first); >= 128 = all (0.4.2)
+    // [Upscaler] (render/upscale.cpp)
+    int upscaler;          // 0 off, 1 DLSS
+    float upscaleOutput;   // the upscaled image's size: % of the detail the headset recommends
+    int dlssModel;         // 0 CNN (preset E, fast), 1 transformer (preset K)
+    int upscaleJitterFlip; // [Debug] UpscaleJitterFlip: bit 0 flips the jitter handed to DLSS across, bit 1 up-down
     // [Input]
     int vrControllers;     // VR controllers act as an XInput gamepad (0.4.0)
     int vrRumble;          // the game's rumble goes to the VR controllers
@@ -108,6 +115,7 @@ extern wchar_t g_modDir[MAX_PATH];  // directory of this DLL, with trailing back
 extern wchar_t g_iniPath[MAX_PATH];
 void ConfigLoad();
 bool ConfigSave(const void* field);  // writes one setting to NieRVR.ini: ConfigSave(&g_cfg.worldScale)
+bool ConfigDefault(const void* field, float* value);  // a setting's default (ints as floats); false if not in the table
 void ConfigSaveEasingCaller(unsigned exeOffset);
 // menu.cpp - the in-headset settings menu
 // gpuprof.cpp - GPU timing of one frame every 5 s (diagnostic)
@@ -140,6 +148,8 @@ struct OverlayStats {
     float headsetFps;
     float gameFps[3];              // game images per second: left, right, flat
     unsigned gameW, gameH;         // the game's render size
+    unsigned sceneW, sceneH;       // the 3D image's size in the headset (larger when upscaling)
+    const char* upscaler;          // "DLSS 310.9.16 Quality" or why not; "" = off
     float sharpX, sharpY;          // % of the headset's recommended detail, across / up-down; 0 = unknown
     float poseDelayMs, predictMs;  // poseDelayMs < 0 = unknown
     const float* frameMs;          // headset frame times, a ring buffer for the graph
@@ -259,12 +269,28 @@ void StereoBeginSecondEye();     // switch the camera patching to the right eye 
 bool StereoSecondEyePatched();
 bool StereoReprojectParams(int eye, float T[16], float proj[4], FrameTag* tag);  // depth reprojection
 int StereoFrameEye();  // the eye this frame renders (-1 = mono)
+bool StereoUpscaleCams(int eye, float T[16], float cur[4], float prev[4], float jitter[2], bool* hasPrev);
 // reproject.cpp - depth-based correction of the older eye (alternate-eye mode, 0.3.30)
 void ReprojectNoteDsv(ID3D11DepthStencilView* dsv);   // a depth buffer the game draws with
 void ReprojectAtUiStart(ID3D11DeviceContext* c);      // the scene is finished: keep its depth
 void ReprojectRelease();                              // before a resize
 // at Present after this frame's eye was captured: returns the warped other eye (or null)
 ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scene, ID3D11Texture2D* bb, FrameTag* tag);
+ID3D11Resource* ReprojectSceneDepth();                // the game's scene depth buffer (raw), or null
+void ReprojectSetBackbufferSize(UINT w, UINT h);      // at Present: the size the scene depth must have
+// upscale.cpp - temporal upscaling of the 3D image for the headset ([Upscaler])
+// At Present, before the frame goes to the headset: decides this frame's scene-image size (*outW,
+// *outH: enlarged when upscaling, else w x h). True while upscaling (also DLAA: same size).
+bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UINT* outH);
+// The HUD-free scene image of `eye` (-1 = mono) at the output size: upscaled, or stretched when it
+// can't be. Returns `scene` itself when not upscaling, null on failure.
+ID3D11Texture2D* UpscaleScene(ID3D11DeviceContext* c, int eye, ID3D11Texture2D* scene);
+void UpscaleAtUiStart(ID3D11DeviceContext* c);               // the scene is finished: keep this eye's depth
+void UpscaleCaptureDepth(ID3D11DeviceContext* c, int eye);   // BothEyes: the replayed right eye's depth
+bool UpscaleJitter(int eye, float ndc[2], float pixels[2]);  // stereo.cpp: this frame's sub-pixel offset
+bool UpscaleWantsDepth();                                    // the scene depth buffer has to be tracked
+void UpscaleRelease();                                       // before a resize
+void UpscaleStatus(char* out, size_t cap);                   // for the stats overlay / Info page
 void StateSaveTemp(ID3D11DeviceContext* c);           // replay.cpp: pipeline state around our own drawing
 void StateRestoreTemp(ID3D11DeviceContext* c);   // the replay found and patched the camera
 
@@ -322,13 +348,21 @@ struct FrameShare {
     // request: written by the game thread (under cs)
     LONG reqGen;  // bumps whenever the request changes
     UINT reqW, reqH;
+    UINT reqSceneW, reqSceneH;  // the scene-only images: larger than the frame when upscaling
+    bool reqKey;                // upscaling: also the scene images before upscaling (ringKey)
+    // written by the VR thread: the game-image size with the detail the headset recommends (0 = not
+    // known yet): the upscaler's output follows it
+    UINT nativeW, nativeH;
     DXGI_FORMAT reqFmt;
     // reply: written by the VR thread (under cs): a ring of shared textures
     HANDLE ring[kRingSize];       // legacy shared handles: full frames
     HANDLE ringScene[kRingSize];  // and scene-only (no UI) frames
+    HANDLE ringKey[kRingSize];    // upscaling: the scene-only frames before upscaling (the HUD is cut out
+                                  // against these, which match the full frames pixel for pixel); else null
     LONG gen;        // bumps whenever a new ring is published
     LONG forReqGen;  // the request this ring answers
     UINT w, h;
+    UINT sceneW, sceneH;
     DXGI_FORMAT fmt;
     // completed frames, published by the game thread (under cs) once the GPU finished the copy
     struct Published {

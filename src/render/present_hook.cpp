@@ -29,12 +29,15 @@ static ID3D11Device* s_dev;
 static ID3D11DeviceContext* s_ctx;
 static ID3D11Texture2D* s_ring[kRing];
 static ID3D11Texture2D* s_ringScene[kRing];
+static ID3D11Texture2D* s_ringKey[kRing];  // upscaling: the scene image before upscaling, for the HUD key
 static ID3D11Query* s_query[kRing];
 static bool s_pending[kRing];
 static FrameTag s_pendingTag[kRing];
 static LONG s_openedGen = -1;
 static int s_nextSlot;
 static UINT s_reqW, s_reqH;
+static UINT s_reqSceneW, s_reqSceneH;  // scene-only images: enlarged when upscaling (upscale.cpp)
+static bool s_reqKey;                  // upscaling: the scene images before upscaling too
 static DXGI_FORMAT s_reqFmt;
 static bool s_loggedNotD3D11, s_loggedOtherDevice;
 static unsigned s_presentCount;
@@ -55,6 +58,8 @@ static void ReleaseRing() {
     for (int i = 0; i < kRing; i++) {
         if (s_ring[i]) s_ring[i]->Release();
         if (s_ringScene[i]) s_ringScene[i]->Release();
+        if (s_ringKey[i]) s_ringKey[i]->Release();
+        s_ringKey[i] = nullptr;
         if (s_query[i]) s_query[i]->Release();
         s_ring[i] = nullptr;
         s_ringScene[i] = nullptr;
@@ -178,9 +183,10 @@ static void OnFirstGameDevice(ID3D11Device* dev) {
 }
 
 // Copies a finished image (and the scene-only image, if any) into the next free ring slot, tagged
-// with the eye the stereo code says was just drawn.
+// with the eye the stereo code says was just drawn. full = null: no full image (a reprojected eye
+// while upscaling: only its scene image is shown). key: upscaling, the scene image before upscaling.
 static int PushToRing(ID3D11Texture2D* full, bool msaa, DXGI_FORMAT fmt, ID3D11Texture2D* scene, bool noUI,
-                      const FrameTag* tagOverride = nullptr) {
+                      const FrameTag* tagOverride = nullptr, ID3D11Texture2D* key = nullptr) {
     int slot = -1;
     for (int k = 0; k < kRing && slot < 0; k++)
         if (!s_pending[(s_nextSlot + k) % kRing]) slot = (s_nextSlot + k) % kRing;
@@ -188,11 +194,12 @@ static int PushToRing(ID3D11Texture2D* full, bool msaa, DXGI_FORMAT fmt, ID3D11T
         if (LogBudget(&s_budgetCopy, 3)) Log("note: capture ring full (GPU behind), skipped a frame");
         return -1;
     }
-    if (msaa)
+    if (full && msaa)
         s_ctx->ResolveSubresource(s_ring[slot], 0, full, 0, fmt);
-    else
+    else if (full)
         s_ctx->CopyResource(s_ring[slot], full);
     if (scene) s_ctx->CopyResource(s_ringScene[slot], scene);
+    if (scene && key && s_ringKey[slot]) s_ctx->CopyResource(s_ringKey[slot], key);
     s_ctx->End(s_query[slot]);
     if (tagOverride)
         s_pendingTag[slot] = *tagOverride;
@@ -238,27 +245,43 @@ static void CaptureFrame(IDXGISwapChain* sc) {
     }
     StereoSetAspect((float)d.Width / (float)d.Height);
     UiSetBackbuffer(bb);
+    ReprojectSetBackbufferSize(d.Width, d.Height);
+    UINT sw, sh;  // size of this frame's scene-only images
+    // upscaling (also DLAA, which keeps the size): the scene images are DLSS's
+    const bool up = UpscaleBeginPresent(s_ctx, d.Width, d.Height, &sw, &sh);
 
     // 1. Ask the VR thread for a ring matching the backbuffer (only when it changes).
-    if (d.Width != s_reqW || d.Height != s_reqH || fmt != s_reqFmt) {
+    if (d.Width != s_reqW || d.Height != s_reqH || fmt != s_reqFmt || sw != s_reqSceneW || sh != s_reqSceneH ||
+        up != s_reqKey) {
         s_reqW = d.Width;
         s_reqH = d.Height;
+        s_reqSceneW = sw;
+        s_reqSceneH = sh;
+        s_reqKey = up;
         s_reqFmt = fmt;
         ReleaseRing();
         EnterCriticalSection(&g_share.cs);
         g_share.reqW = d.Width;
         g_share.reqH = d.Height;
+        g_share.reqSceneW = sw;
+        g_share.reqSceneH = sh;
+        g_share.reqKey = up;
         g_share.reqFmt = fmt;
         g_share.reqGen++;
         LeaveCriticalSection(&g_share.cs);
-        Log("requesting %ux%u format %d capture textures", d.Width, d.Height, (int)fmt);
+        if (up)
+            Log("requesting %ux%u format %d capture textures, scene images upscaled to %ux%u", d.Width, d.Height, (int)fmt,
+                sw, sh);
+        else
+            Log("requesting %ux%u format %d capture textures", d.Width, d.Height, (int)fmt);
     }
 
     // 2. Open the ring once the VR thread has published it.
     EnterCriticalSection(&g_share.cs);
-    HANDLE handles[kRing], sceneHandles[kRing];
+    HANDLE handles[kRing], sceneHandles[kRing], keyHandles[kRing];
     memcpy(handles, g_share.ring, sizeof(handles));
     memcpy(sceneHandles, g_share.ringScene, sizeof(sceneHandles));
+    memcpy(keyHandles, g_share.ringKey, sizeof(keyHandles));
     LONG gen = g_share.gen;
     bool current = g_share.forReqGen == g_share.reqGen;
     LeaveCriticalSection(&g_share.cs);
@@ -271,6 +294,8 @@ static void CaptureFrame(IDXGISwapChain* sc) {
             hr = s_dev->OpenSharedResource(handles[i], __uuidof(ID3D11Texture2D), (void**)&s_ring[i]);
             if (SUCCEEDED(hr))
                 hr = s_dev->OpenSharedResource(sceneHandles[i], __uuidof(ID3D11Texture2D), (void**)&s_ringScene[i]);
+            if (SUCCEEDED(hr) && keyHandles[i])
+                hr = s_dev->OpenSharedResource(keyHandles[i], __uuidof(ID3D11Texture2D), (void**)&s_ringKey[i]);
             if (SUCCEEDED(hr)) hr = s_dev->CreateQuery(&qd, &s_query[i]);
         }
         if (FAILED(hr)) {
@@ -291,19 +316,23 @@ static void CaptureFrame(IDXGISwapChain* sc) {
             // BothEyes and the GPU is behind: drop this game frame for the headset (both eyes keep
             // the previous pair) and skip the replay, which lets the GPU catch up.
             s_droppedPairs++;
-        } else if (!both && g_cfg.depthReproject && StereoFrameEye() >= 0 && d.SampleDesc.Count == 1 && FreeSlots() >= 2) {
+        } else if (!both && g_cfg.depthReproject && StereoFrameEye() >= 0 && d.SampleDesc.Count == 1 && FreeSlots() >= 2 &&
+                   (!up || scene)) {
             // Alternate eyes with depth reprojection: this frame's eye, plus the other eye's last
-            // image moved to this frame's camera, handed to the headset as a pair.
-            int a = PushToRing(bb, false, fmt, scene, false);
+            // image moved to this frame's camera, handed to the headset as a pair. Upscaling: the
+            // upscaled images are moved.
+            ID3D11Texture2D* sc = UpscaleScene(s_ctx, StereoFrameEye(), scene);
+            int a = PushToRing(bb, false, fmt, sc, false, nullptr, scene);
             FrameTag tag;
-            ID3D11Texture2D* warped = a >= 0 ? ReprojectOtherEye(s_ctx, scene, bb, &tag) : nullptr;
-            int b = warped ? PushToRing(warped, false, fmt, warped, true, &tag) : -1;
+            ID3D11Texture2D* warped = a >= 0 && (!up || sc) ? ReprojectOtherEye(s_ctx, sc, bb, &tag) : nullptr;
+            int b = warped ? PushToRing(up ? nullptr : warped, false, fmt, warped, true, &tag) : -1;
             if (b >= 0) {
                 unsigned id = ++s_pairCounter ? s_pairCounter : ++s_pairCounter;
                 s_pendingTag[a].pairId = s_pendingTag[b].pairId = id;
             }
         } else {
-            int left = PushToRing(bb, d.SampleDesc.Count > 1, fmt, scene, false);
+            int left = PushToRing(bb, d.SampleDesc.Count > 1, fmt, UpscaleScene(s_ctx, StereoFrameEye(), scene), false,
+                                  nullptr, scene);
             // BothEyes: the same frame again for the right eye (replay.cpp), into the next slot.
             if (both && left >= 0) {
                 bool inBackbuffer = false;
@@ -311,8 +340,10 @@ static void CaptureFrame(IDXGISwapChain* sc) {
                 if (ReplaySecondEye(s_ctx, &inBackbuffer)) {
                     if (inBackbuffer)
                         right = PushToRing(bb, d.SampleDesc.Count > 1, fmt, nullptr, false);
-                    else if (scene)
-                        right = PushToRing(scene, false, fmt, scene, true);
+                    else if (scene) {
+                        UpscaleCaptureDepth(s_ctx, 1);  // the replay left the right eye's depth behind
+                        right = PushToRing(scene, false, fmt, UpscaleScene(s_ctx, 1, scene), true);
+                    }
                 }
                 if (right >= 0) {
                     unsigned id = ++s_pairCounter ? s_pairCounter : ++s_pairCounter;

@@ -287,6 +287,7 @@ HRESULT STDMETHODCALLTYPE H_ResizeBuffers(IDXGISwapChain* sc, UINT n, UINT w, UI
     UiOnResizeBuffers();
     ReplayRelease();
     ReprojectRelease();
+    UpscaleRelease();
     HRESULT hr = o_ResizeBuffers(sc, n, w, h, f, flags);
     if (LogBudget(&g_bBuffers, 8))
         Log("display: ResizeBuffers %ux%u format %d -> 0x%08x", w, h, (int)f, (unsigned)hr);

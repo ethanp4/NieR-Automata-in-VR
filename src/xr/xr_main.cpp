@@ -74,22 +74,29 @@ static struct {
         bool shown;                   // the swapchain has a released image
     } menu, overlay;  // the settings menu (ui/menu.cpp), the stats overlay (ui/overlay.cpp)
     XrPosef menuPose;
+    pure::Q menuYaw;            // the menu faces where you looked when it opened...
+    XrVector3f menuHead;        // ...from where your head was; MenuDistance away (live)
+    bool menuPlaced;
 
     // game frames, on our device
     LONG servedReqGen;  // last game request we answered
     LONG publishGen;
     ID3D11Texture2D* ring[kRingSize];       // shared with the game device: full frames
     ID3D11Texture2D* ringScene[kRingSize];  // scene-only frames (UI removed)
+    ID3D11Texture2D* ringKey[kRingSize];    // upscaling: scene-only frames before upscaling (HUD key)
     struct View {              // [0] left, [1] right, [2] mono
         ID3D11Texture2D* tex;
         ID3D11ShaderResourceView* srv;
         ID3D11Texture2D* sceneTex;
         ID3D11ShaderResourceView* sceneSrv;
+        ID3D11Texture2D* keyTex;  // upscaling: the scene image the HUD is cut out against (else null)
+        ID3D11ShaderResourceView* keySrv;
         LONG seq;
         FrameTag tag;
         bool has;
     } views[3];
-    UINT contentW, contentH;
+    UINT contentW, contentH;  // the game's frames
+    UINT sceneW, sceneH;      // its scene-only images (larger when upscaling, upscale.cpp)
     bool srcLinear;
 
     // UI coverage measurement (decides menu mode)
@@ -124,6 +131,7 @@ static struct {
     LARGE_INTEGER ovStart, ovDrawn, ovLastFrame;
     OverlayStats ovStats;
     char ovMode[32];
+    char ovUpscaler[128];
     float ovFrameMs[180];  // headset frame times (two seconds at 90 Hz), ring buffer
     int ovFrameNext;
     LARGE_INTEGER statStart, qpcFreq;
@@ -731,10 +739,13 @@ static bool RenderInto(Swap& s, ID3D11ShaderResourceView* srv, ID3D11ShaderResou
 static void ReleaseContent() {
     for (auto& r : X.ring) SafeRelease(r);
     for (auto& r : X.ringScene) SafeRelease(r);
+    for (auto& r : X.ringKey) SafeRelease(r);
     for (auto& v : X.views) {
         SafeRelease(v.srv);
         SafeRelease(v.tex);
         SafeRelease(v.sceneSrv);
+        SafeRelease(v.keySrv);
+        SafeRelease(v.keyTex);
         SafeRelease(v.sceneTex);
         v.has = false;
         v.seq = 0;
@@ -780,6 +791,8 @@ static void ServiceShare() {
     EnterCriticalSection(&g_share.cs);
     LONG reqGen = g_share.reqGen;
     UINT w = g_share.reqW, h = g_share.reqH;
+    UINT sw = g_share.reqSceneW ? g_share.reqSceneW : w, sh = g_share.reqSceneH ? g_share.reqSceneH : h;
+    bool key = g_share.reqKey;
     DXGI_FORMAT fmt = g_share.reqFmt;
     LeaveCriticalSection(&g_share.cs);
     if (reqGen == X.servedReqGen || w == 0 || h == 0) return;
@@ -796,9 +809,17 @@ static void ServiceShare() {
     d.Usage = D3D11_USAGE_DEFAULT;
     d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
     d.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-    HANDLE handles[2 * kRingSize] = {};
-    for (int i = 0; i < 2 * kRingSize; i++) {
-        ID3D11Texture2D** t = i < kRingSize ? &X.ring[i] : &X.ringScene[i - kRingSize];
+    // full frames, scene images, and (upscaling) the scene images before upscaling: the HUD is cut out
+    // as full - scene, which only works with two images that match pixel for pixel where there's no HUD
+    // (an upscaled one left faint outlines of everything on the HUD layer)
+    const bool up = key || sw != w || sh != h;  // upscaling (DLAA keeps the size)
+    HANDLE handles[3 * kRingSize] = {};
+    for (int i = 0; i < (up ? 3 : 2) * kRingSize; i++) {
+        ID3D11Texture2D** t = i < kRingSize ? &X.ring[i] : i < 2 * kRingSize ? &X.ringScene[i - kRingSize]
+                                                                            : &X.ringKey[i - 2 * kRingSize];
+        bool big = i >= kRingSize && i < 2 * kRingSize;
+        d.Width = big ? sw : w;
+        d.Height = big ? sh : h;
         HRESULT hr = X.dev->CreateTexture2D(&d, nullptr, t);
         IDXGIResource* res = nullptr;
         if (SUCCEEDED(hr)) hr = (*t)->QueryInterface(__uuidof(IDXGIResource), (void**)&res);
@@ -807,8 +828,8 @@ static void ServiceShare() {
             res->Release();
         }
         if (FAILED(hr) || !handles[i]) {
-            Log("ERROR: capture texture %ux%u format %d could not be created/shared (0x%08x)", w, h, (int)fmt,
-                (unsigned)hr);
+            Log("ERROR: capture texture %ux%u format %d could not be created/shared (0x%08x)", d.Width, d.Height,
+                (int)fmt, (unsigned)hr);
             ReleaseContent();
             return;
         }
@@ -818,6 +839,8 @@ static void ServiceShare() {
     DXGI_FORMAT texFmt, viewFmt;
     TypelessFor(fmt, &texFmt, &viewFmt, &X.srcLinear);
     D3D11_TEXTURE2D_DESC ld = d;
+    ld.Width = w;
+    ld.Height = h;
     ld.Format = texFmt;
     ld.BindFlags = D3D11_BIND_SHADER_RESOURCE;
     ld.MiscFlags = 0;
@@ -825,11 +848,16 @@ static void ServiceShare() {
     sd.Format = viewFmt;
     sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     sd.Texture2D.MipLevels = 1;
+    D3D11_TEXTURE2D_DESC lsd = ld;
+    lsd.Width = sw;
+    lsd.Height = sh;
     for (auto& v : X.views) {
         HRESULT hr = X.dev->CreateTexture2D(&ld, nullptr, &v.tex);
         if (SUCCEEDED(hr)) hr = X.dev->CreateShaderResourceView(v.tex, &sd, &v.srv);
-        if (SUCCEEDED(hr)) hr = X.dev->CreateTexture2D(&ld, nullptr, &v.sceneTex);
+        if (SUCCEEDED(hr)) hr = X.dev->CreateTexture2D(&lsd, nullptr, &v.sceneTex);
         if (SUCCEEDED(hr)) hr = X.dev->CreateShaderResourceView(v.sceneTex, &sd, &v.sceneSrv);
+        if (SUCCEEDED(hr) && up) hr = X.dev->CreateTexture2D(&ld, nullptr, &v.keyTex);
+        if (SUCCEEDED(hr) && up) hr = X.dev->CreateShaderResourceView(v.keyTex, &sd, &v.keySrv);
         if (FAILED(hr)) {
             Log("ERROR: VR-side copy texture %ux%u fmt %d failed 0x%08x", w, h, (int)texFmt, (unsigned)hr);
             ReleaseContent();
@@ -838,21 +866,33 @@ static void ServiceShare() {
     }
     X.contentW = w;
     X.contentH = h;
+    X.sceneW = sw;
+    X.sceneH = sh;
 
     EnterCriticalSection(&g_share.cs);
     memcpy(g_share.ring, handles, sizeof(g_share.ring));
     memcpy(g_share.ringScene, handles + kRingSize, sizeof(g_share.ringScene));
+    memcpy(g_share.ringKey, handles + 2 * kRingSize, sizeof(g_share.ringKey));  // null when not upscaling
     g_share.w = w;
     g_share.h = h;
+    g_share.sceneW = sw;
+    g_share.sceneH = sh;
     g_share.fmt = fmt;
     g_share.forReqGen = reqGen;
     g_share.gen = ++X.publishGen;
     for (auto& l : g_share.latest) l.seq = 0;
     LeaveCriticalSection(&g_share.cs);
-    Log("capture ring published: %d x %ux%u format %d%s", kRingSize, w, h, (int)fmt, X.srcLinear ? " (linear/HDR)" : "");
+    Log("capture ring published: %d x %ux%u format %d%s, scene images %ux%u", kRingSize, w, h, (int)fmt,
+        X.srcLinear ? " (linear/HDR)" : "", sw, sh);
 }
 
 static void SetMenuMode(bool on, float frac);
+
+// The scene image the HUD is cut out against: the one before upscaling when there is one.
+template <typename V>
+static ID3D11ShaderResourceView* KeySrv(const V& v) {
+    return v.keySrv ? v.keySrv : v.sceneSrv;
+}
 
 // Copies newly finished game frames (left / right / mono) into our local textures.
 static void UpdateContent() {
@@ -867,6 +907,8 @@ static void UpdateContent() {
         if (!latest[k].seq || latest[k].seq == X.views[k].seq || latest[k].slot < 0 || latest[k].slot >= kRingSize) continue;  // 0.3.27 still said > 3: half the frames lost
         X.ctx->CopyResource(X.views[k].tex, X.ring[latest[k].slot]);
         if (latest[k].tag.hasScene) X.ctx->CopyResource(X.views[k].sceneTex, X.ringScene[latest[k].slot]);
+        if (latest[k].tag.hasScene && !latest[k].tag.noUI && X.views[k].keyTex && X.ringKey[latest[k].slot])
+            X.ctx->CopyResource(X.views[k].keyTex, X.ringKey[latest[k].slot]);
         // Eye frames without a scene-only image (the UI split didn't work on this screen, e.g.
         // during some damage effects): stay in stereo with the HUD inside the 3D image. (0.3.4-0.3.11
         // switched to the flat screen here, which made the view flicker to flat when hit; the title
@@ -998,9 +1040,10 @@ static void MeasureUICoverage() {
     // measure the newest frame that has a scene-only image
     int k = -1;
     for (int i = 0; i < 3; i++)
-        if (X.views[i].has && X.views[i].tag.hasScene && (k < 0 || X.views[i].seq > X.views[k].seq)) k = i;
+        if (X.views[i].has && X.views[i].tag.hasScene && !X.views[i].tag.noUI && (k < 0 || X.views[i].seq > X.views[k].seq))
+            k = i;  // (images drawn without UI have none to measure)
     if (k < 0 || X.views[k].seq == X.covMeasuredSeq || X.covPending[X.covNext]) return;
-    Blit(X.covRtv, kCovW, kCovH, X.views[k].srv, X.views[k].sceneSrv, false);
+    Blit(X.covRtv, kCovW, kCovH, X.views[k].srv, KeySrv(X.views[k]), false);
     X.ctx->CopyResource(X.covStaging[X.covNext], X.covTex);
     X.covPending[X.covNext] = true;
     X.covNext = (X.covNext + 1) % 3;
@@ -1299,9 +1342,10 @@ static void LogStats() {
     if (X.resPct > 0 && X.statStereoFrames && (resLoggedW != X.contentW || resLoggedH != X.contentH)) {
         resLoggedW = X.contentW;
         resLoggedH = X.contentH;
-        Log("stats: resolution: the game renders %ux%u: %.0f%% of the sharpness the headset recommends across, %.0f%% "
+        Log("stats: resolution: the game renders %ux%u%s: %.0f%% of the sharpness the headset recommends across, %.0f%% "
             "up-down; about %ux%u matches it in both directions",
-            X.contentW, X.contentH, (double)X.resPct, (double)X.resPctH, X.resSuggestW, X.resSuggestH);
+            X.contentW, X.contentH, X.sceneW != X.contentW ? " (upscaled)" : "", (double)X.resPct, (double)X.resPctH,
+            X.resSuggestW, X.resSuggestH);
         char info[160];
         snprintf(info, sizeof(info), "Resolution %ux%u: %.0f%% / %.0f%% of recommended (across / up-down); ~%ux%u matches",
                      X.contentW, X.contentH, (double)X.resPct, (double)X.resPctH, X.resSuggestW, X.resSuggestH);
@@ -1451,14 +1495,17 @@ static void Frame() {
         // alternate-eye mode: the right eye stuttered) and a symmetric, wider field of view (Quest 3,
         // 54/40 deg per eye: squeezed sideways, cross-eyed).
         bool late = stereo && g_cfg.lateWarp && X.psWarp && X.dispHave;
-        uint32_t ew[2] = {X.contentW, X.contentW}, eh[2] = {X.contentH, X.contentH};
+        // the image the eyes show: the scene-only one (upscaled or not) when both eyes have it
+        const bool scn = L.tag.hasScene && R.tag.hasScene;
+        const UINT imgW = scn ? X.sceneW : X.contentW, imgH = scn ? X.sceneH : X.contentH;
+        uint32_t ew[2] = {imgW, imgW}, eh[2] = {imgH, imgH};
         if (late)
             for (int e = 0; e < 2; e++) {
                 // same pixel density as the rendered image, over the eye's own field of view
                 const FrameTag& t = (e == 0 ? L : R).tag;
                 const XrFovf& f = X.disp[e].fov;
-                float w = (pure::ftan(f.angleRight) - pure::ftan(f.angleLeft)) * X.contentW / (2 * t.tanHalfW);
-                float h = (pure::ftan(f.angleUp) - pure::ftan(f.angleDown)) * X.contentH / (2 * t.tanHalfH);
+                float w = (pure::ftan(f.angleRight) - pure::ftan(f.angleLeft)) * imgW / (2 * t.tanHalfW);
+                float h = (pure::ftan(f.angleUp) - pure::ftan(f.angleDown)) * imgH / (2 * t.tanHalfH);
                 ew[e] = ((uint32_t)w + 1) & ~1u;
                 eh[e] = ((uint32_t)h + 1) & ~1u;
                 // a few pixels' change doesn't need a new swapchain
@@ -1520,12 +1567,20 @@ static void Frame() {
                 if (need > 64 && needH > 64) {
                     // the 16:9 picture is stretched over the eye's field of view (Anamorphic): the two
                     // directions can differ a lot (0.5.1 Quest log: 144% across, 79% up-down)
-                    X.resPct = 100.f * X.contentW / need;
-                    X.resPctH = 100.f * X.contentH / needH;
-                    // keep the game's 16:9 shape: the larger of the two needs decides
-                    float scale = need / X.contentW > needH / X.contentH ? need / X.contentW : needH / X.contentH;
+                    X.resPct = 100.f * imgW / need;
+                    X.resPctH = 100.f * imgH / needH;
+                    // keep the game's 16:9 shape: the larger of the two needs decides (the game's
+                    // resolution: when upscaling, the image shown is that much larger)
+                    float scale = need / imgW > needH / imgH ? need / imgW : needH / imgH;
                     X.resSuggestW = ((UINT)(X.contentW * scale) + 4) & ~7u;
                     X.resSuggestH = ((UINT)(X.contentH * scale) + 4) & ~7u;
+                    // the upscaler's output follows this: the game image's shape with the headset's detail
+                    float ns = need / X.contentW > needH / X.contentH ? need / X.contentW : needH / X.contentH;
+                    UINT nw = ((UINT)(X.contentW * ns) + 1) & ~1u, nh = ((UINT)(X.contentH * ns) + 1) & ~1u;
+                    EnterCriticalSection(&g_share.cs);
+                    g_share.nativeW = nw;
+                    g_share.nativeH = nh;
+                    LeaveCriticalSection(&g_share.cs);
                 }
             }
             static int lateLogged = -1;
@@ -1579,7 +1634,7 @@ static void Frame() {
                 // (BothEyes: the right eye is replayed without UI, so the HUD comes from the left)
                 auto& H = (L.seq > R.seq && !L.tag.noUI) || R.tag.noUI ? L : R;
                 if (bothScene && X.placed && EnsureSwap(X.hudSwap, X.contentW, X.contentH, "HUD") &&
-                    RenderInto(X.hudSwap, H.srv, H.sceneSrv)) {
+                    RenderInto(X.hudSwap, H.srv, KeySrv(H))) {
                     hud.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
                     hud.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
                     hud.space = X.local;
@@ -1616,7 +1671,9 @@ static void Frame() {
     // the stats overlay: moves with your head (view space), upper left of your view
     if (!g_cfg.statsOverlay) X.ovStart.QuadPart = 0;  // counting starts again when it is switched on
     if (fs.shouldRender && g_cfg.statsOverlay && UpdateOverlay()) {
-        const float width = 0.32f;  // metres, at 0.8 m
+        // 0.32 m wide at 0.8 m; elsewhere scaled so it keeps its size and place in your view
+        const float k = g_cfg.overlayDistance / 0.8f;
+        const float width = 0.32f * k;
         overlay.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
         overlay.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;  // ImGui's output is premultiplied
         overlay.space = X.view;
@@ -1625,7 +1682,7 @@ static void Frame() {
         overlay.subImage.imageRect.offset = {0, 0};
         overlay.subImage.imageRect.extent = {(int32_t)X.overlay.swap.w, (int32_t)X.overlay.swap.h};
         overlay.pose.orientation = {0, 0, 0, 1};
-        overlay.pose.position = {g_cfg.overlayX, g_cfg.overlayY, -0.8f};
+        overlay.pose.position = {g_cfg.overlayX * k, g_cfg.overlayY * k, -g_cfg.overlayDistance};
         overlay.size = {width, width * (float)X.overlay.swap.h / (float)X.overlay.swap.w};
         layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&overlay;
     }
@@ -1639,7 +1696,8 @@ static void Frame() {
         menu.subImage.imageRect.offset = {0, 0};
         menu.subImage.imageRect.extent = {(int32_t)X.menu.swap.w, (int32_t)X.menu.swap.h};
         menu.pose = X.menuPose;
-        menu.size = {1.0f, 1.0f * (float)X.menu.swap.h / (float)X.menu.swap.w};
+        const float mw = 1.0f * g_cfg.menuDistance / 1.1f;  // 1 m wide at 1.1 m
+        menu.size = {mw, mw * (float)X.menu.swap.h / (float)X.menu.swap.w};
         layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&menu;
     }
 
@@ -1714,8 +1772,8 @@ static bool RenderPanel(Panel& p, int w, int h, const char* what, PanelDraw draw
     return true;
 }
 
-// The settings menu: placed 1.1 m in front of your head when it opens, drawn every headset frame
-// while open (ImGui's navigation runs per frame).
+// The settings menu: placed in front of your head when it opens ([Screen] MenuDistance, which moves
+// it at once when changed), drawn every headset frame while open (ImGui's navigation runs per frame).
 static bool UpdateMenu(XrTime time) {
     if (MenuTakeJustOpened()) {
         XrSpaceLocation loc = {};
@@ -1726,10 +1784,16 @@ static bool UpdateMenu(XrTime time) {
             pure::Q yaw;
             bool flipped = X.spaceFlipped;
             if (!pure::level_reference(head, &flipped, &yaw)) yaw = X.lastYaw;
-            pure::V3 off = pure::rotate(yaw, {0, -0.12f, -1.1f});
-            X.menuPose.orientation = {yaw.x, yaw.y, yaw.z, yaw.w};
-            X.menuPose.position = {loc.pose.position.x + off.x, loc.pose.position.y + off.y, loc.pose.position.z + off.z};
+            X.menuYaw = yaw;
+            X.menuHead = loc.pose.position;
+            X.menuPlaced = true;
         }
+    }
+    if (X.menuPlaced) {
+        float k = g_cfg.menuDistance / 1.1f;
+        pure::V3 off = pure::rotate(X.menuYaw, {0, -0.12f * k, -g_cfg.menuDistance});
+        X.menuPose.orientation = {X.menuYaw.x, X.menuYaw.y, X.menuYaw.z, X.menuYaw.w};
+        X.menuPose.position = {X.menuHead.x + off.x, X.menuHead.y + off.y, X.menuHead.z + off.z};
     }
     return RenderPanel(X.menu, 1280, 960, "menu", MenuRender);
 }
@@ -1756,6 +1820,9 @@ static bool UpdateOverlay() {
         for (int i = 0; i < 3; i++) st.gameFps[i] = (float)(X.ovGameFrames[i] / secs);
         st.gameW = X.contentW;
         st.gameH = X.contentH;
+        st.sceneW = X.sceneW;
+        st.sceneH = X.sceneH;
+        UpscaleStatus(X.ovUpscaler, sizeof(X.ovUpscaler));
         st.sharpX = X.resPct;
         st.sharpY = X.resPctH;
         st.poseDelayMs = X.lagHave ? (float)X.lagMs : -1.0f;
@@ -1765,13 +1832,14 @@ static bool UpdateOverlay() {
         X.ovStart = now;
     }
     st.mode = X.ovMode;
+    st.upscaler = X.ovUpscaler;
     st.frameMs = X.ovFrameMs;
     st.frameCount = (int)(sizeof(X.ovFrameMs) / sizeof(X.ovFrameMs[0]));
     st.frameOffset = X.ovFrameNext;
     bool redraw = !X.overlay.shown || (double)(now.QuadPart - X.ovDrawn.QuadPart) / (double)X.qpcFreq.QuadPart >= 0.1;
     if (!redraw) return true;
     X.ovDrawn = now;
-    return RenderPanel(X.overlay, 640, 300, "stats overlay",
+    return RenderPanel(X.overlay, 640, 330, "stats overlay",
                        [](ID3D11Device* dev, ID3D11DeviceContext* dc, ID3D11RenderTargetView* rtv, int w, int h) {
                            return OverlayRender(dev, dc, rtv, w, h, X.ovStats);
                        });

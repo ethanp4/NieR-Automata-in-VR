@@ -65,6 +65,10 @@ const Setting kSettings[] = {
           "Stats overlay position: metres to the right (negative: left) and up (negative: down) of\n"
           "straight ahead, 0.8 m in front of your eyes; it moves with your head"),
     S_FLT("Screen", "OverlayY", overlayY, 0.14f, -0.6f, 0.6f, nullptr),
+    S_FLT("Screen", "OverlayDistance", overlayDistance, 0.8f, 0.3f, 3.0f,
+          "Stats overlay distance in metres; it keeps its size and place in your view (OverlayX/Y scale with it)"),
+    S_FLT("Screen", "MenuDistance", menuDistance, 1.1f, 0.4f, 3.0f,
+          "Settings menu distance in metres (placed when it opens); it keeps its size in your view"),
 
     S_INT("Stereo", "Enabled", stereo, 1, 0, 1, "1 = start in stereo 3D (F12 toggles between stereo and the flat screen)"),
     S_FLT("Stereo", "WorldScale", worldScale, 0.75f, 0.002f, 50,
@@ -82,8 +86,8 @@ const Setting kSettings[] = {
         "Depth reprojection: 1 = fill the gaps it opens behind 2B and other near things with the\n"
         "background; 0 = stretch their edges over the gap"),
     S_INT("Stereo", "BothEyes", bothEyes, 0, 0, 1,
-        "Experimental: 1 = both eyes every game frame (the frame is drawn a second time for the right\n"
-        "eye: no alternating, but about twice the GPU work). 0 = alternate eyes. F5 switches it in game"),
+        "Experimental: 1 = draw a frame for both eyes (the frame is drawn a second time for the right\n"
+        "eye: no alternating, but about twice the GPU work). 0 = reuse the same frame for both eyes. F5 switches it in game"),
     S_INT("Stereo", "PosePrediction", posePrediction, 1, 0, 1,
         "1 = predict the head pose each game frame is rendered with for the moment it will actually be\n"
         "shown (measured), so fast head turns show fewer black edges. 0 = off"),
@@ -157,6 +161,20 @@ const Setting kSettings[] = {
         "are added on every side (more = safer when turning your head fast, less = faster).\n"
         "0 = use CullingFov as before."),
 
+    S_INT("Upscaler", "Mode", upscaler, 0, 0, 1,
+        "Experimental. Sharper, smoother 3D image at a lower game resolution: the game renders smaller and\n"
+        "each eye's image is enlarged with detail gathered over several frames (anti-aliasing included).\n"
+        "0 = off, 1 = NVIDIA DLSS (RTX graphics cards; nvngx_dlss.dll must be in the game's folder).\n"
+        "The game's resolution picks the DLSS mode (see Output below); the stats overlay shows both sizes"),
+    S_FLT("Upscaler", "Output", upscaleOutput, 100, 50, 150,
+        "Size of the upscaled image, in % of the detail your headset recommends (100 = its own). It stays\n"
+        "the same; as in other games, the game's resolution decides the DLSS mode: the same size = DLAA,\n"
+        "1.5x smaller = Quality, 1.7x = Balanced, 2x = Performance, 3x = Ultra performance. The Info page\n"
+        "lists the game resolutions for each mode"),
+    S_INT("Upscaler", "Model", dlssModel, 0, 0, 1,
+        "DLSS model: 0 = fast (CNN, preset E: about 1 ms per eye on an RTX 2070), 1 = best (transformer,\n"
+        "preset K: about 3 ms per eye on an RTX 2070, cheaper on RTX 30/40/50 cards)"),
+
     S_HEX("Keys", "Recenter", keyRecenter, VK_F8,
         "Windows virtual-key codes (https://learn.microsoft.com/windows/win32/inputdev/virtual-key-codes)\n"
         "Defaults: F8 recenter, F9 smaller, F10 larger, F6 closer, F7 farther, F12 stereo on/off\n"
@@ -177,6 +195,9 @@ const Setting kSettings[] = {
          "Another d3d11.dll-based mod (e.g. ReShade renamed to d3d11_reshade.dll) to load in a chain.\n"
          "Leave empty to use Windows' own d3d11.dll."),
 
+    S_INT("Debug", "UpscaleJitterFlip", upscaleJitterFlip, 0, 0, 3,
+        "Upscaler test: 1 flips the sub-pixel offset handed to DLSS across, 2 up-down, 3 both. Only if the\n"
+        "upscaled image shimmers or looks doubled; 0 is right for NVIDIA's convention"),
     S_INT("Debug", "Verbose", verbose, 0, 0, 1, "1 = more detail in NieRVR.log"),
     S_HEX("Debug", "CaptureKey", keyCapture, VK_F11,
         "Camera probe: press this key in game to record one frame for analysis (default F11)"),
@@ -393,6 +414,13 @@ bool ConfigSave(const void* field) {
     if (!s || s->kind == K_PATH || s->kind == K_TEXT) return false;
     float v = s->kind == K_FLOAT ? *(const float*)field : (float)*(const int*)field;
     WriteNumber(s->section, s->key, s->kind, v);
+    return true;
+}
+
+bool ConfigDefault(const void* field, float* value) {
+    const Setting* s = Find(field);
+    if (!s || s->kind == K_PATH || s->kind == K_TEXT) return false;
+    *value = s->def;
     return true;
 }
 

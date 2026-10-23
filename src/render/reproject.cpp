@@ -29,6 +29,7 @@ cbuffer P : register(b0) {
     float4 proj;            // x scale, y scale, P22, P23 (z_ndc = (P22 z + P23) / -z)
     float4 size;            // width, height, grid step, grid width in cells
     float4 edge;            // depth ratio and stretch (in grid steps) above which a triangle is a gap; x = 0: off
+    float4 dscale;          // depth pixels per colour pixel (x, y): 1, or less for an upscaled colour image
 };
 Texture2D<float> dep : register(t0);
 Texture2D col : register(t1);
@@ -41,7 +42,7 @@ struct V {
 // one grid corner: the old image's pixel there, moved into the eye's view as it is now
 void Corner(uint2 c, out float4 clip, out float2 uv, out float dist) {
     float2 px = min(float2(c) * size.z, size.xy - 1);
-    float d = dep.Load(int3(px, 0));
+    float d = dep.Load(int3(px * dscale.xy, 0));
     uv = (px + 0.5) / size.xy;
     float2 ndc = float2(uv.x * 2 - 1, 1 - uv.y * 2);
     float z = proj.w / (-d - proj.z);                   // view-space z (negative in front)
@@ -91,7 +92,7 @@ float4 ps(V i) : SV_Target {
     [unroll] for (int y = -1; y <= 1; y++)
         [unroll] for (int x = -1; x <= 1; x++) {
             float2 q = clamp(px + float2(x, y) * size.z, 0, size.xy - 1);
-            float d = dep.Load(int3(q, 0));
+            float d = dep.Load(int3(q * dscale.xy, 0));
             if (d > best) { best = d; bp = q; }
         }
     return col.Load(int3(bp, 0));
@@ -174,7 +175,7 @@ bool Init(ID3D11Device* dev) {
     if (pb) pb->Release();
     if (err) err->Release();
     D3D11_BUFFER_DESC bd = {};
-    bd.ByteWidth = 112;
+    bd.ByteWidth = 128;
     bd.Usage = D3D11_USAGE_DEFAULT;
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     if (SUCCEEDED(hr)) hr = dev->CreateBuffer(&bd, nullptr, &g_cb);
@@ -257,6 +258,13 @@ bool EnsureDepth(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& src) {
     return true;
 }
 
+// The depth covers the same picture as the colour image (same size, or the colour enlarged).
+bool SameShape(const D3D11_TEXTURE2D_DESC& depth, const D3D11_TEXTURE2D_DESC& color) {
+    if (depth.Width > color.Width || depth.Height > color.Height || !depth.Height || !color.Height) return false;
+    float a = (float)depth.Width / depth.Height, b = (float)color.Width / color.Height;
+    return a > b * 0.99f && a < b * 1.01f;
+}
+
 bool EnsureColor(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& src) {
     if (g_out && g_colorDesc.Width == src.Width && g_colorDesc.Height == src.Height && g_colorDesc.Format == src.Format)
         return true;
@@ -305,9 +313,10 @@ bool EnsureColor(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& src) {
 }
 }  // namespace
 
-// From the OMSetRenderTargets hook (game thread): remember the game's full-size depth buffer.
+// From the OMSetRenderTargets hook (game thread): remember the game's full-size depth buffer (also
+// for the upscaler, upscale.cpp).
 void ReprojectNoteDsv(ID3D11DepthStencilView* dsv) {
-    if (!g_cfg.depthReproject || g_cfg.bothEyes || !dsv || !g_bbW) return;
+    if (!((g_cfg.depthReproject && !g_cfg.bothEyes) || UpscaleWantsDepth()) || !dsv || !g_bbW) return;
     ID3D11Resource* r = nullptr;
     dsv->GetResource(&r);
     if (!r) return;
@@ -343,8 +352,15 @@ void ReprojectRelease() {
     ReleaseTargets();
 }
 
+ID3D11Resource* ReprojectSceneDepth() { return g_sceneDepth; }
+void ReprojectSetBackbufferSize(UINT w, UINT h) {
+    g_bbW = w;
+    g_bbH = h;
+}
+
 // At Present (alternate eyes), after this frame's eye was pushed to the headset: keep this eye's
 // scene for next frame and return the other eye's previous image moved to this frame's camera.
+// `scene` may be larger than the depth (upscaled, upscale.cpp): the depth is then read scaled.
 ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scene, ID3D11Texture2D* bb, FrameTag* tag) {
     // g_frameCounter = Presents finished so far: the frame being presented copied its depth with
     // this value, so the other eye's depth from the frame before has g_frameCounter - 1 (0.3.30
@@ -379,7 +395,7 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
     int why = !o.colorOk ? WHY_COLOR
               : !o.depthOk ? WHY_DEPTH
               : o.depthFrame + 1 != g_frameCounter ? WHY_OLD
-              : (g_depthDesc.Width != sd.Width || g_depthDesc.Height != sd.Height) ? WHY_SIZE
+              : !SameShape(g_depthDesc, sd) ? WHY_SIZE
               : !StereoReprojectParams(other, T, proj, tag) ? WHY_CAMERA : -1;
     bool ready = why < 0;
     if (why >= 0) g_why[why]++;
@@ -389,8 +405,9 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
             float proj[4];
             float size[4];
             float edge[4];
+            float dscale[4];
         } p;
-        static_assert(sizeof(p) == 112, "cbuffer P");
+        static_assert(sizeof(p) == 128, "cbuffer P");
         const float step = 4;
         UINT gw = (sd.Width + 3) / 4, gh = (sd.Height + 3) / 4;
         memcpy(p.T, T, 64);
@@ -404,6 +421,9 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
         p.edge[0] = g_cfg.reprojectEdges ? 1.03f : 0.f; //TODO this has a strange borderline useless effect
         p.edge[1] = 2.5f;
         p.edge[2] = p.edge[3] = 0;
+        p.dscale[0] = (float)g_depthDesc.Width / (float)sd.Width;
+        p.dscale[1] = (float)g_depthDesc.Height / (float)sd.Height;
+        p.dscale[2] = p.dscale[3] = 0;
         g_replaying = true;  // our own calls: the hooks pass them straight through
         StateSaveTemp(c);
         c->UpdateSubresource(g_cb, 0, nullptr, &p, 0, 0);

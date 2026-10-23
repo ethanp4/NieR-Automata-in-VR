@@ -36,6 +36,15 @@ struct Shot {
     float localPos[3], localRot[4], halfW, halfH;
 };
 Shot g_shot[2];  // BothEyes: the right eye, same head pose, for the replay at Present
+// Upscaling (upscale.cpp): each eye's camera this frame [0] and the last frame it was drawn [1], for
+// motion vectors. Pe without the sub-pixel jitter, which is kept apart (render pixels).
+struct UpCam {
+    bool valid;
+    unsigned frameNo;
+    pure::M4 Ce, Pe;
+    float jitter[2];
+};
+UpCam g_upCam[2][2];
 bool g_both;          // this frame: left eye live, right eye replayed
 bool g_secondEye;     // the replay is running (g_frame = the right eye)
 unsigned g_frameNo;
@@ -166,12 +175,30 @@ void PatchScene(float* d) {
     }
     pure::M4 Ve = pure::m4_rigid_inverse(Ce);
     pure::M4 Pe = pure::m4_symmetric_projection(P, g_frame.halfW, g_frame.halfH);
-    pure::M4 VPe = pure::m4_mul(Pe, Ve);
+    // Upscaling: shift the image by a different fraction of a pixel each frame (clip-space
+    // translation; w = -z, so the offset goes into the z column with a minus)
+    float jn[2] = {0, 0}, jp[2] = {0, 0};
+    pure::M4 PeJ = Pe;
+    if (g_frame.eye >= 0 && g_frame.eye < 2 && UpscaleJitter(g_frame.eye, jn, jp)) {
+        PeJ.at(0, 2) -= jn[0];
+        PeJ.at(1, 2) -= jn[1];
+    }
+    if (g_frame.eye >= 0 && g_frame.eye < 2) {
+        UpCam* u = g_upCam[g_frame.eye];
+        if (u[0].valid && u[0].frameNo != g_frameNo) u[1] = u[0];
+        u[0].valid = true;
+        u[0].frameNo = g_frameNo;
+        u[0].Ce = Ce;
+        u[0].Pe = Pe;
+        u[0].jitter[0] = jp[0];
+        u[0].jitter[1] = jp[1];
+    }
+    pure::M4 VPe = pure::m4_mul(PeJ, Ve);
     CullingObserveGameFov(2 * pure::fatan(1 / P.at(1, 1)) * 57.29578f);
     g_viewFix = pure::m4_mul(Ve, C);     // game view space -> world -> eye view space
     g_viewFixInv = pure::m4_mul(V, Ce);  // and back
     memcpy(d, Ve.m, 64);
-    memcpy(d + 16, Pe.m, 64);
+    memcpy(d + 16, PeJ.m, 64);
     memcpy(d + 32, VPe.m, 64);
     memcpy(d + 48, Ce.m, 64);
     g_frame.patchedScene = true;
@@ -391,6 +418,31 @@ bool StereoReprojectParams(int eye, float T[16], float proj[4], FrameTag* tag) {
     return true;
 }
 int StereoFrameEye() { return g_frame.active ? g_frame.eye : -1; }
+
+// Upscaling: this frame's camera of `eye` and how it moved since that eye's previous frame.
+// T = previous eye view <- this eye view; cur/prev = x scale, y scale, P22, P23 of the projections
+// (without jitter); jitter = this frame's offset in render pixels. False if the camera of `eye`
+// wasn't found this frame. *hasPrev: there is a previous frame close enough to compare with.
+bool StereoUpscaleCams(int eye, float T[16], float cur[4], float prev[4], float jitter[2], bool* hasPrev) {
+    if (eye < 0 || eye > 1) return false;
+    const UpCam& c = g_upCam[eye][0];
+    const UpCam& p = g_upCam[eye][1];
+    if (!c.valid || c.frameNo != g_frameNo) return false;
+    *hasPrev = p.valid && c.frameNo - p.frameNo <= 3;  // alternate eyes: 2 frames apart
+    pure::M4 t = pure::m4_mul(pure::m4_rigid_inverse(p.Ce), c.Ce);
+    memcpy(T, t.m, 64);
+    const pure::M4* m[2] = {&c.Pe, &p.Pe};
+    float* o[2] = {cur, prev};
+    for (int k = 0; k < 2; k++) {
+        o[k][0] = m[k]->at(0, 0);
+        o[k][1] = m[k]->at(1, 1);
+        o[k][2] = m[k]->at(2, 2);
+        o[k][3] = m[k]->at(2, 3);
+    }
+    jitter[0] = c.jitter[0];
+    jitter[1] = c.jitter[1];
+    return true;
+}
 
 bool StereoSecondEyePatched() { return g_secondEye && g_frame.patchedScene; }
 // The game's own camera (camera-to-world, before levelling): position, forward, up.
