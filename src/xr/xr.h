@@ -16,3 +16,4 @@ PFN_xrGetInstanceProcAddr XrLoadEntry();
 // vrinput.cpp
 void VrInputInit(PFN_xrGetInstanceProcAddr gipa, XrInstance inst, bool pico);
 void VrInputAttach(XrSession s);
+void VrInputMotion(XrSpace local, XrSpace view, XrTime time, bool focused, bool flipped);  // motion controls, after VrInputSync

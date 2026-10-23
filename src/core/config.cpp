@@ -45,6 +45,16 @@ const Setting kSettings[] = {
         "1 = your VR controllers work as a gamepad (Quest/Touch, Index, Pico, Vive, WMR...). A real\n"
         "gamepad and the keyboard keep working too. 0 = off (also in the in-headset menu)"),
     S_INT("Input", "ControllerRumble", vrRumble, 1, 0, 1, "1 = the game's rumble is played on the VR controllers"),
+    S_INT("Input", "MotionControls", motionControls, 0, 0, 1,
+          "1 = swing a VR controller to attack: right hand = light attack (X), left hand = heavy attack (Y).\n"
+          "The buttons keep working too"),
+    S_FLT("Input", "SwingSpeed", swingSpeed, 1.5f, 0.8f, 5.0f,
+          "How fast (metres per second, relative to your head) a hand must move to count as a swing.\n"
+          "Lower = easier to trigger; higher = only big swings. The Info page shows your swing speeds"),
+    S_INT("Input", "IgnoreUpwardSwings", ignoreUpSwings, 1, 0, 1,
+          "1 = reaching for your headset doesn't attack: a hand moving mostly upward (more than ~40 degrees\n"
+          "above horizontal) doesn't count, nor one within 25 cm of your head and for 0.4 s after it leaves.\n"
+          "Raising your arm for a swing then only attacks on the way down. 0 = every fast movement attacks"),
 
     S_FLT("Screen", "Distance", distance, 2.5f, 0.3f, 50, "Virtual screen placement, in metres. Also adjustable in game with the hotkeys below."),
     S_FLT("Screen", "Width", width, 3.2f, 0.2f, 100, nullptr),

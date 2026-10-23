@@ -1424,6 +1424,7 @@ static void Frame() {
 
     HandleHotkeys();
     VrInputSync(X.state == XR_SESSION_STATE_FOCUSED, GameIsForeground());
+    VrInputMotion(X.local, X.view, fs.predictedDisplayTime, X.state == XR_SESSION_STATE_FOCUSED, X.spaceFlipped);
     MenuTick(GameIsForeground());
     if (MenuTakeRecenter()) X.recenterRequested = true;
     UpdateEyePoses(fs.predictedDisplayTime);

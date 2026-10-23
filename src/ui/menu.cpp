@@ -138,6 +138,16 @@ Item kInput[] = {
      "Turn off to play with only those."},
     {"Controller rumble", T_BOOL, &g_cfg.vrRumble, 0, 1, nullptr, 0,
      "The game's rumble is played on the VR controllers."},
+    {"Motion controls", T_BOOL, &g_cfg.motionControls, 0, 1, nullptr, 0,
+     "Swing a controller to attack: right hand = light attack, left hand = heavy attack (2B's two weapons). "
+     "A short rumble confirms each swing. The buttons keep working too."},
+    {"Swing speed needed", T_FLOAT, &g_cfg.swingSpeed, 0.8f, 5.0f, "%.1f m/s", 0,
+     "How fast a hand must move (relative to your head) to count as a swing. Lower = easier; higher = only big "
+     "swings. The Info page shows how fast your swings are."},
+    {"Ignore hand-to-headset movements", T_BOOL, &g_cfg.ignoreUpSwings, 0, 1, nullptr, 0,
+     "Reaching for your headset doesn't attack: a hand moving mostly upward doesn't count, nor one near your head "
+     "or just lowered from it. Raising your arm for a swing then only attacks on the way down. Off: every fast "
+     "movement attacks."},
 };
 const int kInfoLines = 16;
 

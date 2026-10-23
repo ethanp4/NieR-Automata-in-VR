@@ -1,4 +1,4 @@
-// vrinput.cpp - VR controllers as a gamepad (0.4.0).
+// vrinput.cpp - VR controllers as a gamepad, and motion controls.
 //
 // The VR controllers (Quest/Touch, Index, Vive wands, Windows MR, Pico via SteamVR/VD, ...) are read
 // through OpenXR actions and handed to the game as an Xbox-style gamepad: the XInput hook in
@@ -21,6 +21,13 @@
 // Pico 4 controllers use the Touch layout (their own profile when the runtime offers
 // XR_BD_controller_interaction). PSVR2 Sense, Pico via SteamVR etc. are mapped onto one of these
 // profiles by the runtime (SteamVR does this for any controller).
+//
+// Motion controls ([Input] MotionControls=1): swinging a hand attacks. Right hand = light attack
+// (X), left hand = heavy attack (Y), matching 2B's two weapons. A swing is the hand moving faster
+// than [Input] SwingSpeed (m/s) relative to the head, so walking or leaning doesn't count; it
+// presses the button for 100 ms and gives a short rumble on that hand (VrInputMotion). With
+// [Input] IgnoreUpwardSwings=1 (default) reaching for the headset doesn't attack: a hand moving mostly
+// upward doesn't count, nor one within 25 cm of the head and for 0.4 s after it leaves.
 #include "xr/xr.h"
 #include <xinput.h>
 
@@ -29,20 +36,22 @@ namespace {
     X(xrStringToPath) X(xrCreateActionSet) X(xrDestroyActionSet) X(xrCreateAction)                         \
     X(xrSuggestInteractionProfileBindings) X(xrAttachSessionActionSets) X(xrSyncActions)                   \
     X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(xrGetActionStateVector2f) X(xrApplyHapticFeedback) \
-    X(xrStopHapticFeedback) X(xrGetCurrentInteractionProfile) X(xrPathToString)
+    X(xrStopHapticFeedback) X(xrGetCurrentInteractionProfile) X(xrPathToString) X(xrCreateActionSpace)          \
+    X(xrLocateSpace) X(xrDestroySpace)
 struct {
 #define DECL(n) PFN_##n n;
     VR_FUNCS(DECL)
 #undef DECL
 } F;
 
-enum Act { A_STICK, A_CLICK, A_TRIGGER, A_GRIP, A_A, A_B, A_MENU, A_HAPTIC, A_COUNT };
+enum Act { A_STICK, A_CLICK, A_TRIGGER, A_GRIP, A_A, A_B, A_MENU, A_HAPTIC, A_POSE, A_COUNT };
 XrInstance g_inst;
 XrActionSet g_set;
 XrAction g_act[A_COUNT];
 XrPath g_hand[2];
 XrSession g_session;
 bool g_ready, g_attached;
+XrSpace g_handSpace[2];  // the grip pose of each hand (motion controls)
 
 // shared with the game thread
 SRWLOCK g_lock = SRWLOCK_INIT;
@@ -54,6 +63,17 @@ float g_lastHap[2];
 DWORD g_hapTick[2];
 
 pure::MenuButton g_menuBtn;  // Start / Back / D-pad from the left menu button
+
+// motion controls
+pure::SwingDetector g_swing[2];
+pure::HeadZone g_headZone[2];
+DWORD g_swingUntil[2];        // the attack button is held until then (100 ms per swing)
+XrVector3f g_lastPos[2], g_lastHead;  // for speeds when the runtime gives no velocity
+XrTime g_lastTime;
+bool g_lastValid;
+unsigned g_swings[2];
+float g_peak[2];
+DWORD g_peakTick;
 
 // Keyboard / mouse handoff (0.4.1): a key or mouse button pressed in the game pauses the VR
 // controllers (the game sees a neutral pad, no rumble) until a button, trigger or stick on them is
@@ -132,36 +152,42 @@ const Bind kTouch[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumb
                        {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"},
                        {A_GRIP, L "input/squeeze/value"}, {A_GRIP, R "input/squeeze/value"},
                        {A_A, L "input/x/click"}, {A_A, R "input/a/click"}, {A_B, L "input/y/click"}, {A_B, R "input/b/click"},
-                       {A_MENU, L "input/menu/click"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}};
+                       {A_MENU, L "input/menu/click"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
+                       {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
 const Bind kIndex[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumbstick"},
                        {A_CLICK, L "input/thumbstick/click"}, {A_CLICK, R "input/thumbstick/click"},
                        {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"},
                        {A_GRIP, L "input/squeeze/value"}, {A_GRIP, R "input/squeeze/value"},
                        {A_A, L "input/a/click"}, {A_A, R "input/a/click"}, {A_B, L "input/b/click"}, {A_B, R "input/b/click"},
-                       {A_MENU, L "input/trackpad/force"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}};
+                       {A_MENU, L "input/trackpad/force"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
+                       {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
 const Bind kPico[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumbstick"},
                       {A_CLICK, L "input/thumbstick/click"}, {A_CLICK, R "input/thumbstick/click"},
                       {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"},
                       {A_GRIP, L "input/squeeze/value"}, {A_GRIP, R "input/squeeze/value"},
                       {A_A, L "input/x/click"}, {A_A, R "input/a/click"}, {A_B, L "input/y/click"}, {A_B, R "input/b/click"},
-                      {A_MENU, L "input/menu/click"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}};
+                      {A_MENU, L "input/menu/click"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
+                      {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
 // Vive wands have few buttons: right trackpad click = A, right menu = B, left trackpad click = L3.
 const Bind kVive[] = {{A_STICK, L "input/trackpad"}, {A_STICK, R "input/trackpad"},
                       {A_CLICK, L "input/trackpad/click"}, {A_A, R "input/trackpad/click"},
                       {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"},
                       {A_GRIP, L "input/squeeze/click"}, {A_GRIP, R "input/squeeze/click"},
                       {A_MENU, L "input/menu/click"}, {A_B, R "input/menu/click"},
-                      {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}};
+                      {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
+                      {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
 const Bind kWmr[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumbstick"},
                      {A_CLICK, L "input/thumbstick/click"}, {A_CLICK, R "input/thumbstick/click"},
                      {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"},
                      {A_GRIP, L "input/squeeze/click"}, {A_GRIP, R "input/squeeze/click"},
                      {A_A, L "input/trackpad/click"}, {A_A, R "input/trackpad/click"},
                      {A_MENU, L "input/menu/click"}, {A_B, R "input/menu/click"},
-                     {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}};
+                     {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
+                     {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
 const Bind kSimple[] = {{A_TRIGGER, L "input/select/click"}, {A_TRIGGER, R "input/select/click"},
                         {A_MENU, L "input/menu/click"}, {A_B, R "input/menu/click"},
-                        {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}};
+                        {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
+                        {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
 #undef L
 #undef R
 
@@ -277,7 +303,8 @@ void VrInputInit(PFN_xrGetInstanceProcAddr gipa, XrInstance inst, bool pico) {
          MakeAction(A_A, XR_ACTION_TYPE_BOOLEAN_INPUT, "button_lower", "A / X") &&
          MakeAction(A_B, XR_ACTION_TYPE_BOOLEAN_INPUT, "button_upper", "B / Y") &&
          MakeAction(A_MENU, XR_ACTION_TYPE_BOOLEAN_INPUT, "menu", "Menu (Start / Back / D-pad)") &&
-         MakeAction(A_HAPTIC, XR_ACTION_TYPE_VIBRATION_OUTPUT, "rumble", "Rumble");
+         MakeAction(A_HAPTIC, XR_ACTION_TYPE_VIBRATION_OUTPUT, "rumble", "Rumble") &&
+         MakeAction(A_POSE, XR_ACTION_TYPE_POSE_INPUT, "hand", "Hand position (motion controls)");
     if (!ok) {
         Log("vr controllers: could not create the actions");
         return;
@@ -302,10 +329,29 @@ void VrInputAttach(XrSession s) {
     ai.actionSets = &g_set;
     g_attached = XR_SUCCEEDED(F.xrAttachSessionActionSets(s, &ai));
     g_profileDirty = true;
-    if (!g_attached) Log("vr controllers: could not attach the actions to the session");
+    if (!g_attached) {
+        Log("vr controllers: could not attach the actions to the session");
+        return;
+    }
+    for (int h = 0; h < 2; h++) {
+        XrActionSpaceCreateInfo ci = {XR_TYPE_ACTION_SPACE_CREATE_INFO};
+        ci.action = g_act[A_POSE];
+        ci.subactionPath = g_hand[h];
+        ci.poseInActionSpace.orientation.w = 1;
+        if (XR_FAILED(F.xrCreateActionSpace(s, &ci, &g_handSpace[h]))) {
+            g_handSpace[h] = XR_NULL_HANDLE;
+            Log("vr controllers: no %s hand position (motion controls won't work)", h ? "right" : "left");
+        }
+    }
+    g_lastValid = false;
 }
 
 void VrInputDetach() {
+    for (int h = 0; h < 2; h++) {
+        if (g_handSpace[h]) F.xrDestroySpace(g_handSpace[h]);
+        g_handSpace[h] = XR_NULL_HANDLE;
+        g_swingUntil[h] = 0;
+    }
     g_attached = false;
     g_session = XR_NULL_HANDLE;
     g_lastHap[0] = g_lastHap[1] = 0;
@@ -356,6 +402,8 @@ void VrInputSync(bool focused, bool foreground) {
     // left menu button: tap = Start, hold = Back, + left stick = D-pad (pure.h, test_vrinput)
     DWORD t = GetTickCount();
     b |= g_menuBtn.update(GetBool(A_MENU, 0), &ls.x, &ls.y, t);
+    if ((LONG)(g_swingUntil[1] - t) > 0) b |= XINPUT_GAMEPAD_X;  // motion controls (VrInputMotion)
+    if ((LONG)(g_swingUntil[0] - t) > 0) b |= XINPUT_GAMEPAD_Y;
     // handoff between keyboard/mouse and the VR controllers
     {
         WORD pressed = b & ~g_prevVrButtons & ~(XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER);
@@ -416,4 +464,86 @@ bool VrInputPad(XINPUT_GAMEPAD* out, bool evenIfOff) {
 void VrInputRumble(WORD left, WORD right) {
     InterlockedExchange(&g_hapL, left);
     InterlockedExchange(&g_hapR, right);
+}
+
+namespace {
+bool Locate(XrSpace space, XrSpace base, XrTime time, XrVector3f* pos, XrVector3f* vel, bool* velValid) {
+    XrSpaceVelocity sv = {XR_TYPE_SPACE_VELOCITY};
+    XrSpaceLocation loc = {XR_TYPE_SPACE_LOCATION, &sv};
+    if (XR_FAILED(F.xrLocateSpace(space, base, time, &loc)) || !(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
+        return false;
+    *pos = loc.pose.position;
+    *vel = sv.linearVelocity;
+    *velValid = (sv.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0;
+    return true;
+}
+float Length(XrVector3f v) { return pure::fsqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
+XrVector3f Sub(XrVector3f a, XrVector3f b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+
+// A short pulse on one hand: the swing registered.
+void Tick(int hand) {
+    XrHapticActionInfo hi = {XR_TYPE_HAPTIC_ACTION_INFO, nullptr, g_act[A_HAPTIC], g_hand[hand]};
+    XrHapticVibration v = {XR_TYPE_HAPTIC_VIBRATION};
+    v.amplitude = 0.6f;
+    v.duration = 30 * 1000 * 1000;  // 30 ms (ns)
+    v.frequency = XR_FREQUENCY_UNSPECIFIED;
+    F.xrApplyHapticFeedback(g_session, &hi, (const XrHapticBaseHeader*)&v);
+}
+}  // namespace
+
+// Each VR frame after VrInputSync: motion controls. Hand speeds relative to the head (both located
+// in `local` at the frame's display time); a swing holds the attack button for 100 ms.
+void VrInputMotion(XrSpace local, XrSpace view, XrTime time, bool focused, bool flipped) {
+    if (!g_attached || !focused || !g_handSpace[0] || !g_handSpace[1] || !local || !view) return;
+    XrVector3f head, headVel, pos[2], vel[2];
+    bool headVelOk, velOk[2];
+    if (!Locate(view, local, time, &head, &headVel, &headVelOk)) return;
+    bool have[2];
+    for (int h = 0; h < 2; h++) have[h] = Locate(g_handSpace[h], local, time, &pos[h], &vel[h], &velOk[h]);
+    // no velocity from the runtime: from the positions since the last frame
+    double dt = g_lastValid ? (double)(time - g_lastTime) / 1e9 : 0;
+    bool diffOk = dt > 0.001 && dt < 0.1;
+    if (!headVelOk) headVel = diffOk ? XrVector3f{(float)((head.x - g_lastHead.x) / dt), (float)((head.y - g_lastHead.y) / dt),
+                                                  (float)((head.z - g_lastHead.z) / dt)}
+                                     : XrVector3f{0, 0, 0};
+    DWORD t = GetTickCount();
+    for (int h = 0; h < 2; h++) {
+        if (!have[h]) continue;
+        if (!velOk[h]) {
+            if (!diffOk) continue;
+            vel[h] = {(float)((pos[h].x - g_lastPos[h].x) / dt), (float)((pos[h].y - g_lastPos[h].y) / dt),
+                      (float)((pos[h].z - g_lastPos[h].z) / dt)};
+        }
+        XrVector3f rel = Sub(vel[h], headVel);
+        float speed = Length(rel);
+        if (speed > g_peak[h]) g_peak[h] = speed;
+        bool on = g_cfg.motionControls && g_cfg.vrControllers && !MenuIsOpen() && !g_kbmMode;
+        bool atHead = g_headZone[h].update(Length(Sub(pos[h], head)), t);
+        bool skip = g_cfg.ignoreUpSwings && (atHead || pure::mostly_up({rel.x, rel.y, rel.z}, flipped ? -1.0f : 1.0f));
+        if (g_swing[h].update(on && !skip ? speed : 0, t, g_cfg.swingSpeed) && on) {
+            g_swingUntil[h] = t + 100;
+            g_swings[h]++;
+            if (g_swings[0] + g_swings[1] == 1) Log("motion controls: first swing (%s hand, %.1f m/s)", h ? "right" : "left", (double)speed);
+            LogV("motion controls: %s swing %.1f m/s", h ? "right" : "left", (double)speed);
+            Tick(h);
+            AcquireSRWLockExclusive(&g_lock);  // into the pad at once (VrInputSync adds it from then on)
+            g_pad.wButtons |= h ? XINPUT_GAMEPAD_X : XINPUT_GAMEPAD_Y;
+            g_padTick = t;
+            ReleaseSRWLockExclusive(&g_lock);
+        }
+    }
+    for (int h = 0; h < 2; h++) g_lastPos[h] = pos[h];
+    g_lastHead = head;
+    g_lastTime = time;
+    g_lastValid = have[0] && have[1];
+    // the Info page: swings so far and the fastest hand speeds of the last second
+    if (t - g_peakTick >= 1000) {
+        g_peakTick = t;
+        char info[160];
+        snprintf(info, sizeof(info), "Motion controls %s: swings left %u, right %u; fastest last second %.1f / %.1f m/s (needs %.1f)",
+                 g_cfg.motionControls ? "on" : "off", g_swings[0], g_swings[1], (double)g_peak[0], (double)g_peak[1],
+                 (double)g_cfg.swingSpeed);
+        MenuSetInfo(15, info);
+        g_peak[0] = g_peak[1] = 0;
+    }
 }

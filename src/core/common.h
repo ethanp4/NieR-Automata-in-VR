@@ -91,6 +91,9 @@ struct Config {
     // [Input]
     int vrControllers;     // VR controllers act as an XInput gamepad (0.4.0)
     int vrRumble;          // the game's rumble goes to the VR controllers
+    int motionControls;    // swing a hand to attack (vrinput.cpp)
+    float swingSpeed;      // m/s a hand must move (relative to the head) to count as a swing
+    int ignoreUpSwings;    // no swings from a hand moving mostly upward or at the headset
     int eyeSync;           // turn the older eye's image by the game camera's turn since (0.3.25)
     int wideProjection;    // 1 = the camera's own projection gets the wide fov too (0.3.22; Pod aims up)
     int iniAdded;          // settings added to an older ini at startup
