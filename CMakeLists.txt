@@ -20,15 +20,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # build/compile_commands.json, for clangd
 include(FetchContent)
 set(FETCHCONTENT_BASE_DIR ${CMAKE_SOURCE_DIR}/.deps)
 FetchContent_Declare(minhook  # function hooking (upstream master, Sep 2026)
-    URL https://github.com/TsudaKageyu/minhook/archive/8af6b4acae5a9388fd742b56fa79ece89d96f823.tar.gz
-    URL_HASH SHA256=6c0334d09607da1c4a34a68b5febf0cf24c5810cae842eda13c9c24ea4196adb
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    SOURCE_SUBDIR none)
+	URL https://github.com/TsudaKageyu/minhook/archive/8af6b4acae5a9388fd742b56fa79ece89d96f823.tar.gz
+	URL_HASH SHA256=6c0334d09607da1c4a34a68b5febf0cf24c5810cae842eda13c9c24ea4196adb
+	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+	SOURCE_SUBDIR none)
 FetchContent_Declare(imgui    # Dear ImGui: the stats overlay (ui/overlay.cpp)
-    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.92.9b.tar.gz
-    URL_HASH SHA256=21d8a0a565e85dce943e375db00812c2f3f0ab21f3f0f7964e364a63422d7f99
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    SOURCE_SUBDIR none)
+	URL https://github.com/ocornut/imgui/archive/refs/tags/v1.92.9b.tar.gz
+	URL_HASH SHA256=21d8a0a565e85dce943e375db00812c2f3f0ab21f3f0f7964e364a63422d7f99
+	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+	SOURCE_SUBDIR none)
 FetchContent_MakeAvailable(minhook imgui)  # sets minhook_SOURCE_DIR, imgui_SOURCE_DIR
 
 # NVIDIA DLSS runtime for the upscaler ([Upscaler] Mode=1). render/dlss.cpp loads it at run time
@@ -37,39 +37,39 @@ FetchContent_MakeAvailable(minhook imgui)  # sets minhook_SOURCE_DIR, imgui_SOUR
 # in a release archive. Pinned to a commit of github.com/NVIDIA/DLSS and checked by SHA256 (DLSS 310.9.16).
 option(NIERVR_DLSS "Download nvngx_dlss.dll (NVIDIA DLSS) and install it next to the mod" ON)
 if(NIERVR_DLSS)
-    set(DLSS_COMMIT 9981c6350dc58c0ce21f024fd65e31e851c31689)
-    set(DLSS_DIR ${FETCHCONTENT_BASE_DIR}/dlss)
-    file(DOWNLOAD https://github.com/NVIDIA/DLSS/raw/${DLSS_COMMIT}/lib/Windows_x86_64/rel/nvngx_dlss.dll
-        ${DLSS_DIR}/nvngx_dlss.dll
-        EXPECTED_HASH SHA256=d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e)
-    file(DOWNLOAD https://raw.githubusercontent.com/NVIDIA/DLSS/${DLSS_COMMIT}/LICENSE.txt
-        ${DLSS_DIR}/LICENSE.txt
-        EXPECTED_HASH SHA256=d4216e39ebef5f9b50a6712ebb37beeb5379862a67733a9999c651f21592aaf0)
+	set(DLSS_COMMIT 9981c6350dc58c0ce21f024fd65e31e851c31689)
+	set(DLSS_DIR ${FETCHCONTENT_BASE_DIR}/dlss)
+	file(DOWNLOAD https://github.com/NVIDIA/DLSS/raw/${DLSS_COMMIT}/lib/Windows_x86_64/rel/nvngx_dlss.dll
+		${DLSS_DIR}/nvngx_dlss.dll
+		EXPECTED_HASH SHA256=d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e)
+	file(DOWNLOAD https://raw.githubusercontent.com/NVIDIA/DLSS/${DLSS_COMMIT}/LICENSE.txt
+		${DLSS_DIR}/LICENSE.txt
+		EXPECTED_HASH SHA256=d4216e39ebef5f9b50a6712ebb37beeb5379862a67733a9999c651f21592aaf0)
 endif()
 
 file(GLOB_RECURSE NIERVR_SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.S)
 list(FILTER NIERVR_SOURCES EXCLUDE REGEX "/src/gen/")  # thunks.S is listed below
 add_library(nier_vr SHARED
-    ${NIERVR_SOURCES}
-    src/gen/thunks.S
-    ${minhook_SOURCE_DIR}/src/buffer.c
-    ${minhook_SOURCE_DIR}/src/hook.c
-    ${minhook_SOURCE_DIR}/src/trampoline.c
-    ${minhook_SOURCE_DIR}/src/hde/hde64.c
-    ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
-    src/gen/exports.def)  # the export table: every d3d11.dll export, forwarded
+	${NIERVR_SOURCES}
+	src/gen/thunks.S
+	${minhook_SOURCE_DIR}/src/buffer.c
+	${minhook_SOURCE_DIR}/src/hook.c
+	${minhook_SOURCE_DIR}/src/trampoline.c
+	${minhook_SOURCE_DIR}/src/hde/hde64.c
+	${imgui_SOURCE_DIR}/imgui.cpp
+	${imgui_SOURCE_DIR}/imgui_draw.cpp
+	${imgui_SOURCE_DIR}/imgui_tables.cpp
+	${imgui_SOURCE_DIR}/imgui_widgets.cpp
+	${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
+	src/gen/exports.def)  # the export table: every d3d11.dll export, forwarded
 
 set_target_properties(nier_vr PROPERTIES
-    OUTPUT_NAME d3d11
-    PREFIX ""                                      # d3d11.dll, not libd3d11.dll
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}   # build/d3d11.dll
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF)
+	OUTPUT_NAME d3d11
+	PREFIX ""                                      # d3d11.dll, not libd3d11.dll
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}   # build/d3d11.dll
+	CXX_STANDARD 17
+	CXX_STANDARD_REQUIRED ON
+	CXX_EXTENSIONS OFF)
 
 target_include_directories(nier_vr PRIVATE src ${minhook_SOURCE_DIR}/include ${imgui_SOURCE_DIR})
 # ImGui only draws the overlay: no clipboard/IME/shell helpers (they'd import SHELL32 and more)
@@ -77,40 +77,40 @@ target_compile_definitions(nier_vr PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS IMGU
 # -fno-threadsafe-statics: a guarded function-local static pulls all of libstdc++'s exception
 # handling into the DLL (see build/d3d11.map); ImGui runs on one thread only.
 target_compile_options(nier_vr PRIVATE
-    -O2 -msse4.1 -fno-math-errno -fno-asynchronous-unwind-tables -fno-stack-protector
-    $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti -fno-threadsafe-statics>)
+	-O2 -msse4.1 -fno-math-errno -fno-asynchronous-unwind-tables -fno-stack-protector
+	$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti -fno-threadsafe-statics>)
 # The C runtime is Windows' own (UCRT, part of Windows 10+); -static builds libgcc, libstdc++ and
 # winpthread into the DLL, so nothing has to be shipped next to it.
 target_link_options(nier_vr PRIVATE -static -Wl,--enable-stdcall-fixup -s
-    -Wl,-Map=${CMAKE_BINARY_DIR}/d3d11.map)  # what the linker pulled in, and from which library
+	-Wl,-Map=${CMAKE_BINARY_DIR}/d3d11.map)  # what the linker pulled in, and from which library
 target_link_libraries(nier_vr PRIVATE kernel32 user32 advapi32)  # advapi32: also the DLSS driver path (registry)
 
 # install target
 install(TARGETS nier_vr RUNTIME DESTINATION .)   # just d3d11.dll, not the import library
 if(NIERVR_DLSS)
-    install(FILES ${DLSS_DIR}/nvngx_dlss.dll DESTINATION .)
-    install(FILES ${DLSS_DIR}/LICENSE.txt DESTINATION . RENAME nvngx_dlss_LICENSE.txt)
+	install(FILES ${DLSS_DIR}/nvngx_dlss.dll DESTINATION .)
+	install(FILES ${DLSS_DIR}/LICENSE.txt DESTINATION . RENAME nvngx_dlss_LICENSE.txt)
 endif()
 
 # launch target will isntall
 add_custom_target(launch
-    COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR}
-    COMMAND cmd /c start steam://rungameid/524220
-    VERBATIM)
+	COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR}
+	COMMAND cmd /c start steam://rungameid/524220
+	VERBATIM)
 add_dependencies(launch nier_vr)
 
 if(NIERVR_TESTS)
-    enable_testing()
-    file(GLOB NIERVR_TESTS_SOURCES CONFIGURE_DEPENDS tests/test_*.cpp)
-    foreach(test_src ${NIERVR_TESTS_SOURCES})
-        get_filename_component(test_name ${test_src} NAME_WE)
-        add_executable(${test_name} ${test_src})
-        target_include_directories(${test_name} PRIVATE src)
-        target_compile_options(${test_name} PRIVATE -msse4.1)
-        set_target_properties(${test_name} PROPERTIES
-            CXX_STANDARD 17
-            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
-        add_test(NAME ${test_name} COMMAND ${test_name})
-        set_tests_properties(${test_name} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-    endforeach()
+	enable_testing()
+	file(GLOB NIERVR_TESTS_SOURCES CONFIGURE_DEPENDS tests/test_*.cpp)
+	foreach(test_src ${NIERVR_TESTS_SOURCES})
+		get_filename_component(test_name ${test_src} NAME_WE)
+		add_executable(${test_name} ${test_src})
+		target_include_directories(${test_name} PRIVATE src)
+		target_compile_options(${test_name} PRIVATE -msse4.1)
+		set_target_properties(${test_name} PROPERTIES
+			CXX_STANDARD 17
+			RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+		add_test(NAME ${test_name} COMMAND ${test_name})
+		set_tests_properties(${test_name} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+	endforeach()
 endif()

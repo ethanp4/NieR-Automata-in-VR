@@ -27,114 +27,114 @@ uint32_t g_keptLogged[16];
 int g_keptCount;
 
 bool LowHealthShader(uint64_t hash) {
-    for (uint32_t h : kLowHealthShaders)
-        if ((uint32_t)hash == h) return true;
-    return false;
+	for (uint32_t h : kLowHealthShaders)
+		if ((uint32_t)hash == h) return true;
+	return false;
 }
 
 // Which effect shaders were skipped, for the minute report (bytecode hash, count).
 struct Skipped {
-    uint64_t hash;
-    unsigned count;
-    UINT slot;
+	uint64_t hash;
+	unsigned count;
+	UINT slot;
 };
 Skipped g_skipped[8];
 
 void NoteSkip(uint64_t hash, UINT slot) {
-    for (auto& e : g_skipped)
-        if (e.hash == hash && e.count) {
-            e.count++;
-            return;
-        }
-    for (auto& e : g_skipped)
-        if (!e.count) {
-            e = {hash, 1, slot};
-            return;
-        }
+	for (auto& e : g_skipped)
+		if (e.hash == hash && e.count) {
+			e.count++;
+			return;
+		}
+	for (auto& e : g_skipped)
+		if (!e.count) {
+			e = {hash, 1, slot};
+			return;
+		}
 }
 
 ID3D11Resource* BoundResource(ID3D11DeviceContext* c, UINT slot) {
-    ID3D11ShaderResourceView* v = nullptr;
-    c->PSGetShaderResources(slot, 1, &v);
-    if (!v) return nullptr;
-    ID3D11Resource* r = nullptr;
-    v->GetResource(&r);
-    v->Release();
-    if (r) r->Release();  // still bound: stays alive for this draw
-    return r;
+	ID3D11ShaderResourceView* v = nullptr;
+	c->PSGetShaderResources(slot, 1, &v);
+	if (!v) return nullptr;
+	ID3D11Resource* r = nullptr;
+	v->GetResource(&r);
+	v->Release();
+	if (r) r->Release();  // still bound: stays alive for this draw
+	return r;
 }
 
 bool Tex2D(ID3D11Resource* r, D3D11_TEXTURE2D_DESC* d) {
-    if (!r) return false;
-    D3D11_RESOURCE_DIMENSION dim;
-    r->GetType(&dim);
-    if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D) return false;
-    ((ID3D11Texture2D*)r)->GetDesc(d);
-    return true;
+	if (!r) return false;
+	D3D11_RESOURCE_DIMENSION dim;
+	r->GetType(&dim);
+	if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D) return false;
+	((ID3D11Texture2D*)r)->GetDesc(d);
+	return true;
 }
 }  // namespace
 
 void ScreenFxBeginFrame() {
-    g_refractionCopy = nullptr;
-    g_sawEffect = false;
+	g_refractionCopy = nullptr;
+	g_sawEffect = false;
 }
 
 bool ScreenFxSkipEffectDraw(ID3D11DeviceContext* c, uint32_t sampled, uint64_t shaderHash) {
-    if (!g_sawEffect) {
-        g_sawEffect = true;
-        g_refractionCopy = BoundResource(c, 10);
-    }
-    if (g_cfg.lowHealthFx || !StereoActive() || !sampled) return false;
-    ID3D11RenderTargetView* rtv = nullptr;
-    c->OMGetRenderTargets(1, &rtv, nullptr);
-    if (!rtv) return false;
-    ID3D11Resource* rt = nullptr;
-    rtv->GetResource(&rt);
-    rtv->Release();
-    if (rt) rt->Release();
-    D3D11_TEXTURE2D_DESC td;
-    if (!Tex2D(rt, &td)) return false;
-    bool skip = false;
-    UINT hit = 0;
-    for (UINT slot = 0; slot < 32 && !skip; slot++) {
-        if (!(sampled >> slot & 1)) continue;
-        ID3D11Resource* r = BoundResource(c, slot);
-        D3D11_TEXTURE2D_DESC d;
-        if (!r || r == rt || r == g_refractionCopy || !Tex2D(r, &d)) continue;
-        skip = d.Width == td.Width && d.Height == td.Height && d.Format == td.Format;
-        hit = slot;
-    }
-    if (!skip) return false;
-    if (!LowHealthShader(shaderHash)) {
-        // reads a scene copy too, but isn't the low-health effect (e.g. Pod shots): kept, logged once
-        bool seen = false;
-        for (int i = 0; i < g_keptCount; i++) seen |= g_keptLogged[i] == (uint32_t)shaderHash;
-        if (!seen && g_keptCount < 16) {
-            g_keptLogged[g_keptCount++] = (uint32_t)shaderHash;
-            Log("screen filter: effect %08x reads a scene copy at t%u but isn't a known low-health shader: kept",
-                (unsigned)(uint32_t)shaderHash, hit);
-        }
-        return false;
-    }
-    g_filterSkips++;
-    NoteSkip(shaderHash, hit);
-    if (!g_filterLogged) {
-        g_filterLogged = true;
-        g_filterReportTick = GetTickCount();
-        Log("screen filter effect (redraws a copy of the scene: low-health grey, blur, ripples) "
-            "removed while in stereo (LowHealthEffect=0)");
-    } else if (GetTickCount() - g_filterReportTick > 60000) {
-        char list[300];
-        size_t at = 0;
-        list[0] = 0;
-        for (auto& e : g_skipped)
-            if (e.count && at + 40 < sizeof(list))
-                at += snprintf(list + at, sizeof(list) - at, " %08x/t%u x%u", (unsigned)(e.hash & 0xffffffff),
-                                   e.slot, e.count);
-        Log("screen filter: %u draws removed in the last minute (shader/slot/count:%s)", g_filterSkips, list);
-        for (auto& e : g_skipped) e = {};
-        g_filterSkips = 0;
-        g_filterReportTick = GetTickCount();
-    }
-    return true;
+	if (!g_sawEffect) {
+		g_sawEffect = true;
+		g_refractionCopy = BoundResource(c, 10);
+	}
+	if (g_cfg.lowHealthFx || !StereoActive() || !sampled) return false;
+	ID3D11RenderTargetView* rtv = nullptr;
+	c->OMGetRenderTargets(1, &rtv, nullptr);
+	if (!rtv) return false;
+	ID3D11Resource* rt = nullptr;
+	rtv->GetResource(&rt);
+	rtv->Release();
+	if (rt) rt->Release();
+	D3D11_TEXTURE2D_DESC td;
+	if (!Tex2D(rt, &td)) return false;
+	bool skip = false;
+	UINT hit = 0;
+	for (UINT slot = 0; slot < 32 && !skip; slot++) {
+		if (!(sampled >> slot & 1)) continue;
+		ID3D11Resource* r = BoundResource(c, slot);
+		D3D11_TEXTURE2D_DESC d;
+		if (!r || r == rt || r == g_refractionCopy || !Tex2D(r, &d)) continue;
+		skip = d.Width == td.Width && d.Height == td.Height && d.Format == td.Format;
+		hit = slot;
+	}
+	if (!skip) return false;
+	if (!LowHealthShader(shaderHash)) {
+		// reads a scene copy too, but isn't the low-health effect (e.g. Pod shots): kept, logged once
+		bool seen = false;
+		for (int i = 0; i < g_keptCount; i++) seen |= g_keptLogged[i] == (uint32_t)shaderHash;
+		if (!seen && g_keptCount < 16) {
+			g_keptLogged[g_keptCount++] = (uint32_t)shaderHash;
+			Log("screen filter: effect %08x reads a scene copy at t%u but isn't a known low-health shader: kept",
+				(unsigned)(uint32_t)shaderHash, hit);
+		}
+		return false;
+	}
+	g_filterSkips++;
+	NoteSkip(shaderHash, hit);
+	if (!g_filterLogged) {
+		g_filterLogged = true;
+		g_filterReportTick = GetTickCount();
+		Log("screen filter effect (redraws a copy of the scene: low-health grey, blur, ripples) "
+			"removed while in stereo (LowHealthEffect=0)");
+	} else if (GetTickCount() - g_filterReportTick > 60000) {
+		char list[300];
+		size_t at = 0;
+		list[0] = 0;
+		for (auto& e : g_skipped)
+			if (e.count && at + 40 < sizeof(list))
+				at += snprintf(list + at, sizeof(list) - at, " %08x/t%u x%u", (unsigned)(e.hash & 0xffffffff),
+								   e.slot, e.count);
+		Log("screen filter: %u draws removed in the last minute (shader/slot/count:%s)", g_filterSkips, list);
+		for (auto& e : g_skipped) e = {};
+		g_filterSkips = 0;
+		g_filterReportTick = GetTickCount();
+	}
+	return true;
 }

@@ -26,8 +26,8 @@ void Log(const char* fmt, ...) __attribute__((format(gnu_printf, 1, 2)));  // GC
 // A wide string (path, GPU name) as UTF-8, for "%s": Log("dir: %s", Utf8(path).s). snprintf's own
 // %ls would convert with the C locale and fail on non-ASCII names.
 struct Utf8 {
-    char s[1024];
-    explicit Utf8(const wchar_t* w);
+	char s[1024];
+	explicit Utf8(const wchar_t* w);
 };
 // Logs only when [Debug] Verbose=1
 void LogV(const char* fmt, ...) __attribute__((format(gnu_printf, 1, 2)));
@@ -36,79 +36,79 @@ void LogV(const char* fmt, ...) __attribute__((format(gnu_printf, 1, 2)));
 // Configuration (config.cpp)  - NieRVR.ini next to the DLL
 // ---------------------------------------------------------------------------------------------
 struct Config {
-    // [Loader]
-    wchar_t chainLoad[MAX_PATH];  // optional DLL to load instead of System32\d3d11.dll
-    // [VR]
-    int enabled;
-    // [OpenXR]
-    wchar_t loaderPath[MAX_PATH];  // optional openxr_loader.dll; empty = auto
-    // [Screen]
-    float distance;      // metres in front of the head
-    float width;         // metres
-    float heightOffset;  // metres, relative to eye height
-    int statsOverlay;    // live stats in the corner of your view (ui/overlay.cpp)
-    float overlayX, overlayY;  // its position: metres right / up of straight ahead (at 0.8 m; scaled with the distance)
-    float overlayDistance;     // metres in front of your eyes (it keeps its size in your view)
-    float menuDistance;        // the settings menu: metres in front of you when it opens (keeps its size in your view)
-    // [Keys]  (Windows virtual-key codes)
-    int keyRecenter, keySmaller, keyLarger, keyCloser, keyFarther;
-    int keyCapture;  // [Debug] CaptureKey: camera probe frame capture
-    int probe;       // [Debug] Probe: install the camera probe hooks
-    // [Stereo]
-    int stereo;          // start in stereo mode
-    float worldScale;    // game units per metre of head movement / IPD
-    int levelCamera;     // remove the game camera's pitch/roll
-    float steepFrom, steepFull;  // camera pitch (deg) where levelling starts to fade out / is fully off
-    float fovScale;      // multiplies the rendered frustum (>1 = margin for reprojection)
-    int keyStereo;       // [Keys] ToggleStereo
-    int keyMenu;         // [Keys] Menu: opens/closes the settings menu (0 = no key)
-    float verticalFill;  // 1 = render the headset's full vertical FOV; 0 = fit width (sharper, crops top/bottom)
-    int uiSplit;         // HUD/menus on a separate flat layer
-    int anamorphic;      // fill each eye's own FOV shape (non-square pixels) instead of a 16:9 cover
-    float cameraDolly;   // metres to move the camera along its line of sight (towards the character)
-    // [Render]
-    int extraResolutions;
-    int ambientOcclusion;
-    int shadows;           // 0 = NieR's screen-space shadow mask cleared to "lit" (diagnostic)
-    int vignette;
-    int lowHealthFx;       // 0 = low-health grey/distortion (screen filter effects) removed in stereo
-    int viewFix;
-    int distortionFx;      // 0 = remove the screen-copy distortion/glitch effects (hits, low health) in stereo
-    float cullFov;         // vertical field of view (deg) the game culls with during stereo; 0 = game default
-    int lodFix;            // 1 = model detail keeps the game's own field of view while culling is widened
-    float cullFovAsked;    // CullingFov from the ini when above the 170 maximum (for the log), else 0
-    unsigned fovEasingCaller;  // exe offset of the camera-easing fov read, once found (0 = unknown)
-    unsigned fovRealCallers[8];  // exe offsets of fov getter callers that always get the real fov
-    int fovRealCount;
-    int headCulling;       // turn the culling frustum the way the headset looks (0.3.22)
-    float headCullMargin;  // degrees added around the headset's view for the head-culling frustum (0.3.24)
-    int bothEyes;          // render both eyes every frame (record + replay, 0.3.26)
-    int reuseShadows;      // BothEyes: the replay reuses the left eye's shadow map (0.3.29)
-    int depthReproject;    // alternate eyes: move the older eye's image to the new camera with its depth (0.3.30)
-    int reprojectEdges;    // fill the gaps it opens with background instead of stretching edges (0.4.1)
-    int posePrediction;    // [Stereo] PosePrediction: predict the game's head pose for when its frame is shown (0.4.4)
-    int lateWarp;          // [Stereo] LateWarp: submit the headset's pose/fov, eye images re-aimed to it (0.5.1)
-    int maxFrameLatency;   // [Render] MaxFrameLatency: frames the game's CPU may queue ahead of the GPU; 0 = game's (0.4.5)
-    int giVolumes;         // [Render] GIVolumes: GI volumes the game's GI pass reads (nearest first); >= 128 = all (0.4.2)
-    // [Upscaler] (render/upscale.cpp)
-    int upscaler;          // 0 off, 1 DLSS
-    float upscaleOutput;   // the upscaled image's size: % of the detail the headset recommends
-    int dlssModel;         // 0 CNN (preset E, fast), 1 transformer (preset K)
-    int upscaleJitterFlip; // [Debug] UpscaleJitterFlip: bit 0 flips the jitter handed to DLSS across, bit 1 up-down
-    // [Input]
-    int vrControllers;     // VR controllers act as an XInput gamepad (0.4.0)
-    int vrRumble;          // the game's rumble goes to the VR controllers
-    int motionControls;    // swing a hand to attack (vrinput.cpp)
-    float swingSpeed;      // m/s a hand must move (relative to the head) to count as a swing
-    int ignoreUpSwings;    // no swings from a hand moving mostly upward or at the headset
-    int eyeSync;           // turn the older eye's image by the game camera's turn since (0.3.25)
-    int wideProjection;    // 1 = the camera's own projection gets the wide fov too (0.3.22; Pod aims up)
-    int iniAdded;          // settings added to an older ini at startup
-    int flatBelowDraws;    // frames with fewer draws than this render mono (title screen); 0 = off
-    int topDownFlat;       // 1 = steep top-down views are shown on the flat screen
-    float topDownFrom, topDownUntil;  // TopDownFlat: camera pitch (deg) to go flat / back to stereo
-    // [Debug]
-    int verbose;
+	// [Loader]
+	wchar_t chainLoad[MAX_PATH];  // optional DLL to load instead of System32\d3d11.dll
+	// [VR]
+	int enabled;
+	// [OpenXR]
+	wchar_t loaderPath[MAX_PATH];  // optional openxr_loader.dll; empty = auto
+	// [Screen]
+	float distance;      // metres in front of the head
+	float width;         // metres
+	float heightOffset;  // metres, relative to eye height
+	int statsOverlay;    // live stats in the corner of your view (ui/overlay.cpp)
+	float overlayX, overlayY;  // its position: metres right / up of straight ahead (at 0.8 m; scaled with the distance)
+	float overlayDistance;     // metres in front of your eyes (it keeps its size in your view)
+	float menuDistance;        // the settings menu: metres in front of you when it opens (keeps its size in your view)
+	// [Keys]  (Windows virtual-key codes)
+	int keyRecenter, keySmaller, keyLarger, keyCloser, keyFarther;
+	int keyCapture;  // [Debug] CaptureKey: camera probe frame capture
+	int probe;       // [Debug] Probe: install the camera probe hooks
+	// [Stereo]
+	int stereo;          // start in stereo mode
+	float worldScale;    // game units per metre of head movement / IPD
+	int levelCamera;     // remove the game camera's pitch/roll
+	float steepFrom, steepFull;  // camera pitch (deg) where levelling starts to fade out / is fully off
+	float fovScale;      // multiplies the rendered frustum (>1 = margin for reprojection)
+	int keyStereo;       // [Keys] ToggleStereo
+	int keyMenu;         // [Keys] Menu: opens/closes the settings menu (0 = no key)
+	float verticalFill;  // 1 = render the headset's full vertical FOV; 0 = fit width (sharper, crops top/bottom)
+	int uiSplit;         // HUD/menus on a separate flat layer
+	int anamorphic;      // fill each eye's own FOV shape (non-square pixels) instead of a 16:9 cover
+	float cameraDolly;   // metres to move the camera along its line of sight (towards the character)
+	// [Render]
+	int extraResolutions;
+	int ambientOcclusion;
+	int shadows;           // 0 = NieR's screen-space shadow mask cleared to "lit" (diagnostic)
+	int vignette;
+	int lowHealthFx;       // 0 = low-health grey/distortion (screen filter effects) removed in stereo
+	int viewFix;
+	int distortionFx;      // 0 = remove the screen-copy distortion/glitch effects (hits, low health) in stereo
+	float cullFov;         // vertical field of view (deg) the game culls with during stereo; 0 = game default
+	int lodFix;            // 1 = model detail keeps the game's own field of view while culling is widened
+	float cullFovAsked;    // CullingFov from the ini when above the 170 maximum (for the log), else 0
+	unsigned fovEasingCaller;  // exe offset of the camera-easing fov read, once found (0 = unknown)
+	unsigned fovRealCallers[8];  // exe offsets of fov getter callers that always get the real fov
+	int fovRealCount;
+	int headCulling;       // turn the culling frustum the way the headset looks (0.3.22)
+	float headCullMargin;  // degrees added around the headset's view for the head-culling frustum (0.3.24)
+	int bothEyes;          // render both eyes every frame (record + replay, 0.3.26)
+	int reuseShadows;      // BothEyes: the replay reuses the left eye's shadow map (0.3.29)
+	int depthReproject;    // alternate eyes: move the older eye's image to the new camera with its depth (0.3.30)
+	int reprojectEdges;    // fill the gaps it opens with background instead of stretching edges (0.4.1)
+	int posePrediction;    // [Stereo] PosePrediction: predict the game's head pose for when its frame is shown (0.4.4)
+	int lateWarp;          // [Stereo] LateWarp: submit the headset's pose/fov, eye images re-aimed to it (0.5.1)
+	int maxFrameLatency;   // [Render] MaxFrameLatency: frames the game's CPU may queue ahead of the GPU; 0 = game's (0.4.5)
+	int giVolumes;         // [Render] GIVolumes: GI volumes the game's GI pass reads (nearest first); >= 128 = all (0.4.2)
+	// [Upscaler] (render/upscale.cpp)
+	int upscaler;          // 0 off, 1 DLSS
+	float upscaleOutput;   // the upscaled image's size: % of the detail the headset recommends
+	int dlssModel;         // 0 CNN (preset E, fast), 1 transformer (preset K)
+	int upscaleJitterFlip; // [Debug] UpscaleJitterFlip: bit 0 flips the jitter handed to DLSS across, bit 1 up-down
+	// [Input]
+	int vrControllers;     // VR controllers act as an XInput gamepad (0.4.0)
+	int vrRumble;          // the game's rumble goes to the VR controllers
+	int motionControls;    // swing a hand to attack (vrinput.cpp)
+	float swingSpeed;      // m/s a hand must move (relative to the head) to count as a swing
+	int ignoreUpSwings;    // no swings from a hand moving mostly upward or at the headset
+	int eyeSync;           // turn the older eye's image by the game camera's turn since (0.3.25)
+	int wideProjection;    // 1 = the camera's own projection gets the wide fov too (0.3.22; Pod aims up)
+	int iniAdded;          // settings added to an older ini at startup
+	int flatBelowDraws;    // frames with fewer draws than this render mono (title screen); 0 = off
+	int topDownFlat;       // 1 = steep top-down views are shown on the flat screen
+	float topDownFrom, topDownUntil;  // TopDownFlat: camera pitch (deg) to go flat / back to stereo
+	// [Debug]
+	int verbose;
 };
 extern Config g_cfg;
 extern wchar_t g_modDir[MAX_PATH];  // directory of this DLL, with trailing backslash
@@ -122,7 +122,7 @@ void ConfigSaveEasingCaller(unsigned exeOffset);
 void GpuProfFrameStart(ID3D11DeviceContext* c);
 void GpuProfMark(ID3D11DeviceContext* c, const char* label);
 void GpuProfTargets(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv,
-                    const char* prefix);
+					const char* prefix);
 void GpuProfCompute(ID3D11DeviceContext* c, const char* prefix, int kind);
 void GpuProfDraw();
 void GpuProfFrameEnd(ID3D11DeviceContext* c);
@@ -144,19 +144,19 @@ void VrInputSync(bool focused, bool foreground);
 void VrInputProfileChanged();  // interaction profile changed event
 // ui/overlay.cpp - the stats overlay, drawn with Dear ImGui on the VR thread ([Screen] StatsOverlay)
 struct OverlayStats {
-    const char* mode;              // "alternate eyes", "flat screen", ...
-    float headsetFps;
-    float gameFps[3];              // game images per second: left, right, flat
-    unsigned gameW, gameH;         // the game's render size
-    unsigned sceneW, sceneH;       // the 3D image's size in the headset (larger when upscaling)
-    const char* upscaler;          // "DLSS 310.9.16 Quality" or why not; "" = off
-    float sharpX, sharpY;          // % of the headset's recommended detail, across / up-down; 0 = unknown
-    float poseDelayMs, predictMs;  // poseDelayMs < 0 = unknown
-    const float* frameMs;          // headset frame times, a ring buffer for the graph
-    int frameCount, frameOffset;   // its size, and the index of the oldest entry
+	const char* mode;              // "alternate eyes", "flat screen", ...
+	float headsetFps;
+	float gameFps[3];              // game images per second: left, right, flat
+	unsigned gameW, gameH;         // the game's render size
+	unsigned sceneW, sceneH;       // the 3D image's size in the headset (larger when upscaling)
+	const char* upscaler;          // "DLSS 310.9.16 Quality" or why not; "" = off
+	float sharpX, sharpY;          // % of the headset's recommended detail, across / up-down; 0 = unknown
+	float poseDelayMs, predictMs;  // poseDelayMs < 0 = unknown
+	const float* frameMs;          // headset frame times, a ring buffer for the graph
+	int frameCount, frameOffset;   // its size, and the index of the oldest entry
 };
 bool OverlayRender(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, int w, int h,
-                   const OverlayStats& s);
+				   const OverlayStats& s);
 bool MenuRender(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, int w, int h);
 
 // ---------------------------------------------------------------------------------------------
@@ -181,10 +181,10 @@ bool HookFunction(void* target, void* detour, void** orig, const char* name);  /
 // Arguments of a draw call, for replaying it (kind: 0 Draw, 1 DrawIndexed, 2 DrawInstanced,
 // 3 DrawIndexedInstanced; fields in the API's parameter order).
 struct DrawArgs {
-    int kind;
-    UINT a, b;
-    INT c;
-    UINT d, e;
+	int kind;
+	UINT a, b;
+	INT c;
+	UINT d, e;
 };
 
 // UI split (uisplit.cpp): scene-only copy of each frame, so HUD/menus can go on a flat layer.
@@ -204,7 +204,7 @@ void ScreenFxBeginFrame();  // screenfx.cpp: low-health grey / distortion
 bool ScreenFxSkipEffectDraw(ID3D11DeviceContext* c, uint32_t sampled, uint64_t shaderHash);
 void ProbeReplayDraw(ID3D11DeviceContext* c, const DrawArgs& d);
 void ProbeSetRenderTargets(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* rtvs,
-                           ID3D11DepthStencilView* dsv);
+						   ID3D11DepthStencilView* dsv);
 
 // Camera probe (probe.cpp): records one frame of D3D11 activity on a hotkey, for analysis.
 void ProbeInstall(ID3D11Device* gameDevice);
@@ -298,31 +298,31 @@ void StateRestoreTemp(ID3D11DeviceContext* c);   // the replay found and patched
 // Stereo (stereo.cpp game side, xr_main.cpp VR side)
 // ---------------------------------------------------------------------------------------------
 struct StereoShared {  // written by the VR thread, read by the game thread
-    SRWLOCK lock;
-    bool enabled;      // stereo toggled on (hotkey)
-    bool valid;        // eye poses below are current
-    float eyePos[2][3], eyeRot[2][4];  // LOCAL space
-    float eyeTan[2][4];                // tan of angleLeft, angleRight, angleUp, angleDown
-    bool menuMode;                     // the UI covers the screen: render flat (mono)
-    bool refValid;                     // recentred reference (yaw-only head pose)
-    float refPos[3], refRot[4];
-    bool singleEye;                    // diagnostic: render only the left eye, every frame (Ctrl+F12)
-    long long poseBase;                // VR frame display time (XrTime) the poses were predicted from;
-                                       // they are predicted for poseBase + the measured lag (0.4.4)
+	SRWLOCK lock;
+	bool enabled;      // stereo toggled on (hotkey)
+	bool valid;        // eye poses below are current
+	float eyePos[2][3], eyeRot[2][4];  // LOCAL space
+	float eyeTan[2][4];                // tan of angleLeft, angleRight, angleUp, angleDown
+	bool menuMode;                     // the UI covers the screen: render flat (mono)
+	bool refValid;                     // recentred reference (yaw-only head pose)
+	float refPos[3], refRot[4];
+	bool singleEye;                    // diagnostic: render only the left eye, every frame (Ctrl+F12)
+	long long poseBase;                // VR frame display time (XrTime) the poses were predicted from;
+									   // they are predicted for poseBase + the measured lag (0.4.4)
 };
 extern StereoShared g_stereo;
 
 struct FrameTag {  // what a captured game frame shows
-    int eye;       // 0 left, 1 right, -1 mono
-    bool patched;  // the camera was rewritten for that eye
-    bool hasScene; // a scene-only (no UI) image was captured too
-    float pos[3], rot[4];  // eye pose (LOCAL) it was rendered from
-    float tanHalfW, tanHalfH;
-    unsigned pairId;       // BothEyes: left and right image of one game frame share it (0 = single)
-    bool noUI;             // drawn without UI (the replayed second eye): don't key the HUD from it
-    bool hasWorld;         // worldRot is valid (the scene camera was patched)
-    float worldRot[4];     // game-world orientation of LOCAL space for this frame (eye sync, 0.3.25)
-    long long poseBase;    // StereoShared::poseBase of the pose it was rendered with (0 = unknown)
+	int eye;       // 0 left, 1 right, -1 mono
+	bool patched;  // the camera was rewritten for that eye
+	bool hasScene; // a scene-only (no UI) image was captured too
+	float pos[3], rot[4];  // eye pose (LOCAL) it was rendered from
+	float tanHalfW, tanHalfH;
+	unsigned pairId;       // BothEyes: left and right image of one game frame share it (0 = single)
+	bool noUI;             // drawn without UI (the replayed second eye): don't key the HUD from it
+	bool hasWorld;         // worldRot is valid (the scene camera was patched)
+	float worldRot[4];     // game-world orientation of LOCAL space for this frame (eye sync, 0.3.25)
+	long long poseBase;    // StereoShared::poseBase of the pose it was rendered with (0 = unknown)
 };
 
 void StereoSetAspect(float aspect);
@@ -344,36 +344,36 @@ void StereoMemoryScan();
 // Capture ring slots (8 since 0.3.27: BothEyes pushes two images per game frame).
 const int kRingSize = 8;
 struct FrameShare {
-    CRITICAL_SECTION cs;
-    // request: written by the game thread (under cs)
-    LONG reqGen;  // bumps whenever the request changes
-    UINT reqW, reqH;
-    UINT reqSceneW, reqSceneH;  // the scene-only images: larger than the frame when upscaling
-    bool reqKey;                // upscaling: also the scene images before upscaling (ringKey)
-    // written by the VR thread: the game-image size with the detail the headset recommends (0 = not
-    // known yet): the upscaler's output follows it
-    UINT nativeW, nativeH;
-    DXGI_FORMAT reqFmt;
-    // reply: written by the VR thread (under cs): a ring of shared textures
-    HANDLE ring[kRingSize];       // legacy shared handles: full frames
-    HANDLE ringScene[kRingSize];  // and scene-only (no UI) frames
-    HANDLE ringKey[kRingSize];    // upscaling: the scene-only frames before upscaling (the HUD is cut out
-                                  // against these, which match the full frames pixel for pixel); else null
-    LONG gen;        // bumps whenever a new ring is published
-    LONG forReqGen;  // the request this ring answers
-    UINT w, h;
-    UINT sceneW, sceneH;
-    DXGI_FORMAT fmt;
-    // completed frames, published by the game thread (under cs) once the GPU finished the copy
-    struct Published {
-        LONG seq;  // 0 = none yet
-        int slot;  // ring index
-        FrameTag tag;
-    } latest[3];   // [0] left eye, [1] right eye, [2] mono
-    LONG seq;      // last sequence number handed out
-    // GPU that runs the game
-    LUID gameLuid;
-    bool gameLuidValid;
+	CRITICAL_SECTION cs;
+	// request: written by the game thread (under cs)
+	LONG reqGen;  // bumps whenever the request changes
+	UINT reqW, reqH;
+	UINT reqSceneW, reqSceneH;  // the scene-only images: larger than the frame when upscaling
+	bool reqKey;                // upscaling: also the scene images before upscaling (ringKey)
+	// written by the VR thread: the game-image size with the detail the headset recommends (0 = not
+	// known yet): the upscaler's output follows it
+	UINT nativeW, nativeH;
+	DXGI_FORMAT reqFmt;
+	// reply: written by the VR thread (under cs): a ring of shared textures
+	HANDLE ring[kRingSize];       // legacy shared handles: full frames
+	HANDLE ringScene[kRingSize];  // and scene-only (no UI) frames
+	HANDLE ringKey[kRingSize];    // upscaling: the scene-only frames before upscaling (the HUD is cut out
+								  // against these, which match the full frames pixel for pixel); else null
+	LONG gen;        // bumps whenever a new ring is published
+	LONG forReqGen;  // the request this ring answers
+	UINT w, h;
+	UINT sceneW, sceneH;
+	DXGI_FORMAT fmt;
+	// completed frames, published by the game thread (under cs) once the GPU finished the copy
+	struct Published {
+		LONG seq;  // 0 = none yet
+		int slot;  // ring index
+		FrameTag tag;
+	} latest[3];   // [0] left eye, [1] right eye, [2] mono
+	LONG seq;      // last sequence number handed out
+	// GPU that runs the game
+	LUID gameLuid;
+	bool gameLuidValid;
 };
 extern FrameShare g_share;
 
