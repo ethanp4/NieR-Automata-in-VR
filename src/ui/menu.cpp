@@ -20,7 +20,7 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 enum Type { T_BOOL, T_INT, T_FLOAT, T_ACTION, T_TEXT, T_CHOICE };  // T_CHOICE: fmt holds the names, "Off|On"
 enum Flags { F_RESTART = 1, F_LOG = 2, F_RECENTER = 4, F_ALTERNATE = 8, F_BOTHEYES = 16 };  // ALTERNATE/BOTHEYES: only used in that mode
-enum Action { A_RECENTER = 1, A_BOTHEYES_STATS };
+enum Action { A_RECENTER = 1, A_BOTHEYES_STATS, A_DLSS_FILE };
 struct Item {
 	const char* label;
 	Type type;
@@ -80,6 +80,11 @@ Item kRender[] = {
 	 "As in other games, the game's resolution picks the mode: lower it for more speed (Quality, Balanced, "
 	 "Performance). The Info page shows which resolution gives which mode. Needs an NVIDIA RTX "
 	 "card and nvngx_dlss.dll in the game's folder."},
+	{"DLSS file", T_ACTION, (void*)A_DLSS_FILE, 0, 0, nullptr, 0,
+	 "NVIDIA's DLSS isn't included with the mod. Download gets nvngx_dlss.dll (59 MB) from NVIDIA's GitHub "
+	 "(github.com/NVIDIA/DLSS) into the game's folder, with NVIDIA's licence next to it (nvngx_dlss_LICENSE.txt), "
+	 "which you accept by downloading. DLSS starts as soon as it is there. Press again to cancel a download; once "
+	 "installed, press twice to delete it."},
 	{"Upscaler output", T_FLOAT, &g_cfg.upscaleOutput, 50, 150, "%.0f%% of the headset's detail", 0,
 	 "Size of the image DLSS makes, compared with what your headset recommends (100% = its own). It stays put while "
 	 "you change the game's resolution. Less is a little faster, more is sharper (supersampling)."},
@@ -270,6 +275,11 @@ void Saved(const Item& it) {
 
 // Settings that do nothing in the current eye mode say so.
 const char* Tag(const Item& it) {
+	if (it.type == T_ACTION && (intptr_t)it.ptr == A_DLSS_FILE) {  // why the last download failed
+		static DlssFileState f;
+		DlssFileGet(&f);
+		return f.state == DF_MISSING && f.text[0] ? f.text : nullptr;
+	}
 	if ((it.flags & F_ALTERNATE) && g_cfg.bothEyes) return "(not used: both eyes is on)";
 	if ((it.flags & F_BOTHEYES) && !g_cfg.bothEyes) return "(not used: alternate eyes)";
 	if (it.flags & F_RESTART) return "(restart)";
@@ -316,6 +326,55 @@ void ResetToDefault(Item& it) {
 	Saved(it);
 }
 
+// The DLSS file row: one button that shows the state and turns into the progress bar while downloading.
+// Missing: download. Downloading: cancel. Installed: press twice (within 3 s) to delete.
+void DlssFileButton() {
+	static DWORD armedUntil;
+	DlssFileState f;
+	DlssFileGet(&f);
+	bool armed = armedUntil && GetTickCount() - (armedUntil - 3000) < 3000;
+	if (f.state != DF_INSTALLED) armedUntil = 0, armed = false;
+	char label[96];
+	float frac = -1;
+	switch (f.state) {
+		case DF_DOWNLOADING:
+			frac = f.total > 0 ? (float)((double)f.got / (double)f.total) : 0;
+			snprintf(label, sizeof(label), "%.0f / %.0f MB  (%.0f%%)", f.got / 1e6, f.total / 1e6,
+					 (double)(frac * 100));
+			break;
+		case DF_DELETING: snprintf(label, sizeof(label), "Deleting..."); break;
+		case DF_INSTALLED:
+			snprintf(label, sizeof(label), armed ? "Press again to delete" : "%s installed: delete", f.text);
+			break;
+		default: snprintf(label, sizeof(label), f.text[0] ? "Try again (59 MB)" : "Download (59 MB)"); break;
+	}
+	ImVec2 pos = ImGui::GetCursorScreenPos();
+	float w = ImGui::GetContentRegionAvail().x, h = ImGui::GetFrameHeight();
+	bool pressed = ImGui::Button("##dlss", ImVec2(w, h));
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+	if (frac >= 0) {  // the button fills up as the file arrives
+		const float* a = ui::Colors::accent;
+		dl->AddRectFilled(pos, ImVec2(pos.x + w * frac, pos.y + h), ImGui::GetColorU32(ImVec4(a[0], a[1], a[2], 0.55f)),
+						  ImGui::GetStyle().FrameRounding);
+	}
+	ImVec2 ts = ImGui::CalcTextSize(label);
+	dl->AddText(ImVec2(pos.x + (w - ts.x) * 0.5f, pos.y + (h - ts.y) * 0.5f),
+				ImGui::GetColorU32(armed ? Col(ui::Colors::warn) : ImGui::GetStyleColorVec4(ImGuiCol_Text)), label);
+	if (!pressed) return;
+	switch (f.state) {
+		case DF_MISSING: DlssFileDownload(); break;
+		case DF_DOWNLOADING: DlssFileCancel(); break;
+		case DF_INSTALLED:
+			if (armed) {
+				armedUntil = 0;
+				DlssFileDelete();
+			} else {
+				armedUntil = GetTickCount() + 3000;
+			}
+			break;
+	}
+}
+
 // The widget of one setting; true if it changed.
 bool Widget(Item& it) {
 	ImGui::SetNextItemWidth(-FLT_MIN);
@@ -351,6 +410,10 @@ bool Widget(Item& it) {
 			return true;
 		}
 		case T_ACTION:
+			if ((intptr_t)it.ptr == A_DLSS_FILE) {
+				DlssFileButton();
+				return false;
+			}
 			if (ImGui::Button("Do it", ImVec2(-FLT_MIN, 0)) && (intptr_t)it.ptr == A_RECENTER) g_wantRecenter = true;
 			return false;
 		default:

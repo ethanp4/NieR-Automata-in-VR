@@ -31,11 +31,11 @@ FetchContent_Declare(imgui    # Dear ImGui: the stats overlay (ui/overlay.cpp)
 	SOURCE_SUBDIR none)
 FetchContent_MakeAvailable(minhook imgui)  # sets minhook_SOURCE_DIR, imgui_SOURCE_DIR
 
-# NVIDIA DLSS runtime for the upscaler ([Upscaler] Mode=1). render/dlss.cpp loads it at run time
-# through the graphics driver; nothing of NVIDIA's is compiled into the mod. It is downloaded for your
-# own install only: NVIDIA's SDK licence doesn't let it become part of a GPL release, so don't put it
-# in a release archive. Pinned to a commit of github.com/NVIDIA/DLSS and checked by SHA256 (DLSS 310.9.16).
-option(NIERVR_DLSS "Download nvngx_dlss.dll (NVIDIA DLSS) and install it next to the mod" ON)
+# NVIDIA DLSS runtime for the upscaler ([Upscaler] Mode=1). Players download it from the in-headset
+# menu (render/dlss.cpp); nothing of NVIDIA's is compiled into or shipped with the mod (NVIDIA's SDK
+# licence doesn't fit a GPL release). For testing, NIERVR_DLSS=ON downloads it at configure time and
+# installs it next to the mod. Pinned to a commit of github.com/NVIDIA/DLSS and checked by SHA256.
+option(NIERVR_DLSS "Download nvngx_dlss.dll (NVIDIA DLSS) at configure time and install it with the mod" OFF)
 if(NIERVR_DLSS)
 	set(DLSS_COMMIT 9981c6350dc58c0ce21f024fd65e31e851c31689)
 	set(DLSS_DIR ${FETCHCONTENT_BASE_DIR}/dlss)
@@ -83,7 +83,8 @@ target_compile_options(nier_vr PRIVATE
 # winpthread into the DLL, so nothing has to be shipped next to it.
 target_link_options(nier_vr PRIVATE -static -Wl,--enable-stdcall-fixup -s
 	-Wl,-Map=${CMAKE_BINARY_DIR}/d3d11.map)  # what the linker pulled in, and from which library
-target_link_libraries(nier_vr PRIVATE kernel32 user32 advapi32)  # advapi32: also the DLSS driver path (registry)
+# advapi32: also the DLSS driver path (registry); winhttp + bcrypt: the DLSS download (HTTPS, SHA256)
+target_link_libraries(nier_vr PRIVATE kernel32 user32 advapi32 winhttp bcrypt)
 
 # install target
 install(TARGETS nier_vr RUNTIME DESTINATION .)   # just d3d11.dll, not the import library

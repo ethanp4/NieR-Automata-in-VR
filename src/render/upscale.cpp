@@ -371,6 +371,11 @@ bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UIN
 	UINT tw = (UINT)(nw * g_cfg.upscaleOutput / 100), th = (UINT)(nh * g_cfg.upscaleOutput / 100);
 	if (!g_targetW || tw > g_targetW * 1.03f || tw * 1.03f < g_targetW || th > g_targetH * 1.03f || th * 1.03f < g_targetH)
 		g_targetW = tw, g_targetH = th;
+	{
+		ID3D11Device* dev = nullptr;
+		c->GetDevice(&dev);
+		if (dev) DlssPoll(dev), dev->Release();
+	}
 	if (g_cfg.upscaler) {
 		ID3D11Device* dev = nullptr;
 		c->GetDevice(&dev);

@@ -291,6 +291,21 @@ bool UpscaleJitter(int eye, float ndc[2], float pixels[2]);  // stereo.cpp: this
 bool UpscaleWantsDepth();                                    // the scene depth buffer has to be tracked
 void UpscaleRelease();                                       // before a resize
 void UpscaleStatus(char* out, size_t cap);                   // for the stats overlay / Info page
+// dlss.cpp: NVIDIA's DLSS file (nvngx_dlss.dll in the game's folder), downloaded from the menu
+enum { DF_MISSING, DF_DOWNLOADING, DF_INSTALLED, DF_DELETING };
+struct DlssFileState {
+	int state;
+	long long got, total;  // bytes, while downloading
+	char text[96];         // installed: its version; missing: why the last try failed ("" = none)
+};
+void DlssFileGet(DlssFileState* s);
+void DlssFileDownload();  // starts a background download (licence, then the DLL, checked by SHA256)
+void DlssFileCancel();
+void DlssFileDelete();    // removes it (DLSS is shut down first if it runs)
+// download.cpp: HTTPS download to `path` (via path.part), only kept when its SHA256 matches. got/total:
+// progress in bytes (total 0 = unknown); *cancel stops it. err: why it failed.
+bool HttpDownload(const wchar_t* url, const wchar_t* path, const char* sha256, volatile LONG64* got,
+				  volatile LONG64* total, volatile LONG* cancel, char* err, size_t errCap);
 void StateSaveTemp(ID3D11DeviceContext* c);           // replay.cpp: pipeline state around our own drawing
 void StateRestoreTemp(ID3D11DeviceContext* c);   // the replay found and patched the camera
 
