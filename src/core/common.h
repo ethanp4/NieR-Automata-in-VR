@@ -47,6 +47,7 @@ struct Config {
     float width;         // metres
     float heightOffset;  // metres, relative to eye height
     int statsOverlay;    // live stats in the corner of your view (ui/overlay.cpp)
+    float overlayX, overlayY;  // its position: metres right / up of straight ahead, 0.8 m in front
     // [Keys]  (Windows virtual-key codes)
     int keyRecenter, keySmaller, keyLarger, keyCloser, keyFarther;
     int keyCapture;  // [Debug] CaptureKey: camera probe frame capture
@@ -58,6 +59,7 @@ struct Config {
     float steepFrom, steepFull;  // camera pitch (deg) where levelling starts to fade out / is fully off
     float fovScale;      // multiplies the rendered frustum (>1 = margin for reprojection)
     int keyStereo;       // [Keys] ToggleStereo
+    int keyMenu;         // [Keys] Menu: opens/closes the settings menu (0 = no key)
     float verticalFill;  // 1 = render the headset's full vertical FOV; 0 = fit width (sharper, crops top/bottom)
     int uiSplit;         // HUD/menus on a separate flat layer
     int anamorphic;      // fill each eye's own FOV shape (non-square pixels) instead of a 16:9 cover
@@ -142,7 +144,7 @@ struct OverlayStats {
 };
 bool OverlayRender(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, int w, int h,
                    const OverlayStats& s);
-const uint32_t* MenuImage(bool bgra, bool force, int* w, int* h);  // writes back the values the hotkeys change ([Stereo] WorldScale/CameraDolly/TopDownFlat, ...)
+bool MenuRender(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, int w, int h);
 
 // ---------------------------------------------------------------------------------------------
 // Startup (main.cpp)

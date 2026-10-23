@@ -65,14 +65,14 @@ static struct {
         ID3D11RenderTargetView* rtv[kMaxImages];
         DWORD retryAt;
     } quadSwap, eyeSwap[2], hudSwap;
-    // flat panels on their own quad layer: drawn into tex (on the CPU and uploaded, or on the GPU
-    // through rtv), then copied into the swapchain
+    // flat ImGui panels on their own quad layer: drawn into tex through rtv, then copied into the
+    // swapchain
     struct Panel {
         Swap swap;
         ID3D11Texture2D* tex;
-        ID3D11RenderTargetView* rtv;  // GPU-drawn panels only
+        ID3D11RenderTargetView* rtv;
         bool shown;                   // the swapchain has a released image
-    } menu, overlay;  // the settings menu (ui/menu.cpp, CPU), the stats overlay (ui/overlay.cpp, ImGui)
+    } menu, overlay;  // the settings menu (ui/menu.cpp), the stats overlay (ui/overlay.cpp)
     XrPosef menuPose;
 
     // game frames, on our device
@@ -1624,7 +1624,7 @@ static void Frame() {
         overlay.subImage.imageRect.offset = {0, 0};
         overlay.subImage.imageRect.extent = {(int32_t)X.overlay.swap.w, (int32_t)X.overlay.swap.h};
         overlay.pose.orientation = {0, 0, 0, 1};
-        overlay.pose.position = {-0.22f, 0.14f, -0.8f};
+        overlay.pose.position = {g_cfg.overlayX, g_cfg.overlayY, -0.8f};
         overlay.size = {width, width * (float)X.overlay.swap.h / (float)X.overlay.swap.w};
         layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&overlay;
     }
@@ -1663,56 +1663,12 @@ static void Frame() {
     LogStats();
 }
 
-static bool SwapIsBgra() {
-    return X.swapFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || X.swapFormat == DXGI_FORMAT_B8G8R8A8_UNORM;
-}
-
-// Shows a CPU-drawn image on a panel: px is copied into the panel's swapchain when it is not null
-// (changed), otherwise the last image stays. True = the panel has an image and its layer can be shown.
-static bool UploadPanel(Panel& p, const uint32_t* px, int w, int h, const char* what) {
-    if (w <= 0 || h <= 0) return false;
-    if (!EnsureSwap(p.swap, (uint32_t)w, (uint32_t)h, what, true)) return false;
-    if (p.swap.w != (uint32_t)w || p.swap.h != (uint32_t)h) return false;  // runtime limits: not supported
-    if (!p.tex) {
-        D3D11_TEXTURE2D_DESC d = {};
-        d.Width = (UINT)w;
-        d.Height = (UINT)h;
-        d.MipLevels = d.ArraySize = 1;
-        d.Format = (DXGI_FORMAT)X.swapFormat;
-        d.SampleDesc.Count = 1;
-        d.Usage = D3D11_USAGE_DEFAULT;
-        if (FAILED(X.dev->CreateTexture2D(&d, nullptr, &p.tex))) return false;
-        p.shown = false;
-    }
-    if (!px) return p.shown;  // unchanged: the last image stays
-    X.ctx->UpdateSubresource(p.tex, 0, nullptr, px, (UINT)w * 4, 0);
-    uint32_t idx = 0;
-    XrSwapchainImageAcquireInfo ai = {};
-    ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
-    if (!XR_CHECK_FRAME(X.xrAcquireSwapchainImage(p.swap.sc, &ai, &idx))) return p.shown;
-    XrSwapchainImageWaitInfo wi = {};
-    wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
-    wi.timeout = XR_INFINITE_DURATION;
-    if (!XR_CHECK_FRAME(X.xrWaitSwapchainImage(p.swap.sc, &wi))) return p.shown;  // no release without a wait
-    if (idx < p.swap.count) {
-        ID3D11Resource* img = nullptr;
-        p.swap.rtv[idx]->GetResource(&img);
-        if (img) {
-            X.ctx->CopyResource(img, p.tex);
-            img->Release();
-        }
-    }
-    XrSwapchainImageReleaseInfo ri = {};
-    ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
-    XR_CHECK_FRAME(X.xrReleaseSwapchainImage(p.swap.sc, &ri));
-    p.shown = true;
-    return true;
-}
-
-// Shows a GPU-drawn panel (the ImGui stats overlay): drawn into its own render target, then copied
-// into the swapchain. The render target uses the swapchain's format without sRGB, so the copy keeps
-// ImGui's colours as they are (they are already sRGB values). True = the panel can be shown.
-static bool RenderPanel(Panel& p, int w, int h, const char* what) {
+// Shows an ImGui panel (the menu, the stats overlay): draw() renders it into the panel's own render
+// target, which is then copied into the swapchain. The render target uses the swapchain's format
+// without sRGB, so the copy keeps ImGui's colours as they are (they are already sRGB values).
+// True = the panel can be shown.
+typedef bool (*PanelDraw)(ID3D11Device* dev, ID3D11DeviceContext* dc, ID3D11RenderTargetView* rtv, int w, int h);
+static bool RenderPanel(Panel& p, int w, int h, const char* what, PanelDraw draw) {
     if (!EnsureSwap(p.swap, (uint32_t)w, (uint32_t)h, what, true)) return false;
     if (p.swap.w != (uint32_t)w || p.swap.h != (uint32_t)h) return false;  // runtime limits: not supported
     if (!p.tex) {
@@ -1733,7 +1689,7 @@ static bool RenderPanel(Panel& p, int w, int h, const char* what) {
         }
         p.shown = false;
     }
-    if (!OverlayRender(X.dev, X.ctx, p.rtv, w, h, X.ovStats)) return p.shown;
+    if (!draw(X.dev, X.ctx, p.rtv, w, h)) return p.shown;
     uint32_t idx = 0;
     XrSwapchainImageAcquireInfo ai = {};
     ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
@@ -1757,7 +1713,8 @@ static bool RenderPanel(Panel& p, int w, int h, const char* what) {
     return true;
 }
 
-// The settings menu: placed 1.1 m in front of your head when it opens, redrawn when it changes.
+// The settings menu: placed 1.1 m in front of your head when it opens, drawn every headset frame
+// while open (ImGui's navigation runs per frame).
 static bool UpdateMenu(XrTime time) {
     if (MenuTakeJustOpened()) {
         XrSpaceLocation loc = {};
@@ -1773,9 +1730,7 @@ static bool UpdateMenu(XrTime time) {
             X.menuPose.position = {loc.pose.position.x + off.x, loc.pose.position.y + off.y, loc.pose.position.z + off.z};
         }
     }
-    int w = 0, h = 0;
-    const uint32_t* px = MenuImage(SwapIsBgra(), !X.menu.shown, &w, &h);
-    return UploadPanel(X.menu, px, w, h, "menu");
+    return RenderPanel(X.menu, 1280, 960, "menu", MenuRender);
 }
 
 // The stats overlay: new numbers twice a second, redrawn ten times a second (the graph).
@@ -1815,7 +1770,10 @@ static bool UpdateOverlay() {
     bool redraw = !X.overlay.shown || (double)(now.QuadPart - X.ovDrawn.QuadPart) / (double)X.qpcFreq.QuadPart >= 0.1;
     if (!redraw) return true;
     X.ovDrawn = now;
-    return RenderPanel(X.overlay, 640, 300, "stats overlay");
+    return RenderPanel(X.overlay, 640, 300, "stats overlay",
+                       [](ID3D11Device* dev, ID3D11DeviceContext* dc, ID3D11RenderTargetView* rtv, int w, int h) {
+                           return OverlayRender(dev, dc, rtv, w, h, X.ovStats);
+                       });
 }
 
 static bool TimeReached(DWORD at) { return (LONG)(GetTickCount() - at) >= 0; }

@@ -51,6 +51,10 @@ const Setting kSettings[] = {
     S_FLT("Screen", "HeightOffset", heightOffset, 0, -10, 10, nullptr),
     S_INT("Screen", "StatsOverlay", statsOverlay, 1, 0, 1,
         "1 = live stats (frame rates, resolution, head-pose delay) in the corner of your view"),
+    S_FLT("Screen", "OverlayX", overlayX, -0.22f, -0.6f, 0.6f,
+          "Stats overlay position: metres to the right (negative: left) and up (negative: down) of\n"
+          "straight ahead, 0.8 m in front of your eyes; it moves with your head"),
+    S_FLT("Screen", "OverlayY", overlayY, 0.14f, -0.6f, 0.6f, nullptr),
 
     S_INT("Stereo", "Enabled", stereo, 1, 0, 1, "1 = start in stereo 3D (F12 toggles between stereo and the flat screen)"),
     S_FLT("Stereo", "WorldScale", worldScale, 0.75f, 0.002f, 50,
@@ -153,6 +157,7 @@ const Setting kSettings[] = {
     S_HEX("Keys", "Closer", keyCloser, VK_F6, nullptr),
     S_HEX("Keys", "Farther", keyFarther, VK_F7, nullptr),
     S_HEX("Keys", "ToggleStereo", keyStereo, VK_F12, nullptr),
+    S_HEX("Keys", "Menu", keyMenu, VK_INSERT, "Opens and closes the in-headset settings menu (default Insert = 0x2D; 0 = no key)"),
 
     S_PATH("OpenXR", "LoaderPath", loaderPath,
          "Leave empty for automatic: uses openxr_loader.dll if it sits next to this mod\n"
