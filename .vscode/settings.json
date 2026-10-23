@@ -1,6 +1,7 @@
 {
     "clangd.path": "C:\\msys64\\ucrt64\\bin\\clangd.exe",
-    "clangd.arguments": ["--header-insertion=never"],
+    // compile_commands.json is written by CMake on configure: exact flags and include paths per file
+    "clangd.arguments": ["--header-insertion=never", "--compile-commands-dir=build"],
     "C_Cpp.intelliSenseEngine": "disabled",
     "files.associations": { "*.S": "asm" }
 }

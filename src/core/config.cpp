@@ -22,6 +22,8 @@ static const char kDefaultIni[] =
     "Distance=2.5\r\n"
     "Width=3.2\r\n"
     "HeightOffset=0.0\r\n"
+    "; 1 = live stats (frame rates, resolution, head-pose delay) in the corner of your view\r\n"
+    "StatsOverlay=1\r\n"
     "\r\n"
     "[Stereo]\r\n"
     "; 1 = start in stereo 3D (F12 toggles between stereo and the flat screen)\r\n"
@@ -36,10 +38,10 @@ static const char kDefaultIni[] =
     "SteepViewFull=60\r\n"
     "; EXPERIMENTAL, alternate eyes only: the eye drawn in the previous game frame is moved to the new\r\n"
     "; camera using its depth. Always starts OFF (switch it on in the in-headset menu for a test)\r\n"
-    "DepthReprojection=0\r\n"
+    "DepthReprojection=1\r\n"
     "; Depth reprojection: 1 = fill the gaps it opens behind 2B and other near things with the\r\n"
     "; background; 0 = stretch their edges over the gap (0.3.30/0.4.0 look)\r\n"
-    "ReprojectionEdges=1\r\n"
+    "ReprojectionEdges=0\r\n"
     "; Experimental: 1 = both eyes every game frame (the frame is drawn a second time for the right\r\n"
     "; eye: no alternating, but about twice the GPU work). 0 = alternate eyes. F5 switches it in game\r\n"
     "BothEyes=0\r\n"
@@ -298,12 +300,12 @@ void ConfigLoad() {
     g_cfg.lateWarp = ReadInt(L"Stereo", L"LateWarp", 1);
     g_cfg.bothEyes = ReadInt(L"Stereo", L"BothEyes", 0);
     g_cfg.reuseShadows = ReadInt(L"Render", L"ReuseShadows", 1);
-    // 0.4.2: experimental, always starts off (user: smears; "reset to off upon every start")
-    if (ReadInt(L"Stereo", L"DepthReprojection", 0)) WritePrivateProfileStringW(L"Stereo", L"DepthReprojection", L"0", g_iniPath);
-    g_cfg.depthReproject = 0;
+
+    g_cfg.depthReproject = ReadInt(L"Stereo", L"DepthReprojection", 0);
     g_cfg.reprojectEdges = ReadInt(L"Stereo", L"ReprojectionEdges", 1);
     g_cfg.vrControllers = ReadInt(L"Input", L"VRControllers", 1);
     g_cfg.vrRumble = ReadInt(L"Input", L"ControllerRumble", 1);  // 0.3.25 user test: worse with 1
+    g_cfg.statsOverlay = ReadInt(L"Screen", L"StatsOverlay", 0);
     g_cfg.posePrediction = ReadInt(L"Stereo", L"PosePrediction", 1);
     g_cfg.maxFrameLatency = ReadInt(L"Render", L"MaxFrameLatency", 1);
     if (g_cfg.maxFrameLatency < 0) g_cfg.maxFrameLatency = 0;

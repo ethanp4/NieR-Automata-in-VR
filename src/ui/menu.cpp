@@ -6,11 +6,11 @@
 // gamepad (XInputGetState is hooked and returns a neutral pad). Every change applies at once and
 // is written to NieRVR.ini; a few settings only take effect after a restart and say so.
 //
-// The menu is drawn on the CPU into a small RGBA image (font: DejaVu Sans, pre-rendered into
-// src/gen/font.h by tools/make_font.py) which the VR thread shows on a quad in front of you.
+// The menu is drawn on the CPU into a small RGBA image (ui/draw.h; font: DejaVu Sans, pre-rendered
+// into src/gen/font.h by tools/make_font.py) which the VR thread shows on a quad in front of you.
 #include "core/common.h"
 #include "input/gamepad.h"
-#include "gen/font.h"
+#include "ui/draw.h"
 
 namespace {
 // ---------------------------------------------------------------------------------------------
@@ -123,6 +123,9 @@ Item kScreen[] = {
      "Moves the flat screen and the HUD up or down."},
     {"HUD on its own layer", T_BOOL, "Stereo", "SplitUI", &g_cfg.uiSplit, 0, 1, 1, nullptr, 0,
      "Shows the HUD and menus on a flat layer in front of you instead of inside the 3D image."},
+    {"Stats overlay", T_BOOL, "Screen", "StatsOverlay", &g_cfg.statsOverlay, 0, 1, 1, nullptr, 0,
+     "Live numbers in the upper left of your view: frame rates, the game's resolution and how sharp it is "
+     "compared with what the headset recommends, and the head-pose delay."},
     {"Recenter", T_ACTION, nullptr, nullptr, (void*)A_RECENTER, 0, 0, 0, nullptr, 0, "Places the screen straight ahead of you again (also F8)."},
 };
 Item kInput[] = {
@@ -215,111 +218,32 @@ void Change(Item& it, int dir, int accel) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Drawing (RGBA8, sRGB-encoded, opaque)
+// Drawing (opaque, see ui/draw.h)
 // ---------------------------------------------------------------------------------------------
 const int kW = 1280, kH = 960;
-uint32_t* g_px;
-bool g_bgra;
-struct Font {
-    int w, h, line, ascent;
-    const short (*glyph)[7];
-    const unsigned char* atlas;
-};
-const Font kFontBody = {kBodyW, kBodyH, kBodyLine, kBodyAscent, kBodyGlyph, kBodyAtlas};
-const Font kFontSmall = {kSmallW, kSmallH, kSmallLine, kSmallAscent, kSmallGlyph, kSmallAtlas};
-const Font kFontTitle = {kTitleW, kTitleH, kTitleLine, kTitleAscent, kTitleGlyph, kTitleAtlas};
-
-struct Rgb {
-    int r, g, b;
-};
+Canvas g_cv;
 const Rgb kBg = {30, 29, 26}, kText = {218, 212, 187}, kDim = {150, 145, 128}, kSelBg = {218, 212, 187},
           kSelText = {48, 45, 39}, kAccent = {196, 168, 106}, kBar = {70, 67, 60}, kRestart = {214, 120, 90};
-
-uint32_t Pack(Rgb c) {
-    return g_bgra ? (0xFF000000u | (uint32_t)c.r << 16 | (uint32_t)c.g << 8 | (uint32_t)c.b)
-                  : (0xFF000000u | (uint32_t)c.b << 16 | (uint32_t)c.g << 8 | (uint32_t)c.r);
-}
-void Fill(int x, int y, int w, int h, Rgb c) {
-    uint32_t v = Pack(c);
-    for (int yy = y < 0 ? 0 : y; yy < y + h && yy < kH; yy++)
-        for (int xx = x < 0 ? 0 : x; xx < x + w && xx < kW; xx++) g_px[yy * kW + xx] = v;
-}
-void Blend(int x, int y, Rgb c, int a) {
-    if (x < 0 || y < 0 || x >= kW || y >= kH || a <= 0) return;
-    uint32_t d = g_px[y * kW + x];
-    int dr = g_bgra ? (d >> 16) & 255 : d & 255, dg = (d >> 8) & 255, db = g_bgra ? d & 255 : (d >> 16) & 255;
-    Rgb o = {dr + (c.r - dr) * a / 255, dg + (c.g - dg) * a / 255, db + (c.b - db) * a / 255};
-    g_px[y * kW + x] = Pack(o);
-}
-int TextWidth(const Font& f, const char* s) {
-    int w = 0;
-    for (; *s; s++) {
-        int c = (unsigned char)*s;
-        if (c < 32 || c > 126) c = '?';
-        w += f.glyph[c - 32][6];
-    }
-    return w;
-}
-// y = top of the line
-int Text(const Font& f, int x, int y, const char* s, Rgb col, int maxW = 100000) {
-    int x0 = x;
-    for (; *s; s++) {
-        int c = (unsigned char)*s;
-        if (c < 32 || c > 126) c = '?';
-        const short* g = f.glyph[c - 32];
-        if (x + g[6] - x0 > maxW) break;
-        for (int yy = 0; yy < g[3]; yy++)
-            for (int xx = 0; xx < g[2]; xx++)
-                Blend(x + g[4] + xx, y + g[5] + yy, col, f.atlas[(g[1] + yy) * f.w + g[0] + xx]);
-        x += g[6];
-    }
-    return x - x0;
-}
-// Word-wrapped text; returns the y after the last line.
-int Wrapped(const Font& f, int x, int y, int maxW, const char* s, Rgb col, int maxLines) {
-    char line[256];
-    int lines = 0;
-    while (*s && lines < maxLines) {
-        int n = 0, lastSpace = -1;
-        while (s[n] && n < 255) {
-            line[n] = s[n];
-            line[n + 1] = 0;
-            if (TextWidth(f, line) > maxW) break;
-            if (s[n] == ' ') lastSpace = n;
-            n++;
-        }
-        int take = (s[n] && lastSpace > 0) ? lastSpace : n;
-        if (take <= 0) take = n > 0 ? n : 1;
-        memcpy(line, s, take);
-        line[take] = 0;
-        Text(f, x, y, line, col);
-        y += f.line;
-        s += take;
-        while (*s == ' ') s++;
-        lines++;
-    }
-    return y;
-}
 
 const int kRowsTop = 150, kRowH = 52, kRowsMax = 11;
 
 void Draw() {
-    Fill(0, 0, kW, kH, kBg);
-    Fill(0, 0, kW, 4, kAccent);
-    Text(kFontTitle, 40, 22, "NieRVR settings", kText);
+    g_cv.Fill(0, 0, kW, kH, kBg);
+    g_cv.Fill(0, 0, kW, 4, kAccent);
+    g_cv.Text(kFontTitle, 40, 22, "NieRVR settings", kText);
     {
         const char* v = NIERVR_VERSION;
-        Text(kFontSmall, kW - 40 - TextWidth(kFontSmall, v), 34, v, kDim);
+        g_cv.Text(kFontSmall, kW - 40 - TextWidth(kFontSmall, v), 34, v, kDim);
     }
     // page tabs
     int x = 40;
     for (int i = 0; i < kPages; i++) {
         int w = TextWidth(kFontBody, g_pages[i].name) + 32;
-        if (i == g_page) Fill(x, 88, w, 44, kSelBg);
-        Text(kFontBody, x + 16, 92, g_pages[i].name, i == g_page ? kSelText : kDim);
+        if (i == g_page) g_cv.Fill(x, 88, w, 44, kSelBg);
+        g_cv.Text(kFontBody, x + 16, 92, g_pages[i].name, i == g_page ? kSelText : kDim);
         x += w + 8;
     }
-    Fill(40, 136, kW - 80, 2, kBar);
+    g_cv.Fill(40, 136, kW - 80, 2, kBar);
     Page& p = g_pages[g_page];
     int sel = g_sel[g_page];
     int& scroll = g_scroll[g_page];
@@ -329,34 +253,34 @@ void Draw() {
         Item& it = p.items[scroll + r];
         int y = kRowsTop + r * kRowH;
         bool s = scroll + r == sel && it.type != T_TEXT;
-        if (s) Fill(30, y, kW - 60, kRowH - 4, kSelBg);
+        if (s) g_cv.Fill(30, y, kW - 60, kRowH - 4, kSelBg);
         Rgb tc = s ? kSelText : kText;
         if (it.type == T_TEXT) {
-            Text(kFontBody, 50, y + 8, it.label ? it.label : "", kText, kW - 100);
+            g_cv.Text(kFontBody, 50, y + 8, it.label ? it.label : "", kText, kW - 100);
             continue;
         }
-        Text(kFontBody, 50, y + 8, it.label, tc, 600);
-        if (it.flags & F_RESTART) Text(kFontSmall, 50 + TextWidth(kFontBody, it.label) + 10, y + 14, "(restart)", s ? kSelText : kRestart);
+        g_cv.Text(kFontBody, 50, y + 8, it.label, tc, 600);
+        if (it.flags & F_RESTART) g_cv.Text(kFontSmall, 50 + TextWidth(kFontBody, it.label) + 10, y + 14, "(restart)", s ? kSelText : kRestart);
         // settings that do nothing in the current eye mode say so (0.4.1)
         const char* unused = (it.flags & F_ALTERNATE) && g_cfg.bothEyes    ? "(not used: both eyes is on)"
                              : (it.flags & F_BOTHEYES) && !g_cfg.bothEyes ? "(not used: alternate eyes)"
                                                                           : nullptr;
-        if (unused) Text(kFontSmall, 50 + TextWidth(kFontBody, it.label) + 10, y + 14, unused, s ? kSelText : kRestart);
+        if (unused) g_cv.Text(kFontSmall, 50 + TextWidth(kFontBody, it.label) + 10, y + 14, unused, s ? kSelText : kRestart);
         if (it.type == T_BOOL) {
             bool on = *(int*)it.ptr != 0;
             const char* t = on ? "ON" : "OFF";
             int bx = kW - 220;
-            Fill(bx, y + 8, 140, 34, on && !unused ? kAccent : kBar);
-            Text(kFontBody, bx + 70 - TextWidth(kFontBody, t) / 2, y + 7, t, on && !unused ? kSelText : kText);
+            g_cv.Fill(bx, y + 8, 140, 34, on && !unused ? kAccent : kBar);
+            g_cv.Text(kFontBody, bx + 70 - TextWidth(kFontBody, t) / 2, y + 7, t, on && !unused ? kSelText : kText);
         } else if (it.type == T_ACTION) {
-            Text(kFontBody, kW - 220, y + 8, s ? "press A" : "", tc);
+            g_cv.Text(kFontBody, kW - 220, y + 8, s ? "press A" : "", tc);
         } else {
             float v = GetF(it), t = (v - it.min) / (it.max - it.min);
             t = t < 0 ? 0 : (t > 1 ? 1 : t);
             int bx = 680, bw = 360;
-            Fill(bx, y + 21, bw, 8, s ? Rgb{170, 164, 142} : kBar);
-            Fill(bx, y + 21, (int)(bw * t), 8, kAccent);
-            Fill(bx + (int)(bw * t) - 5, y + 13, 10, 24, s ? kSelText : kText);
+            g_cv.Fill(bx, y + 21, bw, 8, s ? Rgb{170, 164, 142} : kBar);
+            g_cv.Fill(bx, y + 21, (int)(bw * t), 8, kAccent);
+            g_cv.Fill(bx + (int)(bw * t) - 5, y + 13, 10, 24, s ? kSelText : kText);
             char val[48];
             if (it.type == T_INT && it.ptr == &g_cfg.giVolumes && *(int*)it.ptr >= 128)
                 pure::format(val, sizeof(val), "128 (all)");
@@ -364,20 +288,20 @@ void Draw() {
                 pure::format(val, sizeof(val), it.fmt ? it.fmt : "%d", *(int*)it.ptr);
             else
                 pure::format(val, sizeof(val), it.fmt ? it.fmt : "%.2f", (double)v);
-            Text(kFontBody, bx + bw + 24, y + 8, val, tc);
+            g_cv.Text(kFontBody, bx + bw + 24, y + 8, val, tc);
         }
     }
     if (p.count > kRowsMax) {
         char m[48];
         pure::format(m, sizeof(m), "%d / %d", sel + 1, p.count);
-        Text(kFontSmall, kW - 40 - TextWidth(kFontSmall, m), 100, m, kDim);
+        g_cv.Text(kFontSmall, kW - 40 - TextWidth(kFontSmall, m), 100, m, kDim);
     }
     // help for the selected item
-    Fill(40, 740, kW - 80, 2, kBar);
-    if (sel < p.count && p.items[sel].help) Wrapped(kFontSmall, 40, 752, kW - 80, p.items[sel].help, kText, 3);
-    Fill(40, 846, kW - 80, 2, kBar);
-    Text(kFontSmall, 40, 858, "Gamepad:  Up/Down choose   Left/Right change   A switch   LB/RB or triggers page   B close", kDim, kW - 80);
-    Text(kFontSmall, 40, 890, "Keyboard:  arrows   Enter   PgUp/PgDn   Insert to close", kDim, kW - 80);
+    g_cv.Fill(40, 740, kW - 80, 2, kBar);
+    if (sel < p.count && p.items[sel].help) g_cv.Wrapped(kFontSmall, 40, 752, kW - 80, p.items[sel].help, kText, 3);
+    g_cv.Fill(40, 846, kW - 80, 2, kBar);
+    g_cv.Text(kFontSmall, 40, 858, "Gamepad:  Up/Down choose   Left/Right change   A switch   LB/RB or triggers page   B close", kDim, kW - 80);
+    g_cv.Text(kFontSmall, 40, 890, "Keyboard:  arrows   Enter   PgUp/PgDn   Insert to close", kDim, kW - 80);
 }
 
 // Moves the selection to the next selectable row.
@@ -560,10 +484,9 @@ bool MenuTakeRecenter() {
 const uint32_t* MenuImage(bool bgra, bool force, int* w, int* h) {
     *w = kW;
     *h = kH;
-    if (!g_px) g_px = (uint32_t*)VirtualAlloc(nullptr, kW * kH * 4, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (!g_px) return nullptr;
-    if (bgra != g_bgra) {
-        g_bgra = bgra;
+    if (!g_cv.Alloc(kW, kH)) return nullptr;
+    if (bgra != g_cv.bgra) {
+        g_cv.bgra = bgra;
         g_dirty = true;
     }
     if (!g_dirty && !force) return nullptr;
@@ -574,5 +497,5 @@ const uint32_t* MenuImage(bool bgra, bool force, int* w, int* h) {
             kInfo[i].label = g_infoText[i];
         }
     Draw();
-    return g_px;
+    return g_cv.px;
 }

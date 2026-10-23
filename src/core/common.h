@@ -37,6 +37,7 @@ struct Config {
     float distance;      // metres in front of the head
     float width;         // metres
     float heightOffset;  // metres, relative to eye height
+    int statsOverlay;    // live stats in the corner of your view (ui/overlay.cpp)
     // [Keys]  (Windows virtual-key codes)
     int keyRecenter, keySmaller, keyLarger, keyCloser, keyFarther;
     int keyCapture;  // [Debug] CaptureKey: camera probe frame capture
@@ -121,6 +122,19 @@ void VrInputDetach();
 void VrInputShutdown();
 void VrInputSync(bool focused, bool foreground);
 void VrInputProfileChanged();  // interaction profile changed event
+// ui/overlay.cpp - the stats overlay, drawn with Dear ImGui on the VR thread ([Screen] StatsOverlay)
+struct OverlayStats {
+    const char* mode;              // "alternate eyes", "flat screen", ...
+    float headsetFps;
+    float gameFps[3];              // game images per second: left, right, flat
+    unsigned gameW, gameH;         // the game's render size
+    float sharpX, sharpY;          // % of the headset's recommended detail, across / up-down; 0 = unknown
+    float poseDelayMs, predictMs;  // poseDelayMs < 0 = unknown
+    const float* frameMs;          // headset frame times, a ring buffer for the graph
+    int frameCount, frameOffset;   // its size, and the index of the oldest entry
+};
+bool OverlayRender(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, int w, int h,
+                   const OverlayStats& s);
 const uint32_t* MenuImage(bool bgra, bool force, int* w, int* h);  // writes back the values the hotkeys change ([Stereo] WorldScale/CameraDolly/TopDownFlat, ...)
 
 // ---------------------------------------------------------------------------------------------

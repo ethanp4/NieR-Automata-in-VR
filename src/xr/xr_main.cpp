@@ -64,10 +64,15 @@ static struct {
         uint32_t w, h, count;
         ID3D11RenderTargetView* rtv[kMaxImages];
         DWORD retryAt;
-    } quadSwap, eyeSwap[2], hudSwap, menuSwap;
-    // settings menu (menu.cpp): CPU image -> texture -> its own quad layer
-    ID3D11Texture2D* menuTex;
-    bool menuShown;  // the menu swapchain has a released image
+    } quadSwap, eyeSwap[2], hudSwap;
+    // flat panels on their own quad layer: drawn into tex (on the CPU and uploaded, or on the GPU
+    // through rtv), then copied into the swapchain
+    struct Panel {
+        Swap swap;
+        ID3D11Texture2D* tex;
+        ID3D11RenderTargetView* rtv;  // GPU-drawn panels only
+        bool shown;                   // the swapchain has a released image
+    } menu, overlay;  // the settings menu (ui/menu.cpp, CPU), the stats overlay (ui/overlay.cpp, ImGui)
     XrPosef menuPose;
 
     // game frames, on our device
@@ -114,6 +119,13 @@ static struct {
 
     // stats
     unsigned statFrames, statQuadFrames, statStereoFrames, statGameFrames[3];
+    // the same counts over half a second, for the stats overlay
+    unsigned ovFrames, ovGameFrames[3];
+    LARGE_INTEGER ovStart, ovDrawn, ovLastFrame;
+    OverlayStats ovStats;
+    char ovMode[32];
+    float ovFrameMs[180];  // headset frame times (two seconds at 90 Hz), ring buffer
+    int ovFrameNext;
     LARGE_INTEGER statStart, qpcFreq;
     unsigned errorCount;
 
@@ -525,6 +537,7 @@ static bool CheckHeadsetGpu() {
 // Session
 // ---------------------------------------------------------------------------------------------
 typedef decltype(X.quadSwap) Swap;
+typedef decltype(X.menu) Panel;
 
 static void DestroySwap(Swap& s) {
     for (uint32_t i = 0; i < kMaxImages; i++) SafeRelease(s.rtv[i]);
@@ -533,14 +546,20 @@ static void DestroySwap(Swap& s) {
     s.count = s.w = s.h = 0;
 }
 
+static void DestroyPanel(Panel& p) {
+    DestroySwap(p.swap);
+    SafeRelease(p.rtv);
+    SafeRelease(p.tex);
+    p.shown = false;
+}
+
 static void DestroyAllSwaps() {
     DestroySwap(X.quadSwap);
     DestroySwap(X.eyeSwap[0]);
     DestroySwap(X.eyeSwap[1]);
     DestroySwap(X.hudSwap);
-    DestroySwap(X.menuSwap);
-    X.menuShown = false;
-    SafeRelease(X.menuTex);
+    DestroyPanel(X.menu);
+    DestroyPanel(X.overlay);
 }
 
 static void DestroySession() {
@@ -865,6 +884,7 @@ static void UpdateContent() {
         X.views[k].tag = latest[k].tag;
         X.views[k].has = true;
         X.statGameFrames[k]++;
+        X.ovGameFrames[k]++;
     }
 }
 
@@ -1379,6 +1399,7 @@ static XrFovf FovFromTag(const FrameTag& t) {
 }
 
 static bool UpdateMenu(XrTime time);
+static bool UpdateOverlay();
 
 static void Frame() {
     XrFrameState fs = {};
@@ -1393,9 +1414,9 @@ static void Frame() {
     bi.type = XR_TYPE_FRAME_BEGIN_INFO;
     if (!XR_CHECK_FRAME(X.xrBeginFrame(X.session, &bi))) return;
 
-    const XrCompositionLayerBaseHeader* layers[6];
+    const XrCompositionLayerBaseHeader* layers[8];
     uint32_t layerCount = 0;
-    XrCompositionLayerQuad quad = {}, hud = {}, menu = {};
+    XrCompositionLayerQuad quad = {}, hud = {}, menu = {}, overlay = {};
     XrCompositionLayerProjection proj = {};
     XrCompositionLayerProjectionView pv[2] = {};
 
@@ -1589,16 +1610,33 @@ static void Frame() {
         }
     }
 
+    // the stats overlay: moves with your head (view space), upper left of your view
+    if (!g_cfg.statsOverlay) X.ovStart.QuadPart = 0;  // counting starts again when it is switched on
+    if (fs.shouldRender && g_cfg.statsOverlay && UpdateOverlay()) {
+        const float width = 0.32f;  // metres, at 0.8 m
+        overlay.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+        overlay.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;  // ImGui's output is premultiplied
+        overlay.space = X.view;
+        overlay.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        overlay.subImage.swapchain = X.overlay.swap.sc;
+        overlay.subImage.imageRect.offset = {0, 0};
+        overlay.subImage.imageRect.extent = {(int32_t)X.overlay.swap.w, (int32_t)X.overlay.swap.h};
+        overlay.pose.orientation = {0, 0, 0, 1};
+        overlay.pose.position = {-0.22f, 0.14f, -0.8f};
+        overlay.size = {width, width * (float)X.overlay.swap.h / (float)X.overlay.swap.w};
+        layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&overlay;
+    }
+
     // the settings menu, on top of everything
     if (fs.shouldRender && MenuIsOpen() && UpdateMenu(fs.predictedDisplayTime)) {
         menu.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
         menu.space = X.local;
         menu.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-        menu.subImage.swapchain = X.menuSwap.sc;
+        menu.subImage.swapchain = X.menu.swap.sc;
         menu.subImage.imageRect.offset = {0, 0};
-        menu.subImage.imageRect.extent = {(int32_t)X.menuSwap.w, (int32_t)X.menuSwap.h};
+        menu.subImage.imageRect.extent = {(int32_t)X.menu.swap.w, (int32_t)X.menu.swap.h};
         menu.pose = X.menuPose;
-        menu.size = {1.0f, 1.0f * (float)X.menuSwap.h / (float)X.menuSwap.w};
+        menu.size = {1.0f, 1.0f * (float)X.menu.swap.h / (float)X.menu.swap.w};
         layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&menu;
     }
 
@@ -1610,7 +1648,111 @@ static void Frame() {
     ei.layers = layerCount ? layers : nullptr;
     XR_CHECK_FRAME(X.xrEndFrame(X.session, &ei));
     X.statFrames++;
+    X.ovFrames++;
+    {  // headset frame time, for the overlay's graph
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        if (X.ovLastFrame.QuadPart) {
+            X.ovFrameMs[X.ovFrameNext] = (float)(1000.0 * (now.QuadPart - X.ovLastFrame.QuadPart) / X.qpcFreq.QuadPart);
+            X.ovFrameNext = (X.ovFrameNext + 1) % (int)(sizeof(X.ovFrameMs) / sizeof(X.ovFrameMs[0]));
+        }
+        X.ovLastFrame = now;
+    }
     LogStats();
+}
+
+static bool SwapIsBgra() {
+    return X.swapFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || X.swapFormat == DXGI_FORMAT_B8G8R8A8_UNORM;
+}
+
+// Shows a CPU-drawn image on a panel: px is copied into the panel's swapchain when it is not null
+// (changed), otherwise the last image stays. True = the panel has an image and its layer can be shown.
+static bool UploadPanel(Panel& p, const uint32_t* px, int w, int h, const char* what) {
+    if (w <= 0 || h <= 0) return false;
+    if (!EnsureSwap(p.swap, (uint32_t)w, (uint32_t)h, what, true)) return false;
+    if (p.swap.w != (uint32_t)w || p.swap.h != (uint32_t)h) return false;  // runtime limits: not supported
+    if (!p.tex) {
+        D3D11_TEXTURE2D_DESC d = {};
+        d.Width = (UINT)w;
+        d.Height = (UINT)h;
+        d.MipLevels = d.ArraySize = 1;
+        d.Format = (DXGI_FORMAT)X.swapFormat;
+        d.SampleDesc.Count = 1;
+        d.Usage = D3D11_USAGE_DEFAULT;
+        if (FAILED(X.dev->CreateTexture2D(&d, nullptr, &p.tex))) return false;
+        p.shown = false;
+    }
+    if (!px) return p.shown;  // unchanged: the last image stays
+    X.ctx->UpdateSubresource(p.tex, 0, nullptr, px, (UINT)w * 4, 0);
+    uint32_t idx = 0;
+    XrSwapchainImageAcquireInfo ai = {};
+    ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
+    if (!XR_CHECK_FRAME(X.xrAcquireSwapchainImage(p.swap.sc, &ai, &idx))) return p.shown;
+    XrSwapchainImageWaitInfo wi = {};
+    wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
+    wi.timeout = XR_INFINITE_DURATION;
+    if (!XR_CHECK_FRAME(X.xrWaitSwapchainImage(p.swap.sc, &wi))) return p.shown;  // no release without a wait
+    if (idx < p.swap.count) {
+        ID3D11Resource* img = nullptr;
+        p.swap.rtv[idx]->GetResource(&img);
+        if (img) {
+            X.ctx->CopyResource(img, p.tex);
+            img->Release();
+        }
+    }
+    XrSwapchainImageReleaseInfo ri = {};
+    ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
+    XR_CHECK_FRAME(X.xrReleaseSwapchainImage(p.swap.sc, &ri));
+    p.shown = true;
+    return true;
+}
+
+// Shows a GPU-drawn panel (the ImGui stats overlay): drawn into its own render target, then copied
+// into the swapchain. The render target uses the swapchain's format without sRGB, so the copy keeps
+// ImGui's colours as they are (they are already sRGB values). True = the panel can be shown.
+static bool RenderPanel(Panel& p, int w, int h, const char* what) {
+    if (!EnsureSwap(p.swap, (uint32_t)w, (uint32_t)h, what, true)) return false;
+    if (p.swap.w != (uint32_t)w || p.swap.h != (uint32_t)h) return false;  // runtime limits: not supported
+    if (!p.tex) {
+        DXGI_FORMAT f = (DXGI_FORMAT)X.swapFormat;
+        if (f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) f = DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) f = DXGI_FORMAT_B8G8R8A8_UNORM;
+        D3D11_TEXTURE2D_DESC d = {};
+        d.Width = (UINT)w;
+        d.Height = (UINT)h;
+        d.MipLevels = d.ArraySize = 1;
+        d.Format = f;
+        d.SampleDesc.Count = 1;
+        d.Usage = D3D11_USAGE_DEFAULT;
+        d.BindFlags = D3D11_BIND_RENDER_TARGET;
+        if (FAILED(X.dev->CreateTexture2D(&d, nullptr, &p.tex)) || FAILED(X.dev->CreateRenderTargetView(p.tex, nullptr, &p.rtv))) {
+            SafeRelease(p.tex);
+            return false;
+        }
+        p.shown = false;
+    }
+    if (!OverlayRender(X.dev, X.ctx, p.rtv, w, h, X.ovStats)) return p.shown;
+    uint32_t idx = 0;
+    XrSwapchainImageAcquireInfo ai = {};
+    ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
+    if (!XR_CHECK_FRAME(X.xrAcquireSwapchainImage(p.swap.sc, &ai, &idx))) return p.shown;
+    XrSwapchainImageWaitInfo wi = {};
+    wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
+    wi.timeout = XR_INFINITE_DURATION;
+    if (!XR_CHECK_FRAME(X.xrWaitSwapchainImage(p.swap.sc, &wi))) return p.shown;  // no release without a wait
+    if (idx < p.swap.count) {
+        ID3D11Resource* img = nullptr;
+        p.swap.rtv[idx]->GetResource(&img);
+        if (img) {
+            X.ctx->CopyResource(img, p.tex);
+            img->Release();
+        }
+    }
+    XrSwapchainImageReleaseInfo ri = {};
+    ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
+    XR_CHECK_FRAME(X.xrReleaseSwapchainImage(p.swap.sc, &ri));
+    p.shown = true;
+    return true;
 }
 
 // The settings menu: placed 1.1 m in front of your head when it opens, redrawn when it changes.
@@ -1630,44 +1772,48 @@ static bool UpdateMenu(XrTime time) {
         }
     }
     int w = 0, h = 0;
-    bool bgra = X.swapFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || X.swapFormat == DXGI_FORMAT_B8G8R8A8_UNORM;
-    const uint32_t* px = MenuImage(bgra, !X.menuShown, &w, &h);
-    if (!EnsureSwap(X.menuSwap, (uint32_t)w, (uint32_t)h, "menu", true)) return false;
-    if (X.menuSwap.w != (uint32_t)w || X.menuSwap.h != (uint32_t)h) return false;  // runtime limits: not supported
-    if (!X.menuTex) {
-        D3D11_TEXTURE2D_DESC d = {};
-        d.Width = (UINT)w;
-        d.Height = (UINT)h;
-        d.MipLevels = d.ArraySize = 1;
-        d.Format = (DXGI_FORMAT)X.swapFormat;
-        d.SampleDesc.Count = 1;
-        d.Usage = D3D11_USAGE_DEFAULT;
-        if (FAILED(X.dev->CreateTexture2D(&d, nullptr, &X.menuTex))) return false;
-        X.menuShown = false;
+    const uint32_t* px = MenuImage(SwapIsBgra(), !X.menu.shown, &w, &h);
+    return UploadPanel(X.menu, px, w, h, "menu");
+}
+
+// The stats overlay: new numbers twice a second, redrawn ten times a second (the graph).
+static bool UpdateOverlay() {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (!X.ovStart.QuadPart) {
+        X.ovStart = now;
+        X.ovFrames = 0;
+        X.ovGameFrames[0] = X.ovGameFrames[1] = X.ovGameFrames[2] = 0;
+        X.ovDrawn.QuadPart = 0;
     }
-    if (!px) return X.menuShown;  // unchanged: the last image stays
-    X.ctx->UpdateSubresource(X.menuTex, 0, nullptr, px, (UINT)w * 4, 0);
-    uint32_t idx = 0;
-    XrSwapchainImageAcquireInfo ai = {};
-    ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
-    if (!XR_CHECK_FRAME(X.xrAcquireSwapchainImage(X.menuSwap.sc, &ai, &idx))) return X.menuShown;
-    XrSwapchainImageWaitInfo wi = {};
-    wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
-    wi.timeout = XR_INFINITE_DURATION;
-    if (!XR_CHECK_FRAME(X.xrWaitSwapchainImage(X.menuSwap.sc, &wi))) return X.menuShown;  // no release without a wait
-    if (idx < X.menuSwap.count) {
-        ID3D11Resource* img = nullptr;
-        X.menuSwap.rtv[idx]->GetResource(&img);
-        if (img) {
-            X.ctx->CopyResource(img, X.menuTex);
-            img->Release();
-        }
+    double secs = (double)(now.QuadPart - X.ovStart.QuadPart) / (double)X.qpcFreq.QuadPart;
+    OverlayStats& st = X.ovStats;
+    if (secs >= 0.5) {
+        AcquireSRWLockShared(&g_stereo.lock);
+        bool stereoOn = g_stereo.enabled;
+        ReleaseSRWLockShared(&g_stereo.lock);
+        pure::format(X.ovMode, sizeof(X.ovMode), "%s",
+                     !stereoOn || X.menuMode ? "flat screen" : g_cfg.bothEyes ? "both eyes" : "alternate eyes");
+        st.headsetFps = (float)(X.ovFrames / secs);
+        for (int i = 0; i < 3; i++) st.gameFps[i] = (float)(X.ovGameFrames[i] / secs);
+        st.gameW = X.contentW;
+        st.gameH = X.contentH;
+        st.sharpX = X.resPct;
+        st.sharpY = X.resPctH;
+        st.poseDelayMs = X.lagHave ? (float)X.lagMs : -1.0f;
+        st.predictMs = (float)(X.predictNs / 1e6);
+        X.ovFrames = 0;
+        X.ovGameFrames[0] = X.ovGameFrames[1] = X.ovGameFrames[2] = 0;
+        X.ovStart = now;
     }
-    XrSwapchainImageReleaseInfo ri = {};
-    ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
-    XR_CHECK_FRAME(X.xrReleaseSwapchainImage(X.menuSwap.sc, &ri));
-    X.menuShown = true;
-    return true;
+    st.mode = X.ovMode;
+    st.frameMs = X.ovFrameMs;
+    st.frameCount = (int)(sizeof(X.ovFrameMs) / sizeof(X.ovFrameMs[0]));
+    st.frameOffset = X.ovFrameNext;
+    bool redraw = !X.overlay.shown || (double)(now.QuadPart - X.ovDrawn.QuadPart) / (double)X.qpcFreq.QuadPart >= 0.1;
+    if (!redraw) return true;
+    X.ovDrawn = now;
+    return RenderPanel(X.overlay, 640, 300, "stats overlay");
 }
 
 static bool TimeReached(DWORD at) { return (LONG)(GetTickCount() - at) >= 0; }
