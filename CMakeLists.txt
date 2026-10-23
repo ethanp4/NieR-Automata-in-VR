@@ -1,22 +1,22 @@
 # Needs MSYS2 UCRT64 (GCC), the OpenXR SDK headers, CMake and Ninja:
 #   pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openxr-sdk mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
-# Usually run through build.ps1. By hand, from the UCRT64 shell:
+# Add C:/msys64/ucrt64/bin to path
+# handy commands for me
 #   cmake -S . -B build -G Ninja -DCMAKE_INSTALL_PREFIX="C:/Program Files (x86)/Steam/steamapps/common/NieRAutomata"
 #   cmake -S . -B build-clang -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_ASM_COMPILER=clang -DCMAKE_INSTALL_PREFIX="C:/Program Files (x86)/Steam/steamapps/common/NieRAutomata"
 #   cmake --build build
 #   cmake --install build
 #   cmake --build build --target launch
 #   ctest --test-dir build
+#	-DNIERVR_VERSION=x
 cmake_minimum_required(VERSION 3.20)
 project(NieRVR LANGUAGES C CXX ASM)
 
 option(NIERVR_TESTS "Build the unit tests" ON)
+# Shown in the menu, the stats overlay and the log. The release workflow passes the tag (v0.6.0 -> 0.6.0).
+set(NIERVR_VERSION "dev" CACHE STRING "Version of this build")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # build/compile_commands.json, for clangd
 
-# --- third-party code, downloaded at configure time ----------------------------------------------
-# Pinned archives checked by SHA256: a different download fails the configure. They're unpacked in
-# .deps/ (shared by every build folder, survives a clean build). Only the files are used; the
-# libraries' own CMake projects are not (SOURCE_SUBDIR points nowhere).
 include(FetchContent)
 set(FETCHCONTENT_BASE_DIR ${CMAKE_SOURCE_DIR}/.deps)
 FetchContent_Declare(minhook  # function hooking (upstream master, Sep 2026)
@@ -31,10 +31,7 @@ FetchContent_Declare(imgui    # Dear ImGui: the stats overlay (ui/overlay.cpp)
 	SOURCE_SUBDIR none)
 FetchContent_MakeAvailable(minhook imgui)  # sets minhook_SOURCE_DIR, imgui_SOURCE_DIR
 
-# NVIDIA DLSS runtime for the upscaler ([Upscaler] Mode=1). Players download it from the in-headset
-# menu (render/dlss.cpp); nothing of NVIDIA's is compiled into or shipped with the mod (NVIDIA's SDK
-# licence doesn't fit a GPL release). For testing, NIERVR_DLSS=ON downloads it at configure time and
-# installs it next to the mod. Pinned to a commit of github.com/NVIDIA/DLSS and checked by SHA256.
+
 option(NIERVR_DLSS "Download nvngx_dlss.dll (NVIDIA DLSS) at configure time and install it with the mod" OFF)
 if(NIERVR_DLSS)
 	set(DLSS_COMMIT 9981c6350dc58c0ce21f024fd65e31e851c31689)
@@ -73,17 +70,19 @@ set_target_properties(nier_vr PROPERTIES
 
 target_include_directories(nier_vr PRIVATE src ${minhook_SOURCE_DIR}/include ${imgui_SOURCE_DIR})
 # ImGui only draws the overlay: no clipboard/IME/shell helpers (they'd import SHELL32 and more)
-target_compile_definitions(nier_vr PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS IMGUI_DISABLE_WIN32_FUNCTIONS)
+target_compile_definitions(nier_vr PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS IMGUI_DISABLE_WIN32_FUNCTIONS
+	NIERVR_VERSION="${NIERVR_VERSION}")
 # -fno-threadsafe-statics: a guarded function-local static pulls all of libstdc++'s exception
 # handling into the DLL (see build/d3d11.map); ImGui runs on one thread only.
 target_compile_options(nier_vr PRIVATE
 	-O2 -msse4.1 -fno-math-errno -fno-asynchronous-unwind-tables -fno-stack-protector
 	$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti -fno-threadsafe-statics>)
-# The C runtime is Windows' own (UCRT, part of Windows 10+); -static builds libgcc, libstdc++ and
-# winpthread into the DLL, so nothing has to be shipped next to it.
+	
+#statically link what we can so that its only one dll
 target_link_options(nier_vr PRIVATE -static -Wl,--enable-stdcall-fixup -s
-	-Wl,-Map=${CMAKE_BINARY_DIR}/d3d11.map)  # what the linker pulled in, and from which library
-# advapi32: also the DLSS driver path (registry); winhttp + bcrypt: the DLSS download (HTTPS, SHA256)
+	-Wl,-Map=${CMAKE_BINARY_DIR}/d3d11.map)  
+
+#dynamically linked libraries (included in windows)
 target_link_libraries(nier_vr PRIVATE kernel32 user32 advapi32 winhttp bcrypt)
 
 # install target

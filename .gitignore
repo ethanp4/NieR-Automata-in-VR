@@ -2,5 +2,4 @@ build/
 .cache/
 build-clang/
 .deps/
-build.ps1
 docs/

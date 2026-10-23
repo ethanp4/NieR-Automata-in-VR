@@ -497,7 +497,7 @@ void Draw() {
 	ImGui::TextColored(Col(ui::Colors::accent), "NieRVR settings");
 	ImGui::PopFont();
 	ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - ImGui::CalcTextSize(NIERVR_VERSION).x);
-	ImGui::TextDisabled(NIERVR_VERSION);
+	ImGui::TextDisabled("%s", NIERVR_VERSION);
 
 	// footer size, so the page gets the rest
 	const float smallLine = kSmall * 1.35f;

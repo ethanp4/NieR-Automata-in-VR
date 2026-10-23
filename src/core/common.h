@@ -16,7 +16,9 @@
 #include "pure.h"
 struct FrameTag;
 
-#define NIERVR_VERSION "0.5.4"
+#ifndef NIERVR_VERSION
+#define NIERVR_VERSION "dev"  // set by CMake: -DNIERVR_VERSION=... (the release workflow passes the tag)
+#endif
 
 // ---------------------------------------------------------------------------------------------
 // Logging (log.cpp)

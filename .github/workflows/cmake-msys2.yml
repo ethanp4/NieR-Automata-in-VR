@@ -6,12 +6,45 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: Publish a release of this build?
+        type: choice
+        options: [build only, release, pre-release]
+        default: build only
 
 permissions:
   contents: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.version }}
+      zip: ${{ steps.ver.outputs.zip }}
+    steps:
+      - id: ver
+        run: |
+          tag=""
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="$GITHUB_REF_NAME"
+          elif [[ "${{ inputs.release }}" == release || "${{ inputs.release }}" == pre-release ]]; then
+            base="v$(date -u +%Y.%m.%d)"
+            [[ "${{ inputs.release }}" == pre-release ]] && base="$base-beta"
+            taken=$(git ls-remote --tags "https://github.com/$GITHUB_REPOSITORY.git" "refs/tags/$base*" | sed 's#.*refs/tags/##')
+            tag="$base"
+            n=1
+            while grep -qx "$tag" <<< "$taken"; do n=$((n + 1)); tag="$base.$n"; done
+          fi
+          if [[ -n "$tag" ]]; then version="${tag#v}"; else version="dev-${GITHUB_SHA::7}"; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "zip=NieRVR-${tag:-$version}.zip" >> "$GITHUB_OUTPUT"
+          echo "version $version${tag:+, release tag $tag}"
+
   build:
+    needs: version
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -58,6 +91,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
           -DCMAKE_ASM_COMPILER=${{ matrix.asm }}
           -DNIERVR_DLSS=OFF
+          -DNIERVR_VERSION="${{ needs.version.outputs.version }}"
           -DCMAKE_INSTALL_PREFIX="$PWD/dist"
 
       - name: Build
@@ -69,8 +103,11 @@ jobs:
       - name: Package
         run: |
           cmake --install build
-          cp LICENSE FONT-LICENSE.txt README.md dist/
-          cd dist && zip -r "../NieRVR-${GITHUB_REF_NAME//\//-}.zip" .
+          cp LICENSE README.md dist/
+          # code compiled into d3d11.dll: their licences ship with it
+          cp .deps/imgui-src/LICENSE.txt dist/LICENSE-imgui.txt
+          cp .deps/minhook-src/LICENSE.txt dist/LICENSE-minhook.txt
+          cd dist && zip -r "../${{ needs.version.outputs.zip }}" .
 
       - uses: actions/upload-artifact@v4
         with:
@@ -79,9 +116,26 @@ jobs:
             dist/
             build/d3d11.map
 
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.compiler == 'gcc'
-        uses: softprops/action-gh-release@v2
+      - if: matrix.compiler == 'clang' && needs.version.outputs.tag != ''
+        uses: actions/upload-artifact@v4
         with:
-          files: NieRVR-${{ github.ref_name }}.zip
+          name: release-zip
+          path: ${{ needs.version.outputs.zip }}
+
+  release:
+    needs: [version, build]
+    if: needs.version.outputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-zip
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: ${{ needs.version.outputs.zip }}
           generate_release_notes: true
+          prerelease: ${{ contains(needs.version.outputs.tag, '-') }}
+          draft: true
