@@ -66,17 +66,17 @@ const Setting kSettings[] = {
         "camera using its depth"),
     S_INT("Stereo", "ReprojectionEdges", reprojectEdges, 0, 0, 1,
         "Depth reprojection: 1 = fill the gaps it opens behind 2B and other near things with the\n"
-        "background; 0 = stretch their edges over the gap (0.3.30/0.4.0 look)"),
+        "background; 0 = stretch their edges over the gap"),
     S_INT("Stereo", "BothEyes", bothEyes, 0, 0, 1,
         "Experimental: 1 = both eyes every game frame (the frame is drawn a second time for the right\n"
         "eye: no alternating, but about twice the GPU work). 0 = alternate eyes. F5 switches it in game"),
     S_INT("Stereo", "PosePrediction", posePrediction, 1, 0, 1,
         "1 = predict the head pose each game frame is rendered with for the moment it will actually be\n"
-        "shown (measured), so fast head turns show fewer black edges. 0 = as before 0.4.4"),
+        "shown (measured), so fast head turns show fewer black edges. 0 = off"),
     S_INT("Stereo", "LateWarp", lateWarp, 1, 0, 1,
         "1 = each headset frame, both eye images are re-aimed to the headset's own pose and cut to each\n"
         "eye's own field of view before they are sent (needed by streaming headsets: Quest, Pico, ...).\n"
-        "0 = sent as rendered (0.5.0 and earlier)"),
+        "0 = sent as rendered"),
     S_INT("Stereo", "TopDownFlat", topDownFlat, 0, 0, 1,
         "1 = show steep top-down views (e.g. the flight-unit shooting sections) on the flat screen\n"
         "instead of in 3D. Shift+F12 in game. Goes flat after 1 s at TopDownFlatFrom degrees or more,\n"
@@ -135,7 +135,7 @@ const Setting kSettings[] = {
          "Places in the game (exe offsets, comma separated) that always get the game's own field of view:\n"
          "0x729b49 = the camera code that also aims Pod 042 (the wide view made it shoot at the sky)"),
     S_INT("Render", "WideProjection", wideProjection, 0, 0, 1,
-        "1 = the game camera's own projection also gets the wide view (0.3.22; makes Pod 042 aim at the sky)"),
+        "1 = the game camera's own projection also gets the wide view (makes Pod 042 aim at the sky)"),
     S_INT("Render", "ReuseShadows", reuseShadows, 1, 0, 1,
         "Both eyes: the right eye reuses the left eye's shadow map (saves graphics work; 0 = draw it again)"),
     S_FLT("Render", "HeadCullingMargin", headCullMargin, 20, 0, 60,
@@ -304,37 +304,6 @@ int AddMissingSettings() {
     return added;
 }
 
-// Inis written by older versions: old defaults that were replaced get the new ones (values the
-// user changed are kept).
-void MigrateOldIni() {
-    float a, b;
-    // 0.5.0: new defaults (user-tested), once ([VR] SettingsVersion=50)
-    if (!ReadNumber("VR", "SettingsVersion", &a) || a < 50) {
-        if (ReadNumber("Stereo", "FovScale", &a) && a > 0.999f && a < 1.001f) {
-            WriteRaw("Stereo", "FovScale", "1.1");
-            Log("config: FovScale 1.0 (the old default) -> 1.10 (the new default)");
-        }
-        if (ReadNumber("Stereo", "WorldScale", &a) && a > 0.929f && a < 0.931f) {
-            WriteRaw("Stereo", "WorldScale", "0.75");
-            Log("config: WorldScale 0.93 (the old default) -> 0.75 (the new default)");
-        }
-        WriteRaw("VR", "SettingsVersion", "50");
-    }
-    // 0.3.12's 55/75 left the flight-unit view half levelled
-    if (ReadNumber("Stereo", "SteepViewFrom", &a) && ReadNumber("Stereo", "SteepViewFull", &b) && a > 54.9f &&
-        a < 55.1f && b > 74.9f && b < 75.1f) {
-        WriteRaw("Stereo", "SteepViewFrom", "45");
-        WriteRaw("Stereo", "SteepViewFull", "60");
-    }
-    // CullingFov: 120 and 150 were old defaults; above 170 isn't a field of view (logged at startup)
-    if (ReadNumber("Render", "CullingFov", &a) && ((a > 119.9f && a < 120.1f) || (a > 149.9f && a < 150.1f) || a > 170)) {
-        if (a > 170) g_cfg.cullFovAsked = a;
-        WriteRaw("Render", "CullingFov", "170");
-    }
-    // FlatBelowDraws: the old default 150 missed the New Game screen
-    if (ReadNumber("Stereo", "FlatBelowDraws", &a) && a == 150) WriteRaw("Stereo", "FlatBelowDraws", "250");
-}
-
 // "0x729b49, 0x123" -> offsets
 void ParseHexList(const wchar_t* buf, unsigned* out, int* count, int max) {
     *count = 0;
@@ -367,7 +336,6 @@ const Setting* Find(const void* field) {
 void ConfigLoad() {
     if (GetFileAttributesW(g_iniPath) == INVALID_FILE_ATTRIBUTES) WriteDefaultIni();
     g_cfg.iniAdded = AddMissingSettings();
-    MigrateOldIni();
 
     for (const Setting& s : kSettings) {
         if (s.kind == K_PATH) {
@@ -395,13 +363,13 @@ void ConfigLoad() {
     wchar_t buf[200];
     if (!ReadRaw("Render", "FovRealCallers", buf, 200)) Widen("0x729b49", buf, 200);
     ParseHexList(buf, g_cfg.fovRealCallers, &g_cfg.fovRealCount, 8);
-    // the camera-easing fov reader found in game; 0.3.23: the Steam build's value as the default
-    // (checked in game: a wrong one is dropped and searched again)
+    // the camera-easing fov reader found in game; defaults to the Steam build's (checked in game:
+    // a wrong one is dropped and searched again)
     unsigned easing[1];
     int n = 0;
     if (ReadRaw("Render", "FovEasingCaller", buf, 200)) ParseHexList(buf, easing, &n, 1);
     g_cfg.fovEasingCaller = n ? easing[0] : 0x7397de;
-    g_cfg.eyeSync = 0;  // removed in 0.5.1 (late warp re-aims both eyes)
+    g_cfg.eyeSync = 0;  // no longer used: late warp re-aims both eyes
 }
 
 // Writes one setting of g_cfg (pass its field: &g_cfg.worldScale) to NieRVR.ini.

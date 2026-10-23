@@ -33,8 +33,6 @@ FetchContent_MakeAvailable(minhook imgui)  # sets minhook_SOURCE_DIR, imgui_SOUR
 
 file(GLOB_RECURSE NIERVR_SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.S)
 list(FILTER NIERVR_SOURCES EXCLUDE REGEX "/src/gen/")  # thunks.S is listed below
-# stand-ins for the C runtime from the -nostdlib days; the real one is linked now
-list(FILTER NIERVR_SOURCES EXCLUDE REGEX "/src/core/(crt\\.cpp|chkstk\\.S)$")
 add_library(nier_vr SHARED
     ${NIERVR_SOURCES}
     src/gen/thunks.S
