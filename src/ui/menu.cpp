@@ -1,8 +1,9 @@
-// menu.cpp - the in-headset settings menu (0.3.29).
+// menu.cpp - the in-headset settings menu.
 //
-// Opened with Insert (keyboard) or by holding both stick buttons (L3 + R3) for half a second on a
-// gamepad or the VR controllers. Navigation: D-pad / left stick up-down to choose, left-right to change, A to switch,
-// LB / RB for the pages, B (or Insert) to close. While it is open the game doesn't see the
+// Opened with the menu key ([Keys] Menu, default Insert) or, on a gamepad or the VR controllers, by
+// holding B and pressing A.
+// Navigation: D-pad / left stick up-down to choose, left-right to change, A to switch, LB / RB or
+// the triggers for the pages, B or the menu key to close. While it is open the game doesn't see the
 // gamepad (XInputGetState is hooked and returns a neutral pad). Every change applies at once and
 // is written to NieRVR.ini; a few settings only take effect after a restart and say so.
 //
@@ -219,6 +220,8 @@ const Rgb kBg = {30, 29, 26}, kText = {218, 212, 187}, kDim = {150, 145, 128}, k
 
 const int kRowsTop = 150, kRowH = 52, kRowsMax = 11;
 
+void KeyName(int vk, char* out, size_t cap);
+
 void Draw() {
     g_cv.Fill(0, 0, kW, kH, kBg);
     g_cv.Fill(0, 0, kW, 4, kAccent);
@@ -293,7 +296,12 @@ void Draw() {
     if (sel < p.count && p.items[sel].help) g_cv.Wrapped(kFontSmall, 40, 752, kW - 80, p.items[sel].help, kText, 3);
     g_cv.Fill(40, 846, kW - 80, 2, kBar);
     g_cv.Text(kFontSmall, 40, 858, "Gamepad:  Up/Down choose   Left/Right change   A switch   LB/RB or triggers page   B close", kDim, kW - 80);
-    g_cv.Text(kFontSmall, 40, 890, "Keyboard:  arrows   Enter   PgUp/PgDn   Insert to close", kDim, kW - 80);
+    {
+        char key[64], line[160];
+        KeyName(g_cfg.keyMenu, key, sizeof(key));
+        snprintf(line, sizeof(line), "Keyboard:  arrows   Enter   PgUp/PgDn   %s to close", key);
+        g_cv.Text(kFontSmall, 40, 890, line, kDim, kW - 80);
+    }
 }
 
 // Moves the selection to the next selectable row.
@@ -333,11 +341,29 @@ struct Repeat {
 };
 Repeat g_up, g_down, g_left, g_right;
 WORD g_prevButtons;
-DWORD g_comboSince;
-bool g_comboFired;  // the L3+R3 hold already opened/closed the menu (0.4.0 re-fired it every frame)
+bool g_comboLocked;  // B closed the menu: B + A can't open it again until B is let go
 bool g_keyPrev[256];
 
+// A key's name as the keyboard layout calls it ("Insert", "F1", ...).
+void KeyName(int vk, char* out, size_t cap) {
+    UINT sc = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC);
+    switch (vk) {  // keys on the extended part of the keyboard (else the name of the numpad key)
+        case VK_INSERT: case VK_DELETE: case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
+        case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_DIVIDE: case VK_NUMLOCK:
+        case VK_RCONTROL: case VK_RMENU: case VK_SNAPSHOT:
+            sc |= 0x100;
+            break;
+    }
+    wchar_t w[64];
+    if (vk <= 0 || !GetKeyNameTextW((LONG)(sc << 16), w, 64)) {
+        snprintf(out, cap, vk > 0 ? "key 0x%X" : "(no key)", (unsigned)vk);
+        return;
+    }
+    snprintf(out, cap, "%s", Utf8(w).s);
+}
+
 bool KeyEdge(int vk, bool fg) {
+    if (vk <= 0 || vk > 255) return false;
     bool d = (GetAsyncKeyState(vk) & 0x8000) != 0;
     bool e = d && !g_keyPrev[vk];
     g_keyPrev[vk] = d;
@@ -399,24 +425,21 @@ void MenuTick(bool foreground) {
     if (pad && g.bRightTrigger > 160) rtHeld = true;
     else if (!pad || g.bRightTrigger < 64) rtHeld = false;
 
-    // open / close
-    bool combo = (b & XINPUT_GAMEPAD_LEFT_THUMB) && (b & XINPUT_GAMEPAD_RIGHT_THUMB);
-    if (!combo) {
-        g_comboSince = 0;
-        g_comboFired = false;
-    } else if (!g_comboSince) {
-        g_comboSince = t ? t : 1;
-    }
-    bool comboFire = combo && !g_comboFired && t - g_comboSince > 450;
-    if (comboFire) g_comboFired = true;  // once per hold
-    bool keyToggle = KeyEdge(VK_INSERT, foreground);
+    // open / close. Gamepad: hold B, then press A. Closing: B, Start or the menu key.
+    if (!(b & XINPUT_GAMEPAD_B)) g_comboLocked = false;
+    bool comboFire = !g_comboLocked && (b & XINPUT_GAMEPAD_B) && (pressed & XINPUT_GAMEPAD_A);
+    bool keyToggle = KeyEdge(g_cfg.keyMenu, foreground);
     if (!g_open) {
-        if (keyToggle || comboFire) Open(true);
-    } else if (keyToggle || comboFire || (pressed & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START))) {
+        if (keyToggle || comboFire) {
+            Open(true);
+            if (comboFire) return;  // this A press opened the menu: don't also use it inside
+        }
+    } else if (keyToggle || (pressed & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START))) {
         Open(false);
+        if (b & XINPUT_GAMEPAD_B) g_comboLocked = true;  // else A with B still down reopens it at once
     }
     if (!g_open) {
-        if (g_waitRelease && !b && !combo) {
+        if (g_waitRelease && !b) {
             g_waitRelease = false;
             g_blockPad = 0;
         }

@@ -68,9 +68,10 @@ Uninstall: delete d3d11.dll (and NieRVR.ini / NieRVR*.log if you like).
 
 Settings menu
 -------------
-Open it with Insert, or by holding both stick buttons (L3 + R3) for half a
-second on a gamepad or the VR controllers. Up/Down choose, Left/Right
-change, A switch, LB/RB change page, B (or Insert) closes. Changes apply at
+Open it with Insert (can be changed in NieRVR.ini: [Keys] Menu), or on a
+gamepad or the VR controllers by holding B and pressing A. Up/Down choose,
+Left/Right change, A switch, LB/RB or the triggers change page, B (or Insert)
+closes. Changes apply at
 once and are saved to NieRVR.ini. The Info page shows frame rates, GPU
 timing and the head-tracking delay.
 
@@ -121,7 +122,7 @@ trackpads = sticks.
 
 Keys (while the game window has focus)
 --------------------------------------
-  Insert          settings menu
+  Insert          settings menu ([Keys] Menu)
   F8              recenter the view and the screen in front of you
   F12             stereo 3D / flat screen
   F5              both eyes every frame on/off

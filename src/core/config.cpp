@@ -43,7 +43,7 @@ const Setting kSettings[] = {
 
     S_INT("Input", "VRControllers", vrControllers, 1, 0, 1,
         "1 = your VR controllers work as a gamepad (Quest/Touch, Index, Pico, Vive, WMR...). A real\n"
-        "gamepad and the keyboard keep working too. 0 = off (also in the in-headset menu, Insert)"),
+        "gamepad and the keyboard keep working too. 0 = off (also in the in-headset menu)"),
     S_INT("Input", "ControllerRumble", vrRumble, 1, 0, 1, "1 = the game's rumble is played on the VR controllers"),
 
     S_FLT("Screen", "Distance", distance, 2.5f, 0.3f, 50, "Virtual screen placement, in metres. Also adjustable in game with the hotkeys below."),
