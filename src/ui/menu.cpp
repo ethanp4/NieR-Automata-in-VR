@@ -40,6 +40,15 @@ Item kView[] = {
 	 "deeper. 0.75 is the default. Also Ctrl+F9 / Ctrl+F10."},
 	{"Camera dolly", T_FLOAT, &g_cfg.cameraDolly, -3.0f, 3.0f, "%.2f m", 0,
 	 "Moves the camera along its line of sight towards the character (positive) for stronger 3D. Also Ctrl+F6 / Ctrl+F7."},
+	{"First person (prototype)", T_BOOL, &g_cfg.firstPerson, 0, 1, nullptr, 0,
+	 "Your eyes go to the point the game camera follows (around 2B) instead of behind her; the right stick still "
+	 "turns you. 2B's head isn't hidden yet: move out of it with the settings below. Also F3."},
+	{"First person: height", T_FLOAT, &g_cfg.fpHeight, -1.5f, 1.5f, "%.2f m", 0,
+	 "Moves your eyes up (positive) or down from the point the camera follows."},
+	{"First person: forward", T_FLOAT, &g_cfg.fpForward, -1.5f, 1.5f, "%.2f m", 0,
+	 "Moves your eyes forward (positive), the way the camera faces, e.g. out of 2B's head."},
+	{"First person: world scale", T_FLOAT, &g_cfg.fpWorldScale, 0.2f, 3.0f, "%.2f", F_LOG,
+	 "Like World scale, while in first person. 1 = life size."},
 	{"Level the horizon", T_BOOL, &g_cfg.levelCamera, 0, 1, nullptr, 0,
 	 "Removes the game camera's up/down tilt so the horizon stays level (comfort). Steep top-down views keep "
 	 "their tilt (see below)."},

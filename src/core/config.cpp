@@ -107,6 +107,16 @@ const Setting kSettings[] = {
 	S_FLT("Stereo", "CameraDolly", cameraDolly, 0, -5, 5,
 		"Metres to move the camera towards the character along its line of sight: closer = stronger 3D\n"
 		"without shrinking the world (Ctrl+F6 / Ctrl+F7 in game)"),
+	S_INT("Stereo", "FirstPerson", firstPerson, 0, 0, 1,
+		"Prototype: 1 = first person: your eyes are at the point the game camera follows (around 2B)\n"
+		"instead of behind her; the right stick still turns you. F3 switches it. 2B's head isn't hidden\n"
+		"yet: move out of it with FirstPersonHeight / FirstPersonForward"),
+	S_FLT("Stereo", "FirstPersonHeight", fpHeight, 0, -1.5f, 1.5f,
+		"First person: metres (game units) above the point the camera follows"),
+	S_FLT("Stereo", "FirstPersonForward", fpForward, 0, -1.5f, 1.5f,
+		"First person: metres ahead of it, the way the camera faces"),
+	S_FLT("Stereo", "FirstPersonWorldScale", fpWorldScale, 1, 0.2f, 3,
+		"First person: WorldScale (see above) while in first person. 1 = life size"),
 	S_INT("Stereo", "Anamorphic", anamorphic, 1, 0, 1,
 		"1 = stretch the game image to each eye's own field of view (sharper, no cropping); 0 = off"),
 	S_FLT("Stereo", "VerticalFill", verticalFill, 1, 0, 1,
@@ -185,6 +195,7 @@ const Setting kSettings[] = {
 	S_HEX("Keys", "Closer", keyCloser, VK_F6, nullptr),
 	S_HEX("Keys", "Farther", keyFarther, VK_F7, nullptr),
 	S_HEX("Keys", "ToggleStereo", keyStereo, VK_F12, nullptr),
+	S_HEX("Keys", "FirstPerson", keyFirstPerson, VK_F3, "First person on/off (prototype, F3)"),
 	S_HEX("Keys", "Menu", keyMenu, VK_INSERT, "Opens and closes the in-headset settings menu (default Insert = 0x2D; 0 = no key)"),
 
 	S_PATH("OpenXR", "LoaderPath", loaderPath,

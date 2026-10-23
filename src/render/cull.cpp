@@ -163,7 +163,7 @@ bool g_headCullRefused, g_hcLogged;
 bool g_hcRestoreOk;      // the after-call hook is in place
 float* volatile g_hcBlock;  // block changed and not yet restored (0 = none)
 DWORD g_hcTid;
-float g_hcSaved[6];
+float g_hcSaved[9];  // eye, target, up
 volatile LONG g_hcRestored;
 
 static bool OnThisStack(const void* p, size_t n) {
@@ -171,6 +171,17 @@ static bool OnThisStack(const void* p, size_t n) {
 	const uint8_t* a = (const uint8_t*)p;
 	return a >= (const uint8_t*)tib->StackLimit && a + n <= (const uint8_t*)tib->StackBase;
 }
+
+// First person: the last few look-ats the camera update made (logic thread), for the render thread to
+// pick the one of the frame it draws.
+struct LookAt {
+	float eye[3], target[3];
+	DWORD tick;
+};
+SRWLOCK g_laLock = SRWLOCK_INIT;
+LookAt g_la[6];
+int g_laNext;
+volatile LONG g_fpCull;  // culling views moved to the first-person position
 
 extern "C" void nvr_head_cull_builder(float* eye, float* target, float* up) {
 	if (g_headCullRefused) return;
@@ -191,13 +202,33 @@ extern "C" void nvr_head_cull_builder(float* eye, float* target, float* up) {
 		Log("culling: head direction: look-at block at %s (%s)", where,
 			stack ? "on the stack" : "game data: put back right after the call");
 	}
+	{
+		AcquireSRWLockExclusive(&g_laLock);
+		LookAt& l = g_la[g_laNext];
+		memcpy(l.eye, eye, 12);
+		memcpy(l.target, target, 12);
+		l.tick = GetTickCount();
+		g_laNext = (g_laNext + 1) % 6;
+		ReleaseSRWLockExclusive(&g_laLock);
+	}
+	// Head culling: turn the view the way the headset looks. First person: also move it to where your
+	// eyes are, so what's behind the third-person camera's position isn't culled.
 	pure::M4 rel;
 	float t[3], u[3];
-	if (!StereoHeadRelative(&rel) || !pure::head_lookat(eye, target, up, rel, t, u)) {
-		InterlockedIncrement(&g_hcSkipped);
-		return;
+	bool turn = g_cfg.headCulling && StereoHeadRelative(&rel) && pure::head_lookat(eye, target, up, rel, t, u);
+	if (g_cfg.headCulling && !turn) InterlockedIncrement(&g_hcSkipped);
+	if (!turn) {
+		memcpy(t, target, 12);
+		memcpy(u, up, 12);
 	}
-	if (!g_hcLogged) {
+	float fp[3], shift[3] = {0, 0, 0};
+	bool moved = g_cfg.firstPerson && StereoWatching() &&
+				 pure::first_person_pos(eye, target, g_cfg.fpHeight, g_cfg.fpForward, fp);
+	if (moved)
+		for (int k = 0; k < 3; k++) shift[k] = fp[k] - eye[k];
+	if (!turn && !moved) return;
+	if (moved) InterlockedIncrement(&g_fpCull);
+	if (turn && !g_hcLogged) {
 		g_hcLogged = true;
 		Log("culling: head direction: first turn; eye %.2f %.2f %.2f, target %.2f %.2f %.2f -> %.2f %.2f %.2f, "
 			"up %.3f %.3f %.3f -> %.3f %.3f %.3f",
@@ -206,22 +237,28 @@ extern "C" void nvr_head_cull_builder(float* eye, float* target, float* up) {
 			(double)u[1], (double)u[2]);
 	}
 	if (!stack) {
-		memcpy(g_hcSaved, target, 12);
-		memcpy(g_hcSaved + 3, up, 12);
+		memcpy(g_hcSaved, eye, 12);
+		memcpy(g_hcSaved + 3, target, 12);
+		memcpy(g_hcSaved + 6, up, 12);
 		g_hcTid = GetCurrentThreadId();
 		g_hcBlock = eye;
 	}
+	for (int k = 0; k < 3; k++) {
+		eye[k] += shift[k];
+		t[k] += shift[k];
+	}
 	memcpy(target, t, 12);
 	memcpy(up, u, 12);
-	InterlockedIncrement(&g_hcDone);
+	if (turn) InterlockedIncrement(&g_hcDone);
 }
 
 // fovstubs.S (nvr_post_builder): right after the frustum builder call returns.
 extern "C" void nvr_head_cull_restore() {
 	float* b = g_hcBlock;
 	if (!b || g_hcTid != GetCurrentThreadId()) return;
-	memcpy(b + 4, g_hcSaved, 12);
-	memcpy(b + 8, g_hcSaved + 3, 12);
+	memcpy(b, g_hcSaved, 12);
+	memcpy(b + 4, g_hcSaved + 3, 12);
+	memcpy(b + 8, g_hcSaved + 6, 12);
 	g_hcBlock = nullptr;
 	InterlockedIncrement(&g_hcRestored);
 }
@@ -661,6 +698,29 @@ LARGE_INTEGER g_qpf, g_lastFrame;
 double g_ftSum, g_ftMax;
 LONG g_ftCount, g_ftSlow, g_ftHc;
 
+bool CullingLookAt(const float camPos[3], float eye[3], float target[3], bool* matched) {
+	DWORD now = GetTickCount();
+	int best = -1, newest = -1;
+	float bestD = 0.05f * 0.05f;  // the frame's own look-at: its eye within 5 cm of the camera
+	AcquireSRWLockShared(&g_laLock);
+	for (int i = 0; i < 6; i++) {
+		const LookAt& l = g_la[i];
+		if (!l.tick || now - l.tick > 250) continue;
+		if (newest < 0 || (int)(l.tick - g_la[newest].tick) >= 0) newest = i;
+		float dx = l.eye[0] - camPos[0], dy = l.eye[1] - camPos[1], dz = l.eye[2] - camPos[2];
+		float d = dx * dx + dy * dy + dz * dz;
+		if (d <= bestD) best = i, bestD = d;
+	}
+	int i = best >= 0 ? best : newest;
+	if (i >= 0) {
+		memcpy(eye, g_la[i].eye, 12);
+		memcpy(target, g_la[i].target, 12);
+	}
+	ReleaseSRWLockShared(&g_laLock);
+	*matched = best >= 0;
+	return i >= 0;
+}
+
 void CullingUpdate(bool wide) {
 	{
 		LARGE_INTEGER now;
@@ -683,7 +743,7 @@ void CullingUpdate(bool wide) {
 		nvr_fov_obj = nullptr;
 		for (int i = 0; i < 4; i++) nvr_fov_site_obj[i] = nullptr;
 	}
-	nvr_head_cull = g_wideOn && g_cfg.headCulling && !g_headCullRefused && !g_fovTest ? 1 : 0;
+	nvr_head_cull = g_wideOn && (g_cfg.headCulling || g_cfg.firstPerson) && !g_headCullRefused && !g_fovTest ? 1 : 0;
 	static DWORD last;
 	if (wide && g_hookOk && GetTickCount() - last > 30000) {  // a short report now and then
 		last = GetTickCount();

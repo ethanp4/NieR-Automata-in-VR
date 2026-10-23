@@ -66,6 +66,10 @@ struct Config {
 	int uiSplit;         // HUD/menus on a separate flat layer
 	int anamorphic;      // fill each eye's own FOV shape (non-square pixels) instead of a 16:9 cover
 	float cameraDolly;   // metres to move the camera along its line of sight (towards the character)
+	int firstPerson;     // prototype: eyes at the game camera's look-at target (around 2B), not behind her
+	float fpHeight, fpForward;  // first person: game units above / ahead of that target
+	float fpWorldScale;  // first person: WorldScale (1 = life size)
+	int keyFirstPerson;  // [Keys] FirstPerson
 	// [Render]
 	int extraResolutions;
 	int ambientOcclusion;
@@ -223,6 +227,9 @@ void StereoCountDraw();
 void CullingUpdate(bool wide);
 void CullingObserveGameFov(float deg);
 float CullingGameFov();  // the field of view (deg) the game last asked for, before widening
+// First person: the game camera's last look-at (eye, target), from the frame whose eye is at camPos
+// if there is one (*matched), else the newest. False if none in the last 250 ms.
+bool CullingLookAt(const float camPos[3], float eye[3], float target[3], bool* matched);
 void CullingInstallHook();  // from EnsureInit: hooks the game camera's fov setter
 void CullingWatch();  // diagnostic: hardware breakpoints on the camera fov for 2 s (Ctrl+F5)
 void CullingToggleHeadCulling();  // Ctrl+Shift+F5: head-direction culling on/off (saved)

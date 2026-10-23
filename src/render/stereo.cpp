@@ -106,12 +106,49 @@ pure::M4 Load(const float* p) {
 	return m;
 }
 
+// First person (prototype): this frame's camera stands at the game camera's look-at target.
+bool g_fp;
+unsigned g_fpMatched, g_fpNewest, g_fpNone;
+DWORD g_fpReportTick;
+bool g_fpLogged;
+
+float WorldScale() { return g_fp ? g_cfg.fpWorldScale : g_cfg.worldScale; }
+
 pure::M4 EyeMatrixScaled() {
 	pure::M4 e = g_frame.eyeRel;
-	e.at(0, 3) *= g_cfg.worldScale;
-	e.at(1, 3) *= g_cfg.worldScale;
-	e.at(2, 3) *= g_cfg.worldScale;
+	float s = WorldScale();
+	e.at(0, 3) *= s;
+	e.at(1, 3) *= s;
+	e.at(2, 3) *= s;
 	return e;
+}
+
+// First person: the camera at the point the game camera follows (+ offsets), facing the way it faces
+// with a level horizon. False if the look-at isn't known (head culling's hook in cull.cpp delivers it).
+bool FirstPersonCamera(const pure::M4& C, pure::M4* out) {
+	float cam[3] = {C.at(0, 3), C.at(1, 3), C.at(2, 3)}, eye[3], target[3], p[3];
+	bool matched = false;
+	if (!CullingLookAt(cam, eye, target, &matched) ||
+		!pure::first_person_pos(eye, target, g_cfg.fpHeight, g_cfg.fpForward, p)) {
+		g_fpNone++;
+		return false;
+	}
+	(matched ? g_fpMatched : g_fpNewest)++;
+	*out = pure::m4_level_camera(C);
+	for (int k = 0; k < 3; k++) out->at(k, 3) = p[k];
+	if (!g_fpLogged) {
+		g_fpLogged = true;
+		float dx = target[0] - eye[0], dy = target[1] - eye[1], dz = target[2] - eye[2];
+		Log("first person: on; the camera follows a point %.2f units away (%.2f up), eyes at %.2f %.2f %.2f",
+			(double)pure::fsqrt(dx * dx + dy * dy + dz * dz), (double)dy, (double)p[0], (double)p[1], (double)p[2]);
+	}
+	if (GetTickCount() - g_fpReportTick > 30000) {
+		g_fpReportTick = GetTickCount();
+		Log("first person: last 30 s: %u frames with their own look-at, %u with the newest, %u without", g_fpMatched,
+			g_fpNewest, g_fpNone);
+		g_fpMatched = g_fpNewest = g_fpNone = 0;
+	}
+	return true;
 }
 
 bool IsMainScene(const float* d) {
@@ -146,11 +183,19 @@ void PatchScene(float* d) {
 		}
 	}
 	if (!g_secondEye) NotePitch(pure::camera_pitch_deg(C));
-	// CameraDolly: move along the game camera's own line of sight (towards the character it
-	// follows) so nearby things get real depth without changing the world's scale.
-	for (int k = 0; k < 3; k++) {
-		g_lastDolly[k] = -C.at(k, 2) * g_cfg.cameraDolly;
-		C0.at(k, 3) += g_lastDolly[k];
+	pure::M4 fpCam;
+	g_fp = g_cfg.firstPerson && FirstPersonCamera(C, &fpCam);
+	if (g_fp) {
+		// g_lastDolly: the camera's move away from the game's, also for CamParam's position
+		for (int k = 0; k < 3; k++) g_lastDolly[k] = fpCam.at(k, 3) - C.at(k, 3);
+		C0 = fpCam;
+	} else {
+		// CameraDolly: move along the game camera's own line of sight (towards the character it
+		// follows) so nearby things get real depth without changing the world's scale.
+		for (int k = 0; k < 3; k++) {
+			g_lastDolly[k] = -C.at(k, 2) * g_cfg.cameraDolly;
+			C0.at(k, 3) += g_lastDolly[k];
+		}
 	}
 	g_lastCam = C0;
 	g_haveCam = true;
@@ -158,12 +203,12 @@ void PatchScene(float* d) {
 	// Diagnostics: the eye separation applied (both eyes from the same head pose, in game units),
 	// logged when it changes, i.e. after Ctrl+F9/F10.
 	{
-		float sep = g_frame.ipd * g_cfg.worldScale;
+		float sep = g_frame.ipd * WorldScale();
 		if (sep > 0 && (g_loggedSep <= 0 || sep > g_loggedSep * 1.02f || sep < g_loggedSep / 1.02f) &&
 			LogBudget(&g_sepBudget, 60)) {
 			g_loggedSep = sep;
 			Log("stereo: eye separation in the game world now %.2f cm (world scale %.3f)", (double)(sep * 100),
-				(double)g_cfg.worldScale);
+				(double)WorldScale());
 		}
 	}
 	{

@@ -597,6 +597,19 @@ inline int supersample_sizes(uint32_t bw, uint32_t bh, const uint32_t* listed, i
 	return n;
 }
 
+// First person (stereo.cpp, cull.cpp): where your eyes go, from the game camera's look-at (eye ->
+// target, the point it follows: around 2B): the target, `height` up (+Y) and `forward` along the
+// camera's horizontal facing. False when the camera looks straight up or down.
+inline bool first_person_pos(const float eye[3], const float target[3], float height, float forward, float out[3]) {
+	float fx = target[0] - eye[0], fz = target[2] - eye[2];
+	float l = fsqrt(fx * fx + fz * fz);
+	if (!(l > 1e-4f)) return false;
+	out[0] = target[0] + fx / l * forward;
+	out[1] = target[1] + height;
+	out[2] = target[2] + fz / l * forward;
+	return true;
+}
+
 // Upscaling (upscale.cpp): the i-th number (i >= 1) of the Halton sequence in base b, in [0, 1).
 // Bases 2 and 3 together spread the sub-pixel offsets evenly over a pixel.
 inline float halton(uint32_t i, uint32_t b) {

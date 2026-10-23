@@ -1074,8 +1074,13 @@ static void HandleHotkeys() {
 	// Always poll so edge detection stays correct, only act while the game has focus.
 	bool rc = KeyPressed(g_cfg.keyRecenter), sm = KeyPressed(g_cfg.keySmaller), lg = KeyPressed(g_cfg.keyLarger),
 		 cl = KeyPressed(g_cfg.keyCloser), fa = KeyPressed(g_cfg.keyFarther), st = KeyPressed(g_cfg.keyStereo),
-		 f11 = KeyPressed(VK_F11), f5 = KeyPressed(VK_F5);
+		 f11 = KeyPressed(VK_F11), f5 = KeyPressed(VK_F5), fp = KeyPressed(g_cfg.keyFirstPerson);
 	if (!fg) return;
+	if (fp) {
+		g_cfg.firstPerson = !g_cfg.firstPerson;
+		Log("first person %s", g_cfg.firstPerson ? "ON (prototype)" : "OFF");
+		ConfigSave(&g_cfg.firstPerson);
+	}
 	if (f5) {
 		bool c = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0, s = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 		if (c && s) CullingToggleHeadCulling();  // Ctrl+Shift+F5: head-direction culling on/off
