@@ -449,13 +449,13 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
             size_t at = 0;
             why[0] = 0;
             for (int i = 0; i < WHY_COUNT; i++)
-                if (g_why[i]) at += pure::format(why + at, sizeof(why) - at, "%s%u x %s", at ? ", " : "", g_why[i], kWhy[i]);
+                if (g_why[i]) at += snprintf(why + at, sizeof(why) - at, "%s%u x %s", at ? ", " : "", g_why[i], kWhy[i]);
             Log("depth reprojection: %u images moved to the new camera, %u frames without (30 s)%s%s", g_warps, g_skips,
                 at ? ": " : "", why);
         }
         memset(g_why, 0, sizeof(g_why));
         char info[160];
-        pure::format(info, sizeof(info), "Depth reprojection: %u of %u frames in the last 30 s", g_warps, g_warps + g_skips);
+        snprintf(info, sizeof(info), "Depth reprojection: %u of %u frames in the last 30 s", g_warps, g_warps + g_skips);
         MenuSetInfo(10, info);
         g_warps = g_skips = 0;
     }

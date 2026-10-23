@@ -76,7 +76,7 @@ void Describe(ID3D11View* v, char* out, size_t n, bool* fullDepth, ID3D11DepthSt
     if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
         D3D11_TEXTURE2D_DESC d;
         ((ID3D11Texture2D*)r)->GetDesc(&d);
-        pure::format(out, n, "%ux%u f%d", d.Width, d.Height, (int)d.Format);
+        snprintf(out, n, "%ux%u f%d", d.Width, d.Height, (int)d.Format);
         // depth buffer details, once per size (for the depth-based eye correction)
         if (dsv && (ID3D11View*)dsv == v && d.Width >= 640) {
             unsigned key = d.Width * 7919u + d.Height;
@@ -115,14 +115,14 @@ void GpuProfFrameStart(ID3D11DeviceContext* c) {
 void GpuProfMark(ID3D11DeviceContext* c, const char* label) {
     if (!g_active || c != g_ctx || g_f.n >= kMax) return;
     Mark& m = g_f.marks[g_f.n];
-    pure::format(m.label, sizeof(m.label), "%s", label);
+    snprintf(m.label, sizeof(m.label), "%s", label);
     m.draws = 0;
     LARGE_INTEGER q;
     QueryPerformanceCounter(&q);
     m.cpu = q.QuadPart;
     c->End(g_f.ts[g_f.n]);
     g_f.n++;
-    pure::format(g_lastLabel, sizeof(g_lastLabel), "%s", label);
+    snprintf(g_lastLabel, sizeof(g_lastLabel), "%s", label);
 }
 
 // A render-target change of the game (or of the replay, prefix "R ").
@@ -134,11 +134,11 @@ void GpuProfTargets(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* cons
     Describe(rt0, a, sizeof(a), nullptr, nullptr);
     Describe(dsv, b, sizeof(b), nullptr, dsv);
     if (rt0)
-        pure::format(label, sizeof(label), "%s%s%s%s", prefix, a, n > 1 ? " +MRT" : "", dsv ? " +depth" : "");
+        snprintf(label, sizeof(label), "%s%s%s%s", prefix, a, n > 1 ? " +MRT" : "", dsv ? " +depth" : "");
     else if (dsv)
-        pure::format(label, sizeof(label), "%sdepth only %s", prefix, b);
+        snprintf(label, sizeof(label), "%sdepth only %s", prefix, b);
     else
-        pure::format(label, sizeof(label), "%sno target", prefix);
+        snprintf(label, sizeof(label), "%sno target", prefix);
     GpuProfMark(c, label);
 }
 // kind: 1 light lists, 2 GI volumes (probe selection), else another compute pass. Each kind gets its
@@ -146,7 +146,7 @@ void GpuProfTargets(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* cons
 void GpuProfCompute(ID3D11DeviceContext* c, const char* prefix, int kind) {
     if (!g_active || c != g_ctx) return;
     char label[56];
-    pure::format(label, sizeof(label), "%scompute: %s", prefix,
+    snprintf(label, sizeof(label), "%scompute: %s", prefix,
                  kind == 1 ? "light lists" : kind == 2 ? "GI volumes" : "other");
     if (strcmp(label, g_lastLabel) != 0) GpuProfMark(c, label);
 }
@@ -215,7 +215,7 @@ void GpuProfPoll(ID3D11DeviceContext* c) {
         "GIVolumes=%d); %d passes",
         total, cpuTotal, left, ui, right, shadowR, giMs, giN, g_cfg.giVolumes, g_f.n - 1);
     char info[160];
-    pure::format(info, sizeof(info), "GPU per frame %.1f ms: left scene %.1f, UI %.1f, right eye %.1f; GI pass %.2f ms",
+    snprintf(info, sizeof(info), "GPU per frame %.1f ms: left scene %.1f, UI %.1f, right eye %.1f; GI pass %.2f ms",
                  total, left, ui, right, giMs);
     MenuSetInfo(4, info);
     for (int k = 0; k < ns && k < 10; k++) {
@@ -224,7 +224,7 @@ void GpuProfPoll(ID3D11DeviceContext* c) {
         double cpu = (double)(g_f.marks[segs[k].i + 1].cpu - m.cpu) * cpuToMs;
         Log("gpu timing:   %6.2f ms  %-44s %4u draws  (CPU %.2f ms)", segs[k].ms, m.label, m.draws, cpu);
         if (k < 5) {
-            pure::format(info, sizeof(info), "  %.2f ms  %s (%u draws)", segs[k].ms, m.label, m.draws);
+            snprintf(info, sizeof(info), "  %.2f ms  %s (%u draws)", segs[k].ms, m.label, m.draws);
             MenuSetInfo(5 + k, info);
         }
     }

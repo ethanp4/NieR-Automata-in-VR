@@ -159,7 +159,7 @@ static void OnFirstGameDevice(ID3D11Device* dev) {
             if (SUCCEEDED(adapter->GetDesc(&ad))) {
                 g_share.gameLuid = ad.AdapterLuid;
                 g_share.gameLuidValid = true;
-                Log("game GPU: %S (LUID %08x:%08x, %u MB VRAM)", ad.Description, (unsigned)ad.AdapterLuid.HighPart,
+                Log("game GPU: %s (LUID %08x:%08x, %u MB VRAM)", Utf8(ad.Description).s, (unsigned)ad.AdapterLuid.HighPart,
                     (unsigned)ad.AdapterLuid.LowPart, (unsigned)(ad.DedicatedVideoMemory >> 20));
             }
             IDXGIFactory1* f1 = nullptr;

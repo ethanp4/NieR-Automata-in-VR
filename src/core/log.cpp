@@ -23,6 +23,11 @@ void LogOpen(const wchar_t* path) {
                             FILE_ATTRIBUTE_NORMAL, nullptr);
 }
 
+Utf8::Utf8(const wchar_t* w) {
+    s[0] = 0;
+    if (w && !WideCharToMultiByte(CP_UTF8, 0, w, -1, s, sizeof(s), nullptr, nullptr)) s[sizeof(s) - 1] = 0;
+}
+
 static void LogWrite(const char* fmt, va_list ap) {
     if (g_logFile == INVALID_HANDLE_VALUE) return;
     char line[2048];
@@ -31,10 +36,11 @@ static void LogWrite(const char* fmt, va_list ap) {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     double secs = (double)(now.QuadPart - g_qpcStart.QuadPart) / (double)g_qpcFreq.QuadPart;
-    int n = pure::format(line, sizeof(line), "%02d:%02d:%02d.%03d [%9.3f] [t%5u] ", st.wHour, st.wMinute, st.wSecond,
+    int n = snprintf(line, sizeof(line), "%02d:%02d:%02d.%03d [%9.3f] [t%5u] ", st.wHour, st.wMinute, st.wSecond,
                          st.wMilliseconds, secs, (unsigned)GetCurrentThreadId());
     if (n > (int)sizeof(line) - 3) n = (int)sizeof(line) - 3;
-    int m = pure::vformat(line + n, sizeof(line) - n - 2, fmt, ap);
+    int m = vsnprintf(line + n, sizeof(line) - n - 2, fmt, ap);
+    if (m < 0) m = 0;  // a bad format string: keep the time stamp
     int total = n + m;
     if (total > (int)sizeof(line) - 3) total = (int)sizeof(line) - 3;
     line[total++] = '\r';

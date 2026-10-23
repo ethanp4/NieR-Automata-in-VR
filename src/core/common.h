@@ -9,6 +9,9 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
+#include <stdio.h>   // snprintf
+#include <stdlib.h>  // wcstol, wcstof
+#include <string.h>
 
 #include "pure.h"
 struct FrameTag;
@@ -19,9 +22,15 @@ struct FrameTag;
 // Logging (log.cpp)
 // ---------------------------------------------------------------------------------------------
 void LogOpen(const wchar_t* path);
-void Log(const char* fmt, ...);
+void Log(const char* fmt, ...) __attribute__((format(gnu_printf, 1, 2)));  // GCC checks the arguments
+// A wide string (path, GPU name) as UTF-8, for "%s": Log("dir: %s", Utf8(path).s). snprintf's own
+// %ls would convert with the C locale and fail on non-ASCII names.
+struct Utf8 {
+    char s[1024];
+    explicit Utf8(const wchar_t* w);
+};
 // Logs only when [Debug] Verbose=1
-void LogV(const char* fmt, ...);
+void LogV(const char* fmt, ...) __attribute__((format(gnu_printf, 1, 2)));
 
 // ---------------------------------------------------------------------------------------------
 // Configuration (config.cpp)  - NieRVR.ini next to the DLL
@@ -93,10 +102,8 @@ extern Config g_cfg;
 extern wchar_t g_modDir[MAX_PATH];  // directory of this DLL, with trailing backslash
 extern wchar_t g_iniPath[MAX_PATH];
 void ConfigLoad();
-void ConfigSaveScreen();  // writes back the [Screen] values after hotkey changes
+bool ConfigSave(const void* field);  // writes one setting to NieRVR.ini: ConfigSave(&g_cfg.worldScale)
 void ConfigSaveEasingCaller(unsigned exeOffset);
-void ConfigSaveStereo();
-void ConfigWrite(const char* section, const char* key, const char* value);  // one ini value (menu)
 // menu.cpp - the in-headset settings menu
 // gpuprof.cpp - GPU timing of one frame every 5 s (diagnostic)
 void GpuProfFrameStart(ID3D11DeviceContext* c);

@@ -250,10 +250,10 @@ void GiReport() {
         g_giInfoTick = t;
         char info[160];
         if (g_giPick.dropping)
-            pure::format(info, sizeof(info), "GI volumes: %d in use, %d nearest kept; the pass checks slots 0-%d of %d",
+            snprintf(info, sizeof(info), "GI volumes: %d in use, %d nearest kept; the pass checks slots 0-%d of %d",
                          g_giPick.used, g_giPick.kept, g_giPick.length - 1, g_giSlots);
         else
-            pure::format(info, sizeof(info), "GI volumes: %d in use (last slot %d), all kept; the pass checks slots 0-%d of %d",
+            snprintf(info, sizeof(info), "GI volumes: %d in use (last slot %d), all kept; the pass checks slots 0-%d of %d",
                          g_giPick.used, g_giPick.highest, g_giPick.length - 1, g_giSlots);
         MenuSetInfo(12, info);
     }

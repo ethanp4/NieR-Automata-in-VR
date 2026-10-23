@@ -240,7 +240,7 @@ void LogProfiles() {
             const char* b = g_profile[1][0] ? g_profile[1] : "(none)";
             if (strstr(a, "/interaction_profiles/") == a) a += 22;
             if (strstr(b, "/interaction_profiles/") == b) b += 22;
-            pure::format(info, sizeof(info), "VR controllers: left %s, right %s", a, b);
+            snprintf(info, sizeof(info), "VR controllers: left %s, right %s", a, b);
             MenuSetInfo(11, info);
         }
     }

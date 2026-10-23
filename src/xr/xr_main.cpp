@@ -156,7 +156,7 @@ static struct {
 static const char* XrStr(XrResult r) {
     static char buf[XR_MAX_RESULT_STRING_SIZE + 16];
     if (X.instance && X.xrResultToString && XR_SUCCEEDED(X.xrResultToString(X.instance, r, buf))) return buf;
-    pure::format(buf, sizeof(buf), "XrResult(%d)", (int)r);
+    snprintf(buf, sizeof(buf), "XrResult(%d)", (int)r);
     return buf;
 }
 
@@ -475,7 +475,7 @@ static bool InitDevice() {
                      (!g_share.gameLuidValid || (d.AdapterLuid.LowPart == g_share.gameLuid.LowPart &&
                                                  d.AdapterLuid.HighPart == g_share.gameLuid.HighPart));
         if (match) {
-            Log("VR device on GPU: %S", d.Description);
+            Log("VR device on GPU: %s", Utf8(d.Description).s);
             X.devLuid = d.AdapterLuid;
             break;
         }
@@ -1043,7 +1043,7 @@ static void HandleHotkeys() {
             Log("both eyes every frame %s", !g_cfg.bothEyes ? "OFF (alternate eyes)"
                                             : ReplayAvailable() ? "ON (the game's frame is drawn again for the right eye)"
                                                                 : "ON, but not available (see the log above)");
-            ConfigSaveStereo();
+            ConfigSave(&g_cfg.bothEyes);
         }
     }
     if (f11 && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
@@ -1056,13 +1056,14 @@ static void HandleHotkeys() {
             g_cfg.ambientOcclusion = !g_cfg.ambientOcclusion;
             Log("ambient occlusion %s", g_cfg.ambientOcclusion ? "ON" : "OFF");
         }
-        ConfigSaveStereo();
+        ConfigSave(&g_cfg.shadows);
+        ConfigSave(&g_cfg.ambientOcclusion);
     }
     if (st && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
         // Shift+F12: TopDownFlat on/off (steep top-down views on the flat screen)
         g_cfg.topDownFlat = !g_cfg.topDownFlat;
         Log("top-down views: %s", g_cfg.topDownFlat ? "flat screen (TopDownFlat=1)" : "stereo (TopDownFlat=0)");
-        ConfigSaveStereo();
+        ConfigSave(&g_cfg.topDownFlat);
         st = false;
     }
     if (st && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
@@ -1095,7 +1096,7 @@ static void HandleHotkeys() {
         g_cfg.worldScale = v < 0.002f ? 0.002f : (v > 50 ? 50 : v);
         Log("world scale %.3f (the world now looks %.2fx its true size)", (double)g_cfg.worldScale,
             (double)(1 / g_cfg.worldScale));
-        ConfigSaveStereo();
+        ConfigSave(&g_cfg.worldScale);
         sm = lg = false;
     }
     if (ctrl && (cl || fa)) {
@@ -1103,7 +1104,7 @@ static void HandleHotkeys() {
         float v = g_cfg.cameraDolly + (cl ? 0.25f : -0.25f);
         g_cfg.cameraDolly = v < -5 ? -5 : (v > 5 ? 5 : v);
         Log("camera dolly %.2f m", (double)g_cfg.cameraDolly);
-        ConfigSaveStereo();
+        ConfigSave(&g_cfg.cameraDolly);
         cl = fa = false;
     }
     if (sm) { g_cfg.width = g_cfg.width / 1.1f < 0.2f ? 0.2f : g_cfg.width / 1.1f; changed = true; }
@@ -1112,7 +1113,8 @@ static void HandleHotkeys() {
     if (fa) { g_cfg.distance = g_cfg.distance + 0.25f > 50.f ? 50.f : g_cfg.distance + 0.25f; changed = true; X.recenterRequested = true; }
     if (changed) {
         Log("screen: distance %.2f m, width %.2f m", (double)g_cfg.distance, (double)g_cfg.width);
-        ConfigSaveScreen();
+        ConfigSave(&g_cfg.distance);
+        ConfigSave(&g_cfg.width);
     }
 }
 
@@ -1272,11 +1274,11 @@ static void LogStats() {
         X.statCovN ? 100.0 * X.statCovSum / X.statCovN : 0.0, 100.0 * X.statCovMax);
     {
         char info[160];
-        pure::format(info, sizeof(info), "Mode: %s", !X.statStereoFrames ? "flat screen"
+        snprintf(info, sizeof(info), "Mode: %s", !X.statStereoFrames ? "flat screen"
                                                      : g_cfg.bothEyes ? "stereo, both eyes every frame"
                                                                       : "stereo, alternate eyes");
         MenuSetInfo(0, info);
-        pure::format(info, sizeof(info), "Headset %.0f fps; game images per second: left %.0f, right %.0f, flat %.0f",
+        snprintf(info, sizeof(info), "Headset %.0f fps; game images per second: left %.0f, right %.0f, flat %.0f",
                      X.statFrames / secs, X.statGameFrames[0] / secs, X.statGameFrames[1] / secs, X.statGameFrames[2] / secs);
         MenuSetInfo(1, info);
     }
@@ -1288,7 +1290,7 @@ static void LogStats() {
             X.statTurnN ? X.statTurnSum / X.statTurnN : 0.0, (double)X.statTurnMax, (double)X.marginDeg,
             X.statTurnN ? 100.0 * X.statTurnOver / X.statTurnN : 0.0);
         char info[160];
-        pure::format(info, sizeof(info), "Head: images shown %.0f ms after their pose; predicting %.0f ms; past margin %.1f%%",
+        snprintf(info, sizeof(info), "Head: images shown %.0f ms after their pose; predicting %.0f ms; past margin %.1f%%",
                      X.statLagN ? X.statLagSum / X.statLagN : 0.0, (double)X.predictNs / 1e6,
                      X.statTurnN ? 100.0 * X.statTurnOver / X.statTurnN : 0.0);
         MenuSetInfo(13, info);
@@ -1301,7 +1303,7 @@ static void LogStats() {
             "up-down; about %ux%u matches it in both directions",
             X.contentW, X.contentH, (double)X.resPct, (double)X.resPctH, X.resSuggestW, X.resSuggestH);
         char info[160];
-        pure::format(info, sizeof(info), "Resolution %ux%u: %.0f%% / %.0f%% of recommended (across / up-down); ~%ux%u matches",
+        snprintf(info, sizeof(info), "Resolution %ux%u: %.0f%% / %.0f%% of recommended (across / up-down); ~%ux%u matches",
                      X.contentW, X.contentH, (double)X.resPct, (double)X.resPctH, X.resSuggestW, X.resSuggestH);
         MenuSetInfo(14, info);
     }
@@ -1792,7 +1794,7 @@ static bool UpdateOverlay() {
         AcquireSRWLockShared(&g_stereo.lock);
         bool stereoOn = g_stereo.enabled;
         ReleaseSRWLockShared(&g_stereo.lock);
-        pure::format(X.ovMode, sizeof(X.ovMode), "%s",
+        snprintf(X.ovMode, sizeof(X.ovMode), "%s",
                      !stereoOn || X.menuMode ? "flat screen" : g_cfg.bothEyes ? "both eyes" : "alternate eyes");
         st.headsetFps = (float)(X.ovFrames / secs);
         for (int i = 0; i < 3; i++) st.gameFps[i] = (float)(X.ovGameFrames[i] / secs);

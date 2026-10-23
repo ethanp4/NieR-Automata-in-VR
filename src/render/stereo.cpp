@@ -544,7 +544,7 @@ void StereoMemoryScan() {
                 for (size_t k = 0; k < g2 / 4 && nl < 500; k++)
                     for (float v : fovValues)
                         if (around[k] > v * 0.9999f && around[k] < v * 1.0001f)
-                            nl += pure::format(nearBuf + nl, sizeof(nearBuf) - nl, " %d:%.5f",
+                            nl += snprintf(nearBuf + nl, sizeof(nearBuf) - nl, " %d:%.5f",
                                                (int)(k * 4) + startOff, (double)around[k]);
                 Log("memscan: camera position at %p (%s)%s%s", at, where, nl ? "; fov-like values at offsets" : "",
                     nearBuf);

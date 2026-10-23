@@ -1800,7 +1800,7 @@ bool ReplaySecondEye(ID3D11DeviceContext* c, bool* inBackbuffer) {
     if (!ok) {
         if (g_cancelWhy) {
             g_statCancelled++;
-            pure::format(g_lastCancel, sizeof(g_lastCancel), "%s", g_cancelWhy);
+            snprintf(g_lastCancel, sizeof(g_lastCancel), "%s", g_cancelWhy);
         }
         return false;
     }
@@ -1815,7 +1815,7 @@ bool ReplaySecondEye(ID3D11DeviceContext* c, bool* inBackbuffer) {
     bool patched = StereoSecondEyePatched(), ready = patched;
     if (ready && g_stoppedAtUi) {
         ready = UiSecondEyeScene(c);
-        if (!ready) pure::format(g_lastCancel, sizeof(g_lastCancel), "%s", "the final pass wasn't seen this frame");
+        if (!ready) snprintf(g_lastCancel, sizeof(g_lastCancel), "%s", "the final pass wasn't seen this frame");
     } else {
         *inBackbuffer = ready;
     }
@@ -1839,7 +1839,7 @@ bool ReplaySecondEye(ID3D11DeviceContext* c, bool* inBackbuffer) {
         char line[900];
         size_t at = 0;
         for (int i = 1; i < OP_COUNT && at + 48 < sizeof(line); i++)
-            if (g_counts[i]) at += pure::format(line + at, sizeof(line) - at, " %s %u,", kOpNames[i], g_counts[i]);
+            if (g_counts[i]) at += snprintf(line + at, sizeof(line) - at, " %s %u,", kOpNames[i], g_counts[i]);
         Log("both eyes: first frame drawn twice: %u calls recorded (%u KB), %s;%s", g_frameCmds, (unsigned)(g_len >> 10),
             g_stoppedAtUi ? "stopped at the first UI draw" : "frame without UI, recorded to Present", line);
     }
@@ -1861,7 +1861,7 @@ void ReplayReport() {
         n ? g_statCopyMs / n : 0.0, n ? g_statCmds / n : 0.0, n ? g_statBytes / n / 1024 : 0.0, n ? g_statSkipped / n : 0.0);
     {
         char info[160];
-        pure::format(info, sizeof(info), "Both eyes: %u of %u frames drawn twice, right eye %.1f ms CPU", g_statReplayed,
+        snprintf(info, sizeof(info), "Both eyes: %u of %u frames drawn twice, right eye %.1f ms CPU", g_statReplayed,
                      g_statFrames, n ? g_statReplayMs / n : 0.0);
         MenuSetInfo(3, info);
     }

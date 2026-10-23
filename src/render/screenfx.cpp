@@ -129,7 +129,7 @@ bool ScreenFxSkipEffectDraw(ID3D11DeviceContext* c, uint32_t sampled, uint64_t s
         list[0] = 0;
         for (auto& e : g_skipped)
             if (e.count && at + 40 < sizeof(list))
-                at += pure::format(list + at, sizeof(list) - at, " %08x/t%u x%u", (unsigned)(e.hash & 0xffffffff),
+                at += snprintf(list + at, sizeof(list) - at, " %08x/t%u x%u", (unsigned)(e.hash & 0xffffffff),
                                    e.slot, e.count);
         Log("screen filter: %u draws removed in the last minute (shader/slot/count:%s)", g_filterSkips, list);
         for (auto& e : g_skipped) e = {};

@@ -78,7 +78,7 @@ void Contents(const OverlayStats& s) {
             if (s.frameMs[i] > worst) worst = s.frameMs[i];
         }
         char label[64];
-        pure::format(label, sizeof(label), "headset frame %.1f ms avg, %.1f worst", (double)(sum / s.frameCount), (double)worst);
+        snprintf(label, sizeof(label), "headset frame %.1f ms avg, %.1f worst", (double)(sum / s.frameCount), (double)worst);
         ImGui::PlotLines("##frames", s.frameMs, s.frameCount, s.frameOffset, label, 0.0f, 33.3f,
                          ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 3.0f));
     }

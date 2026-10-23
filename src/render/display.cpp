@@ -573,7 +573,7 @@ void LogAndPatchTables(bool patch) {
         buf[0] = 0;
         for (int k = 0; k < t[i].n && len + 24 < sizeof(buf); k++) {
             const int32_t* r = (const int32_t*)(t[i].addr + (uintptr_t)k * t[i].stride);
-            int w = pure::format(buf + len, sizeof(buf) - len, "%s%dx%d", k ? " " : "", r[0], r[1]);
+            int w = snprintf(buf + len, sizeof(buf) - len, "%s%dx%d", k ? " " : "", r[0], r[1]);
             len += w > 0 ? (size_t)w : 0;
         }
         Log("display: resolution table candidate at NieRAutomata.exe+0x%llx (stride %d, %d entries): %s",

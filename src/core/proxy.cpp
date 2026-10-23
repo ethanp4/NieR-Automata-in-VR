@@ -31,9 +31,9 @@ bool ProxyLoadReal() {
         }
         g_realDll = LoadLibraryW(path);
         if (g_realDll)
-            Log("chain-loaded %S", path);
+            Log("chain-loaded %s", Utf8(path).s);
         else
-            Log("ERROR: ChainLoad '%S' failed to load (error %u), falling back to the system d3d11.dll", path,
+            Log("ERROR: ChainLoad '%s' failed to load (error %u), falling back to the system d3d11.dll", Utf8(path).s,
                 (unsigned)GetLastError());
     }
     if (!g_realDll) {
@@ -41,10 +41,10 @@ bool ProxyLoadReal() {
         lstrcpyW(path + n, L"\\d3d11.dll");
         g_realDll = LoadLibraryW(path);
         if (!g_realDll) {
-            Log("ERROR: could not load %S (error %u)", path, (unsigned)GetLastError());
+            Log("ERROR: could not load %s (error %u)", Utf8(path).s, (unsigned)GetLastError());
             return false;
         }
-        Log("loaded system %S", path);
+        Log("loaded system %s", Utf8(path).s);
     }
     if (g_realDll == g_hSelf) {
         Log("ERROR: real d3d11 resolved to this mod itself - check ChainLoad");

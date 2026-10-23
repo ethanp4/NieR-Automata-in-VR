@@ -13,19 +13,19 @@ static bool IsAbsolute(const wchar_t* p) { return p[0] && (p[1] == L':' || (p[0]
 static PFN_xrGetInstanceProcAddr FromLoaderDll(const wchar_t* path) {
     HMODULE m = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!m) {
-        Log("OpenXR: could not load loader '%S' (error %u)", path, (unsigned)GetLastError());
+        Log("OpenXR: could not load loader '%s' (error %u)", Utf8(path).s, (unsigned)GetLastError());
         return nullptr;
     }
     PFN_xrGetInstanceProcAddr gipa = (PFN_xrGetInstanceProcAddr)(void*)GetProcAddress(m, "xrGetInstanceProcAddr");
-    if (gipa) Log("OpenXR: using loader %S (API layers enabled)", path);
-    else Log("OpenXR: '%S' has no xrGetInstanceProcAddr export", path);
+    if (gipa) Log("OpenXR: using loader %s (API layers enabled)", Utf8(path).s);
+    else Log("OpenXR: '%s' has no xrGetInstanceProcAddr export", Utf8(path).s);
     return gipa;
 }
 
 static bool ReadManifestPath(wchar_t* out, DWORD cap) {
     DWORD n = GetEnvironmentVariableW(L"XR_RUNTIME_JSON", out, cap);
     if (n > 0 && n < cap) {
-        Log("OpenXR: XR_RUNTIME_JSON overrides the active runtime: %S", out);
+        Log("OpenXR: XR_RUNTIME_JSON overrides the active runtime: %s", Utf8(out).s);
         return true;
     }
     DWORD bytes = cap * sizeof(wchar_t);
@@ -43,7 +43,7 @@ static bool ReadManifestPath(wchar_t* out, DWORD cap) {
 static PFN_xrGetInstanceProcAddr FromActiveRuntime() {
     wchar_t manifest[MAX_PATH * 2];
     if (!ReadManifestPath(manifest, MAX_PATH * 2)) return nullptr;
-    Log("OpenXR: active runtime manifest: %S", manifest);
+    Log("OpenXR: active runtime manifest: %s", Utf8(manifest).s);
 
     HANDLE f = CreateFileW(manifest, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) {
@@ -81,7 +81,7 @@ static PFN_xrGetInstanceProcAddr FromActiveRuntime() {
         else full[0] = 0;
         lstrcpynW(full + lstrlenW(full), libW, MAX_PATH * 2 - lstrlenW(full));
     }
-    Log("OpenXR: runtime '%s' -> %S", name, full);
+    Log("OpenXR: runtime '%s' -> %s", name, Utf8(full).s);
 
     HMODULE m = LoadLibraryExW(full, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!m) {

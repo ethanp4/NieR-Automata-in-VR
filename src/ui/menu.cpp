@@ -22,9 +22,7 @@ enum Action { A_RECENTER = 1, A_BOTHEYES_STATS };
 struct Item {
     const char* label;
     Type type;
-    const char* sec;
-    const char* key;
-    void* ptr;
+    void* ptr;  // the g_cfg field (its ini section and key come from config.cpp)
     float min, max, step;
     const char* fmt;
     int flags;
@@ -32,108 +30,108 @@ struct Item {
 };
 
 Item kView[] = {
-    {"Both eyes every frame", T_BOOL, "Stereo", "BothEyes", &g_cfg.bothEyes, 0, 1, 1, nullptr, 0,
+    {"Both eyes every frame", T_BOOL, &g_cfg.bothEyes, 0, 1, 1, nullptr, 0,
      "Draws the game's frame a second time for the right eye: both eyes show the same moment, 60 times a second. "
      "About twice the graphics work. Off: the eyes take turns (30 images a second each). Also F5."},
-    {"World scale", T_FLOAT, "Stereo", "WorldScale", &g_cfg.worldScale, 0.2f, 3.0f, 0.05f, "%.3f", F_LOG,
+    {"World scale", T_FLOAT, &g_cfg.worldScale, 0.2f, 3.0f, 0.05f, "%.3f", F_LOG,
      "Eye distance in the game world. Lower = the world looks bigger and the 3D flatter; higher = smaller, "
      "deeper. 0.75 is the default. Also Ctrl+F9 / Ctrl+F10."},
-    {"Camera dolly", T_FLOAT, "Stereo", "CameraDolly", &g_cfg.cameraDolly, -3.0f, 3.0f, 0.05f, "%.2f m", 0,
+    {"Camera dolly", T_FLOAT, &g_cfg.cameraDolly, -3.0f, 3.0f, 0.05f, "%.2f m", 0,
      "Moves the camera along its line of sight towards the character (positive) for stronger 3D. Also Ctrl+F6 / Ctrl+F7."},
-    {"Level the horizon", T_BOOL, "Stereo", "LevelCamera", &g_cfg.levelCamera, 0, 1, 1, nullptr, 0,
+    {"Level the horizon", T_BOOL, &g_cfg.levelCamera, 0, 1, 1, nullptr, 0,
      "Removes the game camera's up/down tilt so the horizon stays level (comfort). Steep top-down views keep "
      "their tilt (see below)."},
-    {"Keep tilt from", T_FLOAT, "Stereo", "SteepViewFrom", &g_cfg.steepFrom, 10, 89, 1, "%.0f deg", 0,
+    {"Keep tilt from", T_FLOAT, &g_cfg.steepFrom, 10, 89, 1, "%.0f deg", 0,
      "Camera pitch where the game's tilt starts to be kept (top-down sections)."},
-    {"Keep full tilt at", T_FLOAT, "Stereo", "SteepViewFull", &g_cfg.steepFull, 10, 90, 1, "%.0f deg", 0,
+    {"Keep full tilt at", T_FLOAT, &g_cfg.steepFull, 10, 90, 1, "%.0f deg", 0,
      "Camera pitch from which the game's tilt is kept completely."},
-    {"Top-down views flat", T_BOOL, "Stereo", "TopDownFlat", &g_cfg.topDownFlat, 0, 1, 1, nullptr, 0,
+    {"Top-down views flat", T_BOOL, &g_cfg.topDownFlat, 0, 1, 1, nullptr, 0,
      "Shows steep top-down views (flight unit shooting sections) on the flat screen instead of in 3D. Also Shift+F12."},
-    {"Fill eye shape", T_BOOL, "Stereo", "Anamorphic", &g_cfg.anamorphic, 0, 1, 1, nullptr, 0,
+    {"Fill eye shape", T_BOOL, &g_cfg.anamorphic, 0, 1, 1, nullptr, 0,
      "Stretches the image to each eye's own field of view (sharper). Off: a 16:9 picture that covers it."},
-    {"Rendered field of view", T_FLOAT, "Stereo", "FovScale", &g_cfg.fovScale, 0.8f, 1.4f, 0.01f, "%.2fx", 0,
+    {"Rendered field of view", T_FLOAT, &g_cfg.fovScale, 0.8f, 1.4f, 0.01f, "%.2fx", 0,
      "More than 1 draws a margin around your view: fewer black edges when you turn your head quickly or the "
      "game falls behind, at some cost in sharpness. 1.10 is the default; 1.00 is the sharpest."},
-    {"Vertical fill", T_FLOAT, "Stereo", "VerticalFill", &g_cfg.verticalFill, 0.5f, 1.0f, 0.01f, "%.2f", 0,
+    {"Vertical fill", T_FLOAT, &g_cfg.verticalFill, 0.5f, 1.0f, 0.01f, "%.2f", 0,
      "Fraction of your vertical view that is drawn. Lower is sharper with black bars at the top and bottom."},
-    {"Head pose prediction", T_BOOL, "Stereo", "PosePrediction", &g_cfg.posePrediction, 0, 1, 1, nullptr, 0,
+    {"Head pose prediction", T_BOOL, &g_cfg.posePrediction, 0, 1, 1, nullptr, 0,
      "Renders each game frame from where your head will be when it is shown (measured), not where it was: fewer "
      "black edges when you turn your head. The Info page shows the delay it predicts for."},
-    {"Late warp", T_BOOL, "Stereo", "LateWarp", &g_cfg.lateWarp, 0, 1, 1, nullptr, 0,
+    {"Late warp", T_BOOL, &g_cfg.lateWarp, 0, 1, 1, nullptr, 0,
      "Each headset frame, both eye images are re-aimed to where your head is now and cut to each eye's own field of "
      "view. Needed by headsets that stream (Quest, Pico): without it alternate eyes stutter and a Quest looks "
      "cross-eyed. Off: images are sent as rendered (0.5.0)."},
-    {"Depth reprojection (experimental)", T_BOOL, "Stereo", "DepthReprojection", &g_cfg.depthReproject, 0, 1, 1, nullptr,
+    {"Depth reprojection (experimental)", T_BOOL, &g_cfg.depthReproject, 0, 1, 1, nullptr,
      F_ALTERNATE,
-     "Experimental, always starts off. Alternate eyes only: the other eye's last image is moved to where the camera is now, using its depth, so both "
+     "Experimental. Alternate eyes only: the other eye's last image is moved to where the camera is now, using its depth, so both "
      "eyes follow camera motion 60 times a second. Off: each eye updates 30 times a second. No effect with both eyes "
      "every frame."},
-    {"Reprojection gap fill (exp.)", T_BOOL, "Stereo", "ReprojectionEdges", &g_cfg.reprojectEdges, 0, 1, 1, nullptr, F_ALTERNATE,
+    {"Reprojection gap fill (exp.)", T_BOOL, &g_cfg.reprojectEdges, 0, 1, 1, nullptr, F_ALTERNATE,
      "Depth reprojection: where moving the image uncovers the background (around 2B), fill it with the background "
      "instead of stretching 2B's edge over it. Off: the 0.4.0 look, to compare."},
-    {"Recenter", T_ACTION, nullptr, nullptr, (void*)A_RECENTER, 0, 0, 0, nullptr, 0,
+    {"Recenter", T_ACTION, (void*)A_RECENTER, 0, 0, 0, nullptr, 0,
      "Places the screen and the view straight ahead of you again (also F8)."},
 };
 Item kRender[] = {
-    {"Ambient occlusion", T_BOOL, "Render", "AmbientOcclusion", &g_cfg.ambientOcclusion, 0, 1, 1, nullptr, 0,
+    {"Ambient occlusion", T_BOOL, &g_cfg.ambientOcclusion, 0, 1, 1, nullptr, 0,
      "NieR's ambient occlusion (soft contact shadows). Off removes it (it is half resolution and can look blotchy "
      "up close). Also Ctrl+F11."},
-    {"Shadows", T_BOOL, "Render", "Shadows", &g_cfg.shadows, 0, 1, 1, nullptr, 0,
+    {"Shadows", T_BOOL, &g_cfg.shadows, 0, 1, 1, nullptr, 0,
      "Off skips the game's screen-space shadow pass (no shadows from the sun and lights): faster. Also Ctrl+Shift+F11."},
-    {"Vignette", T_BOOL, "Render", "Vignette", &g_cfg.vignette, 0, 1, 1, nullptr, 0,
+    {"Vignette", T_BOOL, &g_cfg.vignette, 0, 1, 1, nullptr, 0,
      "The game's darkened screen edges. In VR they look like a dark frame, so off by default."},
-    {"Low-health effect", T_BOOL, "Render", "LowHealthEffect", &g_cfg.lowHealthFx, 0, 1, 1, nullptr, 0,
+    {"Low-health effect", T_BOOL, &g_cfg.lowHealthFx, 0, 1, 1, nullptr, 0,
      "The grey filter and ripples at low health while in stereo."},
-    {"Screen distortions", T_BOOL, "Render", "DistortionEffects", &g_cfg.distortionFx, 0, 1, 1, nullptr, 0,
+    {"Screen distortions", T_BOOL, &g_cfg.distortionFx, 0, 1, 1, nullptr, 0,
      "The glitch/distortion effects when hit. Off removes them in stereo (they redraw a flat copy of the screen)."},
-    {"Fix lighting", T_BOOL, "Render", "FixLighting", &g_cfg.viewFix, 0, 1, 1, nullptr, 0,
+    {"Fix lighting", T_BOOL, &g_cfg.viewFix, 0, 1, 1, nullptr, 0,
      "Moves the game's lights and reflections into each eye's view. Leave on (off only to compare)."},
-    {"Frame queue", T_INT, "Render", "MaxFrameLatency", &g_cfg.maxFrameLatency, 0, 3, 1, "%d", 0,
+    {"Frame queue", T_INT, &g_cfg.maxFrameLatency, 0, 3, 1, "%d", 0,
      "How many frames the game may prepare ahead of the graphics card. Each one delays what you see after a head "
      "turn by a frame. 1 = lowest delay (default); 2-3 may run a little faster; 0 = the game's own (3)."},
-    {"Global illumination volumes", T_INT, "Render", "GIVolumes", &g_cfg.giVolumes, 8, 128, 8, "%d", 0,
+    {"Global illumination volumes", T_INT, &g_cfg.giVolumes, 8, 128, 8, "%d", 0,
      "How many GI volumes (the boxes that give places their reflections and ambient light) stay on, nearest to you "
      "first. Fewer = faster. 128 = all: no visual change, only empty slots are skipped. The Info page shows how many "
      "the area uses and the GI pass time. Idea from the FAR mod."},
-    {"Reuse shadows (both eyes)", T_BOOL, "Render", "ReuseShadows", &g_cfg.reuseShadows, 0, 1, 1, nullptr, F_BOTHEYES,
+    {"Reuse shadows (both eyes)", T_BOOL, &g_cfg.reuseShadows, 0, 1, 1, nullptr, F_BOTHEYES,
      "Both-eye mode: the right eye reuses the left eye's shadow map instead of drawing it again (saves graphics work)."},
-    {"Flat below draws", T_INT, "Stereo", "FlatBelowDraws", &g_cfg.flatBelowDraws, 0, 1000, 10, "%d", 0,
+    {"Flat below draws", T_INT, &g_cfg.flatBelowDraws, 0, 1000, 10, "%d", 0,
      "Frames with fewer draws than this are shown on the flat screen (title and loading screens)."},
-    {"Extra resolutions", T_INT, "Render", "ExtraResolutions", &g_cfg.extraResolutions, 0, 2, 1, "%d", F_RESTART,
+    {"Extra resolutions", T_INT, &g_cfg.extraResolutions, 0, 2, 1, "%d", F_RESTART,
      "Adds resolutions above your monitor's to the game's list (1), and also patches its table (2)."},
 };
 Item kCull[] = {
-    {"Head culling", T_BOOL, "Render", "HeadCulling", &g_cfg.headCulling, 0, 1, 1, nullptr, 0,
+    {"Head culling", T_BOOL, &g_cfg.headCulling, 0, 1, 1, nullptr, 0,
      "Turns the game's culling view the way your headset looks, so nothing vanishes when you look around. Also Ctrl+Shift+F5."},
-    {"Head culling margin", T_FLOAT, "Render", "HeadCullingMargin", &g_cfg.headCullMargin, 0, 60, 1, "%.0f deg", 0,
+    {"Head culling margin", T_FLOAT, &g_cfg.headCullMargin, 0, 60, 1, "%.0f deg", 0,
      "Extra degrees around your view that are still drawn. More is safer for fast head turns, less is faster."},
-    {"Culling field of view", T_FLOAT, "Render", "CullingFov", &g_cfg.cullFov, 0, 170, 5, "%.0f deg", 0,
+    {"Culling field of view", T_FLOAT, &g_cfg.cullFov, 0, 170, 5, "%.0f deg", 0,
      "Height of the game's culling view while in stereo (used as is when head culling is off). 0 = the game's own."},
-    {"Wide projection", T_BOOL, "Render", "WideProjection", &g_cfg.wideProjection, 0, 1, 1, nullptr, 0,
+    {"Wide projection", T_BOOL, &g_cfg.wideProjection, 0, 1, 1, nullptr, 0,
      "Also gives the game camera's own projection the wide view (0.3.22 behaviour). Makes Pod 042 aim at the sky."},
-    {"Model detail fix", T_BOOL, "Render", "LodFix", &g_cfg.lodFix, 0, 1, 1, nullptr, F_RESTART,
+    {"Model detail fix", T_BOOL, &g_cfg.lodFix, 0, 1, 1, nullptr, F_RESTART,
      "Keeps model and texture detail at the game's own level while culling is widened."},
 };
 Item kScreen[] = {
-    {"Screen distance", T_FLOAT, "Screen", "Distance", &g_cfg.distance, 0.3f, 10, 0.05f, "%.2f m", F_RECENTER,
+    {"Screen distance", T_FLOAT, &g_cfg.distance, 0.3f, 10, 0.05f, "%.2f m", F_RECENTER,
      "Distance of the flat screen and the HUD (also F6 / F7)."},
-    {"Screen width", T_FLOAT, "Screen", "Width", &g_cfg.width, 0.2f, 10, 0.05f, "%.2f m", 0,
+    {"Screen width", T_FLOAT, &g_cfg.width, 0.2f, 10, 0.05f, "%.2f m", 0,
      "Width of the flat screen and the HUD (also F9 / F10)."},
-    {"Screen height", T_FLOAT, "Screen", "HeightOffset", &g_cfg.heightOffset, -2, 2, 0.05f, "%.2f m", F_RECENTER,
+    {"Screen height", T_FLOAT, &g_cfg.heightOffset, -2, 2, 0.05f, "%.2f m", F_RECENTER,
      "Moves the flat screen and the HUD up or down."},
-    {"HUD on its own layer", T_BOOL, "Stereo", "SplitUI", &g_cfg.uiSplit, 0, 1, 1, nullptr, 0,
+    {"HUD on its own layer", T_BOOL, &g_cfg.uiSplit, 0, 1, 1, nullptr, 0,
      "Shows the HUD and menus on a flat layer in front of you instead of inside the 3D image."},
-    {"Stats overlay", T_BOOL, "Screen", "StatsOverlay", &g_cfg.statsOverlay, 0, 1, 1, nullptr, 0,
+    {"Stats overlay", T_BOOL, &g_cfg.statsOverlay, 0, 1, 1, nullptr, 0,
      "Live numbers in the upper left of your view: frame rates, the game's resolution and how sharp it is "
      "compared with what the headset recommends, and the head-pose delay."},
-    {"Recenter", T_ACTION, nullptr, nullptr, (void*)A_RECENTER, 0, 0, 0, nullptr, 0, "Places the screen straight ahead of you again (also F8)."},
+    {"Recenter", T_ACTION, (void*)A_RECENTER, 0, 0, 0, nullptr, 0, "Places the screen straight ahead of you again (also F8)."},
 };
 Item kInput[] = {
-    {"VR controllers as gamepad", T_BOOL, "Input", "VRControllers", &g_cfg.vrControllers, 0, 1, 1, nullptr, 0,
+    {"VR controllers as gamepad", T_BOOL, &g_cfg.vrControllers, 0, 1, 1, nullptr, 0,
      "Your VR controllers work as an Xbox gamepad: sticks, triggers, grips = LB/RB, A/B/X/Y, stick clicks. Left menu "
      "button: tap = Start, hold = Back, hold + left stick = D-pad. A real gamepad and the keyboard keep working. "
      "Turn off to play with only those."},
-    {"Controller rumble", T_BOOL, "Input", "ControllerRumble", &g_cfg.vrRumble, 0, 1, 1, nullptr, 0,
+    {"Controller rumble", T_BOOL, &g_cfg.vrRumble, 0, 1, 1, nullptr, 0,
      "The game's rumble is played on the VR controllers."},
 };
 const int kInfoLines = 16;
@@ -180,13 +178,7 @@ void SetF(Item& it, float v) {
         *(int*)it.ptr = (int)(v + (v >= 0 ? 0.5f : -0.5f));
 }
 void Save(const Item& it) {
-    if (!it.sec) return;
-    char v[32];
-    if (it.type == T_FLOAT)
-        pure::format(v, sizeof(v), "%.3f", (double)*(float*)it.ptr);
-    else
-        pure::format(v, sizeof(v), "%d", *(int*)it.ptr);
-    ConfigWrite(it.sec, it.key, v);
+    if (it.type == T_BOOL || it.type == T_INT || it.type == T_FLOAT) ConfigSave(it.ptr);
 }
 void Change(Item& it, int dir, int accel) {
     if (it.type == T_ACTION) {
@@ -209,8 +201,8 @@ void Change(Item& it, int dir, int accel) {
         it.type == T_BOOL ? (*(int*)it.ptr ? "on" : "off") : "", it.flags & F_RESTART ? " (after a restart)" : "");
     if (it.type != T_BOOL) {
         char v[48];
-        pure::format(v, sizeof(v), it.fmt ? it.fmt : "%.2f", it.type == T_FLOAT ? (double)GetF(it) : (double)0);
-        if (it.type == T_INT) pure::format(v, sizeof(v), it.fmt ? it.fmt : "%d", *(int*)it.ptr);
+        snprintf(v, sizeof(v), it.fmt ? it.fmt : "%.2f", it.type == T_FLOAT ? (double)GetF(it) : (double)0);
+        if (it.type == T_INT) snprintf(v, sizeof(v), it.fmt ? it.fmt : "%d", *(int*)it.ptr);
         Log("menu:   value %s", v);
     }
     Save(it);
@@ -283,17 +275,17 @@ void Draw() {
             g_cv.Fill(bx + (int)(bw * t) - 5, y + 13, 10, 24, s ? kSelText : kText);
             char val[48];
             if (it.type == T_INT && it.ptr == &g_cfg.giVolumes && *(int*)it.ptr >= 128)
-                pure::format(val, sizeof(val), "128 (all)");
+                snprintf(val, sizeof(val), "128 (all)");
             else if (it.type == T_INT)
-                pure::format(val, sizeof(val), it.fmt ? it.fmt : "%d", *(int*)it.ptr);
+                snprintf(val, sizeof(val), it.fmt ? it.fmt : "%d", *(int*)it.ptr);
             else
-                pure::format(val, sizeof(val), it.fmt ? it.fmt : "%.2f", (double)v);
+                snprintf(val, sizeof(val), it.fmt ? it.fmt : "%.2f", (double)v);
             g_cv.Text(kFontBody, bx + bw + 24, y + 8, val, tc);
         }
     }
     if (p.count > kRowsMax) {
         char m[48];
-        pure::format(m, sizeof(m), "%d / %d", sel + 1, p.count);
+        snprintf(m, sizeof(m), "%d / %d", sel + 1, p.count);
         g_cv.Text(kFontSmall, kW - 40 - TextWidth(kFontSmall, m), 100, m, kDim);
     }
     // help for the selected item
@@ -377,7 +369,7 @@ void Open(bool on) {
 void MenuSetInfo(int line, const char* text) {
     if (line < 0 || line >= kInfoLines) return;
     AcquireSRWLockExclusive(&g_infoLock);
-    pure::format(g_infoText[line], sizeof(g_infoText[line]), "%s", text);
+    snprintf(g_infoText[line], sizeof(g_infoText[line]), "%s", text);
     ReleaseSRWLockExclusive(&g_infoLock);
 }
 

@@ -905,7 +905,7 @@ void WriteCapture() {
     wchar_t path[MAX_PATH];
     lstrcpynW(path, g_modDir, MAX_PATH - 40);
     char name[48];
-    pure::format(name, sizeof(name), "NieRVR_capture_%u.bin", g_captureIndex);
+    snprintf(name, sizeof(name), "NieRVR_capture_%u.bin", g_captureIndex);
     int n = lstrlenW(path);
     for (int i = 0; name[i] && n < MAX_PATH - 1; i++) path[n++] = (wchar_t)name[i];
     path[n] = 0;

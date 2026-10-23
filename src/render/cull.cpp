@@ -471,7 +471,7 @@ void LogFloats(const char* what, const void* p) {
     char line[400];
     size_t at = 0;
     for (int i = 0; i < 16 && at + 20 < sizeof(line); i++)
-        at += pure::format(line + at, sizeof(line) - at, " %.3f", (double)f[i]);
+        at += snprintf(line + at, sizeof(line) - at, " %.3f", (double)f[i]);
     Log("culling:   %s =%s", what, line);
 }
 
@@ -489,7 +489,7 @@ void LogBuilderArgs() {
     const uint8_t* obj = (const uint8_t*)nvr_fov_obj;
     for (int off = 0x80; off < 0x280; off += 0x40) {
         char what[48];
-        pure::format(what, sizeof(what), "camera object +0x%x", off);
+        snprintf(what, sizeof(what), "camera object +0x%x", (unsigned)off);
         LogFloats(what, obj + off);
     }
 }
@@ -694,7 +694,7 @@ void CullingUpdate(bool wide) {
                 (long)g_ftCount, g_ftSum / g_ftCount, g_ftMax, (long)g_ftSlow, (long)(g_ftHc * 100 / g_ftCount));
             {
                 char info[160];
-                pure::format(info, sizeof(info), "Game frame time %.1f ms average, slowest %.1f ms, %ld slower than 25 ms",
+                snprintf(info, sizeof(info), "Game frame time %.1f ms average, slowest %.1f ms, %ld slower than 25 ms",
                              g_ftSum / g_ftCount, g_ftMax, (long)g_ftSlow);
                 MenuSetInfo(2, info);
             }
@@ -854,7 +854,7 @@ void LogBytes(const char* what, uintptr_t at, int len) {
     if (!ReadProcessMemory(GetCurrentProcess(), (void*)at, b, len, &got) || (int)got != len) return;
     char line[400];
     int o = 0;
-    for (int i = 0; i < len; i++) o += pure::format(line + o, sizeof(line) - o, "%02x", b[i]);
+    for (int i = 0; i < len; i++) o += snprintf(line + o, sizeof(line) - o, "%02x", b[i]);
     Log("culling watch:   %s %s", what, line);
 }
 
@@ -876,7 +876,7 @@ DWORD WINAPI WatchThread(void*) {
         char where[300];
         DescribeAddress((void*)(uintptr_t)h.rip, where, sizeof(where));
         Log("culling watch: %s  hits %ld (%ld writes)  slots 0x%lx  thread %u", where, (long)h.count,
-            (long)h.writes, (long)h.slotMask, (unsigned)h.tid);
+            (long)h.writes, (unsigned long)h.slotMask, (unsigned)h.tid);
         LogBytes("code[-48..+16]:", (uintptr_t)h.rip - 48, 64);
     }
     // the camera objects themselves, as floats relative to the fov field
@@ -891,8 +891,8 @@ DWORD WINAPI WatchThread(void*) {
         Log("culling watch: camera %d object around the fov (offsets in bytes from the fov field):", k);
         for (int i = 0; i < 256; i += 8) {
             char line[300];
-            int o = pure::format(line, sizeof(line), "%d:", i * 4 - 640);
-            for (int j = 0; j < 8; j++) o += pure::format(line + o, sizeof(line) - o, " %.5f", (double)f[i + j]);
+            int o = snprintf(line, sizeof(line), "%d:", i * 4 - 640);
+            for (int j = 0; j < 8; j++) o += snprintf(line + o, sizeof(line) - o, " %.5f", (double)f[i + j]);
             Log("culling watch: %s", line);
         }
     }
@@ -957,7 +957,7 @@ void CullingToggleHeadCulling() {
     else
         Log("culling: head direction culling %s", g_cfg.headCulling ? "ON (the culling view follows your head)"
                                                                      : "OFF (the culling view follows the game camera)");
-    ConfigSaveStereo();
+    ConfigSave(&g_cfg.headCulling);
 }
 
 // Shift+F5: which places get the wide field of view (a test to find what changes Pod 042's aim

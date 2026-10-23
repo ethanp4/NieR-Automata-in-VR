@@ -23,9 +23,9 @@ void DescribeAddress(void* addr, char* out, size_t cap) {
         const wchar_t* base = name;
         for (const wchar_t* p = name; *p; p++)
             if (*p == L'\\' || *p == L'/') base = p + 1;
-        pure::format(out, cap, "%S+0x%llx", base, (unsigned long long)((char*)addr - (char*)mod));
+        snprintf(out, cap, "%s+0x%llx", Utf8(base).s, (unsigned long long)((char*)addr - (char*)mod));
     } else {
-        pure::format(out, cap, "%p (no module)", addr);
+        snprintf(out, cap, "%p (no module)", addr);
     }
 }
 
@@ -162,8 +162,8 @@ static void LogEnvironment() {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     Log("NieRVR %s (built %s %s)", NIERVR_VERSION, __DATE__, __TIME__);
-    Log("game exe: %S", exe);
-    Log("mod dir:  %S", g_modDir);
+    Log("game exe: %s", Utf8(exe).s);
+    Log("mod dir:  %s", Utf8(g_modDir).s);
     OSVERSIONINFOW vi = {};
     vi.dwOSVersionInfoSize = sizeof(vi);
     PFN_RtlGetVersion rtlGetVersion = (PFN_RtlGetVersion)(void*)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
@@ -178,7 +178,7 @@ static void LogEnvironment() {
     HANDLE h = FindFirstFileW(pattern, &fd);
     if (h != INVALID_HANDLE_VALUE) {
         do {
-            Log("game-dir dll: %S (%u KB)", fd.cFileName, (unsigned)(fd.nFileSizeLow / 1024));
+            Log("game-dir dll: %s (%u KB)", Utf8(fd.cFileName).s, (unsigned)(fd.nFileSizeLow / 1024));
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
@@ -190,13 +190,13 @@ static void LogEnvironment() {
         if (m) {
             wchar_t p[MAX_PATH];
             GetModuleFileNameW(m, p, MAX_PATH);
-            Log("loaded module: %S", p);
+            Log("loaded module: %s", Utf8(p).s);
         }
     }
-    Log("config: Enabled=%d Distance=%.2f Width=%.2f HeightOffset=%.2f ChainLoad='%S' LoaderPath='%S' Verbose=%d "
+    Log("config: Enabled=%d Distance=%.2f Width=%.2f HeightOffset=%.2f ChainLoad='%s' LoaderPath='%s' Verbose=%d "
         "Probe=%d CaptureKey=0x%x",
-        g_cfg.enabled, (double)g_cfg.distance, (double)g_cfg.width, (double)g_cfg.heightOffset, g_cfg.chainLoad,
-        g_cfg.loaderPath, g_cfg.verbose, g_cfg.probe, (unsigned)g_cfg.keyCapture);
+        g_cfg.enabled, (double)g_cfg.distance, (double)g_cfg.width, (double)g_cfg.heightOffset, Utf8(g_cfg.chainLoad).s,
+        Utf8(g_cfg.loaderPath).s, g_cfg.verbose, g_cfg.probe, (unsigned)g_cfg.keyCapture);
     Log("config: Stereo=%d WorldScale=%.3f CameraDolly=%.2f LevelCamera=%d Anamorphic=%d VerticalFill=%.2f "
         "FovScale=%.2f SplitUI=%d ExtraResolutions=%d AmbientOcclusion=%d Shadows=%d Vignette=%d LowHealthEffect=%d DistortionEffects=%d FixLighting=%d CullingFov=%.0f LodFix=%d FlatBelowDraws=%d SteepView=%.0f-%.0f TopDownFlat=%d (%.0f/%.0f)",
         g_cfg.stereo, (double)g_cfg.worldScale, (double)g_cfg.cameraDolly, g_cfg.levelCamera, g_cfg.anamorphic,
@@ -213,7 +213,7 @@ static void LogEnvironment() {
         size_t at = 0;
         list[0] = 0;
         for (int i = 0; i < g_cfg.fovRealCount && at + 16 < sizeof(list); i++)
-            at += pure::format(list + at, sizeof(list) - at, "%s0x%x", i ? "," : "", g_cfg.fovRealCallers[i]);
+            at += snprintf(list + at, sizeof(list) - at, "%s0x%x", i ? "," : "", g_cfg.fovRealCallers[i]);
         Log("config: HeadCullingMargin=%.0f EyeSync=%d BothEyes=%d", (double)g_cfg.headCullMargin, g_cfg.eyeSync,
             g_cfg.bothEyes);
         Log("config: HeadCulling=%d WideProjection=%d FovRealCallers=%s FovEasingCaller=0x%x", g_cfg.headCulling,

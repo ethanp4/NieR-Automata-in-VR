@@ -102,7 +102,7 @@ void HookXInputDLL() {
     bool okCaps = caps && HookFunction(caps, (void*)&H_XInputGetCapabilities<I>, (void**)&p.origCaps, "XInputGetCapabilities");
     bool okSet = set && HookFunction(set, (void*)&H_XInputSetState<I>, (void**)&p.origSet, "XInputSetState");
     if (ok && !g_ReadGamepad) g_ReadGamepad = p.orig;
-    Log("menu: gamepad input of %S %s%s", p.dll,
+    Log("menu: gamepad input of %s %s%s", Utf8(p.dll).s,
         ok ? "hooked (blocked from the game while the menu is open; VR controllers merged into pad 0)" : "could not be hooked",
         ok && !(okCaps && okSet) ? " - capabilities/rumble not hooked" : "");
 }
