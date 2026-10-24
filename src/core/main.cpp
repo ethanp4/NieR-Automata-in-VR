@@ -1,5 +1,13 @@
 // main.cpp - DLL entry, one-time initialisation, crash reporting.
-#include "core/common.h"
+#include "core/main.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "core/proxy.h"
+#include "render/cull.h"
+#include "render/display.h"
+#include "render/frame_share.h"
+#include "xr/xr_main.h"
+#include <stdio.h>
 #include <dbghelp.h>
 
 HMODULE g_hSelf;
@@ -27,12 +35,6 @@ void DescribeAddress(void* addr, char* out, size_t cap) {
 	} else {
 		snprintf(out, cap, "%p (no module)", addr);
 	}
-}
-
-bool LogBudget(volatile LONG* counter, LONG max) {
-	LONG n = InterlockedIncrement(counter);
-	if (n == max) Log("(the next message repeats; further repeats are suppressed)");
-	return n <= max;
 }
 
 // ---------------------------------------------------------------------------------------------

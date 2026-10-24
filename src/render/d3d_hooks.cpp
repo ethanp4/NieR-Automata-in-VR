@@ -4,6 +4,18 @@
 // the frame capture, and the effect toggles kept here (vignette, shadows, ambient occlusion).
 // While replay.cpp plays a frame back, the hooks pass calls straight through.
 #include "render/d3d_hooks.h"
+#include "core/config.h"
+#include "core/hook.h"
+#include "core/log.h"
+#include "debug/gpuprof.h"
+#include "render/present_hook.h"
+#include "render/replay.h"
+#include "render/reproject.h"
+#include "render/screenfx.h"
+#include "render/stereo.h"
+#include "render/uisplit.h"
+#include "render/viewfix.h"
+#include <string.h>
 #include "debug/frame_capture.h"
 #include "render/shader_table.h"
 #include <d3dcompiler.h>

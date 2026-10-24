@@ -1,6 +1,6 @@
 // dlss.h - NVIDIA DLSS through the driver's NGX loader (dlss.cpp), used by upscale.cpp.
 #pragma once
-#include "core/common.h"
+#include <d3d11.h>
 
 struct DlssInputs {
 	ID3D11Resource* color;   // render size, typed format
@@ -22,3 +22,19 @@ bool DlssPrepare(ID3D11DeviceContext* c, int eye, UINT rw, UINT rh, UINT ow, UIN
 bool DlssEvaluate(ID3D11DeviceContext* c, int eye, const DlssInputs& in);
 void DlssReleaseFeatures();
 const char* DlssStatus();  // "DLSS 310.9.16" or why it isn't available
+
+// NVIDIA's DLSS file (nvngx_dlss.dll in the game's folder), downloaded from the menu
+enum {
+	DF_MISSING,
+	DF_DOWNLOADING,
+	DF_INSTALLED,
+	DF_UPDATE_AVAILABLE,  // installed, but not the file the mod's SHA256 names
+};
+struct DlssFileState {
+	int state;
+	long long got, total;  // bytes, while downloading
+	char text[96];         // installed: its version; missing: why the last try failed ("" = none)
+};
+void DlssFileGet(DlssFileState* s);
+void DlssFileDownload();  // starts a background download (licence, then the DLL, checked by SHA256); also redownloads
+void DlssFileCancel();

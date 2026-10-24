@@ -1,5 +1,7 @@
 // log.cpp - thread-safe, crash-tolerant log file (NieRVR.log).
-#include "core/common.h"
+#include "core/log.h"
+#include "core/config.h"
+#include <stdio.h>
 
 static HANDLE g_logFile = INVALID_HANDLE_VALUE;
 static CRITICAL_SECTION g_logCs;
@@ -64,4 +66,10 @@ void LogV(const char* fmt, ...) {
 	va_start(ap, fmt);
 	LogWrite(fmt, ap);
 	va_end(ap);
+}
+
+bool LogBudget(volatile LONG* counter, LONG max) {
+	LONG n = InterlockedIncrement(counter);
+	if (n == max) Log("(the next message repeats; further repeats are suppressed)");
+	return n <= max;
 }

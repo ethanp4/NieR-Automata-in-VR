@@ -1,4 +1,5 @@
 #pragma once
+#include <windows.h>
 #include <xinput.h>
 
 extern volatile LONG g_blockPad;

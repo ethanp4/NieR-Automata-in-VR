@@ -73,6 +73,8 @@ set_target_properties(nier_vr PROPERTIES
 	CXX_EXTENSIONS OFF)
 
 target_include_directories(nier_vr PRIVATE src ${minhook_SOURCE_DIR}/include ${imgui_SOURCE_DIR})
+# windows.h without its rarely used parts and without min/max macros
+target_compile_definitions(nier_vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 # ImGui only draws the overlay: no clipboard/IME/shell helpers (they'd import SHELL32 and more)
 target_compile_definitions(nier_vr PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS IMGUI_DISABLE_WIN32_FUNCTIONS
 	NIERVR_VERSION="${NIERVR_VERSION}")

@@ -7,6 +7,10 @@
 //     manifest from the registry and negotiate with the runtime DLL directly. This needs no extra
 //     files and works with SteamVR, Meta/Oculus, Virtual Desktop (VDXR), Pimax, Pico, WMR, etc.
 #include "xr/xr.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "core/main.h"
+#include "core/pure.h"
 
 static bool IsAbsolute(const wchar_t* p) { return p[0] && (p[1] == L':' || (p[0] == L'\\' && p[1] == L'\\')); }
 

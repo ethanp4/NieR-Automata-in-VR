@@ -23,7 +23,15 @@
 // another full-size texture, then draws pieces of that copy back over the UI target, shifted and
 // tinted. On the HUD layer that is a flat copy of the whole screen flashing in front of the 3D view.
 // In stereo those draws are skipped (DistortionEffects=0) or kept in the 3D image (=1).
-#include "core/common.h"
+#include "render/uisplit.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "debug/gpuprof.h"
+#include "render/replay.h"
+#include "render/reproject.h"
+#include "render/stereo.h"
+#include "render/upscale.h"
+#include <string.h>
 #include "render/d3d_hooks.h"
 
 namespace {

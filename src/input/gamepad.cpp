@@ -1,4 +1,7 @@
-#include "core/common.h"
+#include "core/hook.h"
+#include "core/log.h"
+#include "xr/vrinput.h"
+#include <string.h>
 #include "input/gamepad.h"
 
 namespace {

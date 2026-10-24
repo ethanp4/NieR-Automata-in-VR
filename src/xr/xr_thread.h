@@ -2,6 +2,9 @@
 // swapchains, the thread's loop), xr_device.cpp (its D3D11 device, the game's frames, menu detection)
 // and xr_frame.cpp (each headset frame). Only the VR thread uses any of it.
 #pragma once
+#include "core/pure.h"
+#include "render/frame_share.h"
+#include "ui/overlay.h"
 #include "xr/xr.h"
 
 #define XR_INSTANCE_FUNCS(X)                                                                                       \

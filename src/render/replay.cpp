@@ -21,7 +21,17 @@
 // Anything the recorder doesn't understand (deferred command lists, a D3D11.1 call it can't
 // replay, a buffer too large) cancels the second eye for that frame: it then shows the previous
 // right image, as in alternate-eye mode, and the log says why.
-#include "core/common.h"
+#include "render/replay.h"
+#include "core/config.h"
+#include "core/hook.h"
+#include "core/log.h"
+#include "debug/gpuprof.h"
+#include "render/stereo.h"
+#include "render/uisplit.h"
+#include "render/viewfix.h"
+#include "ui/menu.h"
+#include <stdio.h>
+#include <string.h>
 #include "render/d3d_hooks.h"
 #include <smmintrin.h>
 #include <d3d11_1.h>

@@ -3,6 +3,12 @@
 // written to NieRVR_capture_N.bin, and likely projection matrices are summarised in the log.
 // tools/analyze_capture.py reads the file.
 #include "debug/frame_capture.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "core/main.h"
+#include "core/pure.h"
+#include <stdio.h>
+#include <string.h>
 
 namespace {
 enum RecordType : uint16_t {

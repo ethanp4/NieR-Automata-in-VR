@@ -1,5 +1,7 @@
 // imgui_panel.cpp - Dear ImGui setup shared by the settings menu and the stats overlay.
 #include "ui/imgui_panel.h"
+#include "core/log.h"
+#include <stdio.h>
 #include <d3dcompiler.h>
 #include "imgui.h"
 #include "backends/imgui_impl_dx11.h"

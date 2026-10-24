@@ -1,6 +1,10 @@
 // xr_device.cpp - the VR thread's own D3D11 device (on the game's GPU) and its blit shaders, the
 // game's frames copied onto it, and menu detection.
 #include "xr/xr_thread.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "render/stereo.h"
+#include <string.h>
 #include <d3dcompiler.h>
 
 // ---------------------------------------------------------------------------------------------

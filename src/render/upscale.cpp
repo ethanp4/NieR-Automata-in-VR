@@ -17,7 +17,17 @@
 // last full-screen pass writes DLSS's colour with the scene's alpha (stretched) into the image that
 // goes to the headset. The same pass just stretches frames DLSS can't take (flat/menu frames, no depth
 // or camera), so every scene image of a ring has the same size.
-#include "core/common.h"
+#include "render/upscale.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "core/pure.h"
+#include "render/frame_share.h"
+#include "render/replay.h"
+#include "render/reproject.h"
+#include "render/stereo.h"
+#include "ui/menu.h"
+#include <stdio.h>
+#include <string.h>
 #include "render/dlss.h"
 #include <d3dcompiler.h>
 

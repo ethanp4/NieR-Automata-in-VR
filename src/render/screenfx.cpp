@@ -12,7 +12,11 @@
 //
 // (0.3.13/0.3.14 also replaced colour-grading tables that kept little colour, guessing that was the
 // grey. It wasn't, and it broke areas graded that way on purpose, e.g. the Bunker: removed in 0.3.15.)
-#include "core/common.h"
+#include "render/screenfx.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "render/stereo.h"
+#include <stdio.h>
 
 namespace {
 ID3D11Resource* g_refractionCopy;  // this frame's normal screen copy (t10 at the first effect draw)

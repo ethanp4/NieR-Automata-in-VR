@@ -1,9 +1,24 @@
 // present_hook.cpp - hooks IDXGISwapChain::Present (inline detour via MinHook) and copies each
 // finished game frame into a texture shared with the VR thread. The game is never made to wait.
-#include "core/common.h"
+#include "render/present_hook.h"
+#include "core/config.h"
+#include "core/hook.h"
+#include "core/log.h"
+#include "core/main.h"
+#include "core/proxy.h"
+#include "debug/gpuprof.h"
+#include "render/display.h"
+#include "render/frame_share.h"
+#include "render/replay.h"
+#include "render/reproject.h"
+#include "render/screenfx.h"
+#include "render/stereo.h"
+#include "render/uisplit.h"
+#include "render/upscale.h"
+#include "xr/xr_main.h"
+#include <string.h>
 #include "debug/frame_capture.h"
 #include "render/d3d_hooks.h"
-#include "MinHook.h"
 
 FrameShare g_share;
 
@@ -426,28 +441,6 @@ static HRESULT STDMETHODCALLTYPE HookedPresent0(IDXGISwapChain* self, UINT s, UI
 }
 static HRESULT STDMETHODCALLTYPE HookedPresent1(IDXGISwapChain* self, UINT s, UINT f) {
 	return PresentCommon(1, __builtin_return_address(0), self, s, f);
-}
-
-// Shared MinHook wrapper (also used by the camera probe).
-bool HookFunction(void* target, void* detour, void** orig, const char* name) {
-	static SRWLOCK lock = SRWLOCK_INIT;
-	static bool ready = false;
-	AcquireSRWLockExclusive(&lock);
-	if (!ready) {
-		MH_STATUS st = MH_Initialize();
-		ready = st == MH_OK || st == MH_ERROR_ALREADY_INITIALIZED;
-		if (!ready) Log("ERROR: MinHook init failed (%d)", (int)st);
-	}
-	MH_STATUS st = ready ? MH_CreateHook(target, detour, orig) : MH_ERROR_NOT_INITIALIZED;
-	if (st == MH_OK) st = MH_EnableHook(target);
-	ReleaseSRWLockExclusive(&lock);
-	if (st != MH_OK) {
-		char where[300];
-		DescribeAddress(target, where, sizeof(where));
-		Log("ERROR: could not hook %s at %s (MinHook %d)", name, where, (int)st);
-		return false;
-	}
-	return true;
 }
 
 static void InstallDetour(void* target, const char* how) {

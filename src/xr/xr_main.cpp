@@ -7,10 +7,16 @@
 // was rendered from, and the runtime reprojects them to the current head pose.
 // Flat: the newest game frame on a quad layer floating in front of the user (menus, F12, startup).
 #include "xr/xr_thread.h"
+#include "xr/xr_main.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "core/main.h"
+#include "render/stereo.h"
+#include "xr/vrinput.h"
+#include <stdio.h>
 
 VrState g_vr;
 volatile DWORD g_xrThreadId;
-void InstallCrashHandler();
 
 // ---------------------------------------------------------------------------------------------
 // Error helpers

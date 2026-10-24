@@ -19,7 +19,16 @@
 // gap (0.4.0 user: "smearing, rubbery, around 2B"); since 0.4.1 such triangles (a depth jump inside
 // a triangle the motion pulled open) are put behind everything and filled with the colour of the
 // farthest pixel nearby, i.e. the background (ReprojectionEdges=1).
-#include "core/common.h"
+#include "render/reproject.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "render/frame_share.h"
+#include "render/replay.h"
+#include "render/stereo.h"
+#include "render/upscale.h"
+#include "ui/menu.h"
+#include <stdio.h>
+#include <string.h>
 #include <d3dcompiler.h>
 
 namespace {

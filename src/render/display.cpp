@@ -15,7 +15,19 @@
 //
 // The hooks always log how the game enumerates and applies resolutions (first few calls), so we
 // can see which path NieR takes even with the option off.
-#include "core/common.h"
+#include "render/display.h"
+#include "core/config.h"
+#include "core/hook.h"
+#include "core/log.h"
+#include "core/main.h"
+#include "core/pure.h"
+#include "render/replay.h"
+#include "render/reproject.h"
+#include "render/uisplit.h"
+#include "render/upscale.h"
+#include <dxgi1_2.h>
+#include <stdio.h>
+#include <string.h>
 
 namespace {
 typedef HRESULT(WINAPI* PFN_CreateFactory)(REFIID, void**);

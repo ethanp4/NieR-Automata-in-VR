@@ -9,7 +9,7 @@
 //   UiRender(dc, rtv);                                     // into the panel's render target
 // Everything here runs on the VR thread.
 #pragma once
-#include "core/common.h"
+#include <d3d11.h>
 
 struct ImGuiContext;
 struct ImFont;

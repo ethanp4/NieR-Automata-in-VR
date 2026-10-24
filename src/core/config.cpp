@@ -8,7 +8,11 @@
 //   - ConfigSave(&g_cfg.field) writes one setting back (menu, hotkeys).
 // To add a setting: a field in Config (common.h), a line here, and a menu item if it has one.
 // Fixes for inis written by older versions live in MigrateOldIni.
-#include "core/common.h"
+#include "core/config.h"
+#include "core/main.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 Config g_cfg;
 

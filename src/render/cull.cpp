@@ -10,7 +10,16 @@
 // Also here: a background memory scan for the camera object and a hardware-breakpoint "watch"
 // (Ctrl+F5) that logs which game code reads/writes the camera fov: the diagnostic that found the
 // setter (0.3.10).
-#include "core/common.h"
+#include "render/cull.h"
+#include "core/config.h"
+#include "core/hook.h"
+#include "core/log.h"
+#include "core/main.h"
+#include "core/pure.h"
+#include "render/stereo.h"
+#include "ui/menu.h"
+#include <stdio.h>
+#include <string.h>
 
 namespace {
 struct Cand {
@@ -102,7 +111,6 @@ void StartScan() {
 
 // Once per frame on the game thread (StereoBeginFrame). wide: stereo is rendering this frame.
 bool CullingWatchActive();
-void CullingWatch();
 
 // ---------------------------------------------------------------------------------------------
 // The fix (0.3.11): the 0.3.10 watch showed the camera controller calls a tiny setter every frame,

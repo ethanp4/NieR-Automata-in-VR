@@ -1,7 +1,16 @@
 // d3d_hooks.h - hooks on the game's D3D11 device and immediate context, passing each call on to the
 // features that need it (camera patching, HUD split, both-eyes recording, effect toggles, capture).
 #pragma once
-#include "core/common.h"
+#include <d3d11.h>
+
+// Arguments of a draw call, for replaying it (kind: 0 Draw, 1 DrawIndexed, 2 DrawInstanced,
+// 3 DrawIndexedInstanced; fields in the API's parameter order).
+struct DrawArgs {
+	int kind;
+	UINT a, b;
+	INT c;
+	UINT d, e;
+};
 
 void D3dHooksInstall(ID3D11Device* gameDevice);         // once, on the first device the game creates
 void D3dHooksFollowDevice(ID3D11Device* presentingDevice);  // if the game presents from another device

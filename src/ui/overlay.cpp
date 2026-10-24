@@ -4,7 +4,8 @@
 //
 // Drawn with Dear ImGui (ui/imgui_panel.h) on the VR thread: xr_main.cpp hands it a render target
 // the size of the panel and shows the result on a quad layer that moves with your head.
-#include "core/common.h"
+#include "ui/overlay.h"
+#include <stdio.h>
 #include "ui/imgui_panel.h"
 #include "imgui.h"
 

@@ -7,7 +7,15 @@
 // g_CameraVec = camera position. On alternate frames we rewrite both for the left or right eye,
 // using the headset's eye pose (relative to the recentred reference) on top of the game camera.
 // See DEVELOPMENT.md and tools/analyze_capture.py for how these were found.
-#include "core/common.h"
+#include "render/stereo.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "core/pure.h"
+#include "render/cull.h"
+#include "render/frame_share.h"
+#include "render/replay.h"
+#include "render/upscale.h"
+#include <string.h>
 
 StereoShared g_stereo;
 
@@ -578,76 +586,4 @@ const void* StereoPatchUpdate(UINT size, const void* data, float* scratch /* 64 
 		return scratch;
 	}
 	return data;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Camera memory scan (runs with the probe capture key). Finds where the game keeps its camera
-// position on the CPU side and reports FOV-looking values nearby: the next step is widening the
-// game's own (culling) field of view so objects don't vanish at the edges of the headset view.
-// ---------------------------------------------------------------------------------------------
-void StereoMemoryScan() {
-	if (!g_haveCam) {
-		Log("memscan: no camera seen yet");
-		return;
-	}
-	float cx = g_lastGameCam.at(0, 3), cy = g_lastGameCam.at(1, 3), cz = g_lastGameCam.at(2, 3);
-	Log("memscan: searching game memory for the camera position (%.3f, %.3f, %.3f)", (double)cx, (double)cy, (double)cz);
-	const float fovValues[] = {0.872665f /*50 deg rad*/, 50.0f, 0.436332f /*25 deg rad*/, 0.466308f /*tan 25*/,
-							   2.144507f /*1/tan 25*/, 1.206285f /*P00*/, 0.828991f /*tan hfov/2*/};
-	static uint8_t chunk[1 << 20];
-	int hits = 0;
-	uint64_t scanned = 0;
-	DWORD t0 = GetTickCount();
-	MEMORY_BASIC_INFORMATION mbi;
-	for (uint8_t* addr = nullptr; VirtualQuery(addr, &mbi, sizeof(mbi)) == sizeof(mbi);
-		 addr = (uint8_t*)mbi.BaseAddress + mbi.RegionSize) {
-		if ((uintptr_t)addr >= 0x7FF000000000ull) break;
-		bool rw = mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) &&
-				  (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY));
-		if (!rw || mbi.RegionSize > (1ull << 31)) continue;
-		if (GetTickCount() - t0 > 15000) {
-			Log("memscan: stopped after 15 s");
-			break;
-		}
-		uint8_t* base = (uint8_t*)mbi.BaseAddress;
-		if (base <= (uint8_t*)chunk && (uint8_t*)chunk < base + mbi.RegionSize) continue;  // our own buffer
-		for (size_t off = 0; off < mbi.RegionSize; off += sizeof(chunk) - 8) {
-			size_t len = mbi.RegionSize - off < sizeof(chunk) ? mbi.RegionSize - off : sizeof(chunk);
-			SIZE_T got = 0;
-			if (!ReadProcessMemory(GetCurrentProcess(), base + off, chunk, len, &got) || got < 12) break;
-			scanned += got;
-			const float* f = (const float*)chunk;
-			size_t n = got / 4;
-			for (size_t i = 0; i + 2 < n; i++) {
-				if (!(f[i] > cx - 0.01f && f[i] < cx + 0.01f)) continue;
-				if (!(f[i + 1] > cy - 0.01f && f[i + 1] < cy + 0.01f) || !(f[i + 2] > cz - 0.01f && f[i + 2] < cz + 0.01f))
-					continue;
-				uint8_t* at = base + off + i * 4;
-				char where[300];
-				DescribeAddress(at, where, sizeof(where));
-				char nearBuf[600];
-				int nl = 0;
-				nearBuf[0] = 0;
-				// look for FOV-like values within +-1 KB (or just after, at the start of a region)
-				float around[512];
-				SIZE_T g2 = 0;
-				int startOff = -1024;
-				if (!ReadProcessMemory(GetCurrentProcess(), at - 1024, around, sizeof(around), &g2)) {
-					startOff = 0;
-					if (!ReadProcessMemory(GetCurrentProcess(), at, around, sizeof(around) / 2, &g2)) g2 = 0;
-				}
-				for (size_t k = 0; k < g2 / 4 && nl < 500; k++)
-					for (float v : fovValues)
-						if (around[k] > v * 0.9999f && around[k] < v * 1.0001f)
-							nl += snprintf(nearBuf + nl, sizeof(nearBuf) - nl, " %d:%.5f",
-										   (int)(k * 4) + startOff, (double)around[k]);
-				Log("memscan: camera position at %p (%s)%s%s", at, where, nl ? "; fov-like values at offsets" : "",
-					nearBuf);
-				if (++hits >= 24) break;
-			}
-			if (hits >= 24) break;
-		}
-		if (hits >= 24) break;
-	}
-	Log("memscan: %d hits in %u MB (%u ms)", hits, (unsigned)(scanned >> 20), (unsigned)(GetTickCount() - t0));
 }

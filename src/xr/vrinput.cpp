@@ -29,6 +29,13 @@
 // [Input] IgnoreUpwardSwings=1 (default) reaching for the headset doesn't attack: a hand moving mostly
 // upward doesn't count, nor one within 25 cm of the head and for 0.4 s after it leaves.
 #include "xr/xr.h"
+#include "xr/vrinput.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "core/pure.h"
+#include "ui/menu.h"
+#include <stdio.h>
+#include <string.h>
 #include <xinput.h>
 
 namespace {

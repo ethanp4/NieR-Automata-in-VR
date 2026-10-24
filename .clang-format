@@ -34,7 +34,7 @@ AlignTrailingComments:
   Kind: Leave
 ReflowComments: false
 
-# includes stay in the order they're written (common.h first matters)
+# includes stay in the order they're written (each file's own header first)
 SortIncludes: Never
 IncludeBlocks: Preserve
 

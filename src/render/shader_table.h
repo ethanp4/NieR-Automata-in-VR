@@ -1,6 +1,7 @@
 // shader_table.h - every shader the game creates, with a copy of its bytecode and what kind of pass it is.
 #pragma once
-#include "core/common.h"
+#include <d3d11.h>
+#include <stdint.h>
 
 // Values are part of the capture file format (tools/analyze_capture.py).
 enum ShaderStage : uint8_t { ST_VS = 0,

@@ -15,7 +15,13 @@
 // downloads it from NVIDIA's GitHub into the game's folder (DlssFileDownload, a background thread),
 // with NVIDIA's licence next to it. DLSS starts as soon as it arrives.
 #include "render/dlss.h"
+#include "core/download.h"
+#include "core/log.h"
+#include "core/main.h"
 #include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 namespace {
 typedef int Res;  // NVSDK_NGX_Result

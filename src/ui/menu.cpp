@@ -8,7 +8,12 @@
 //
 // Drawn with Dear ImGui (ui/imgui_panel.h) on the VR thread and used with ImGui's own gamepad and
 // keyboard navigation; xr_main.cpp shows it on a quad in front of you.
-#include "core/common.h"
+#include "ui/menu.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "render/dlss.h"
+#include <stdio.h>
+#include <string.h>
 #include "input/gamepad.h"
 #include "ui/imgui_panel.h"
 #include "imgui.h"

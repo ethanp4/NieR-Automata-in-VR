@@ -1,6 +1,6 @@
 // xr.h - OpenXR includes and runtime entry-point discovery.
 #pragma once
-#include "core/common.h"
+#include <d3d11.h>
 
 #define XR_NO_PROTOTYPES
 #define XR_USE_PLATFORM_WIN32
@@ -12,8 +12,3 @@
 // Finds xrGetInstanceProcAddr: from the official OpenXR loader if one is provided next to the mod
 // (or via [OpenXR] LoaderPath), otherwise directly from the system's active OpenXR runtime.
 PFN_xrGetInstanceProcAddr XrLoadEntry();
-
-// vrinput.cpp
-void VrInputInit(PFN_xrGetInstanceProcAddr gipa, XrInstance inst, bool pico);
-void VrInputAttach(XrSession s);
-void VrInputMotion(XrSpace local, XrSpace view, XrTime time, bool focused, bool flipped);  // motion controls, after VrInputSync

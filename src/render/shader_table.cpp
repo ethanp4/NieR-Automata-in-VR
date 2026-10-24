@@ -2,6 +2,8 @@
 // of its bytecode. Passes are recognised by the cbuffer and variable names in the bytecode's
 // reflection data.
 #include "render/shader_table.h"
+#include "core/pure.h"
+#include <string.h>
 
 namespace {
 struct ShaderEntry {

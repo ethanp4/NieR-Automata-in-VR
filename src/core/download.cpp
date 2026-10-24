@@ -4,7 +4,11 @@
 // destination as "<name>.part", hashed while it arrives, and only renamed into place when the hash
 // matches: a cut or wrong download never leaves a broken file behind. Redirects (GitHub sends large
 // files on to its download host) are followed by WinHTTP; the system's proxy settings are used.
-#include "core/common.h"
+#include "core/download.h"
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <winhttp.h>
 #include <bcrypt.h>
 

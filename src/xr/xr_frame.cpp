@@ -1,6 +1,16 @@
 // xr_frame.cpp - one headset frame: hotkeys, screen placement, the eye poses handed to the game,
 // and the layers submitted (stereo eyes, flat screen, HUD, stats overlay, settings menu).
 #include "xr/xr_thread.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "render/cull.h"
+#include "render/replay.h"
+#include "render/stereo.h"
+#include "render/upscale.h"
+#include "ui/menu.h"
+#include "xr/vrinput.h"
+#include <stdio.h>
+#include <string.h>
 
 // ---------------------------------------------------------------------------------------------
 // Screen placement & hotkeys

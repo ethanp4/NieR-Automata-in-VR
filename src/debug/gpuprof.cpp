@@ -8,7 +8,13 @@
 //
 // The first time a full-screen depth buffer is seen its format is logged too: the depth-based
 // correction for alternate-eye mode will need to read it.
-#include "core/common.h"
+#include "debug/gpuprof.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "ui/menu.h"
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
 
 namespace {
 const int kMax = 320;

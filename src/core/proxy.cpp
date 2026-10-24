@@ -1,5 +1,9 @@
 // proxy.cpp - stands in for d3d11.dll: loads the real one and forwards every export to it.
-#include "core/common.h"
+#include "core/proxy.h"
+#include "core/config.h"
+#include "core/log.h"
+#include "core/main.h"
+#include "render/present_hook.h"
 #include "render/d3d_hooks.h"
 
 static const char* const kThunkNames[] = {
@@ -13,7 +17,7 @@ void* g_realProcs[sizeof(kThunkNames) / sizeof(kThunkNames[0])];
 void NVR_ResolveAll();
 }
 
-PFN_D3D11_CREATE_DEVICE g_realCreateDevice;
+static PFN_D3D11_CREATE_DEVICE g_realCreateDevice;
 PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN g_realCreateDeviceAndSwapChain;
 static HMODULE g_realDll;
 
