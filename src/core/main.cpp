@@ -14,7 +14,7 @@ HMODULE g_hSelf;
 wchar_t g_modDir[MAX_PATH];
 wchar_t g_iniPath[MAX_PATH];
 
-static INIT_ONCE g_initOnce = INIT_ONCE_STATIC_INIT;
+static INIT_ONCE s_initOnce = INIT_ONCE_STATIC_INIT;
 volatile bool g_initDone;
 
 // ---------------------------------------------------------------------------------------------
@@ -45,13 +45,13 @@ void DescribeAddress(void* addr, char* out, size_t cap) {
 typedef BOOL(WINAPI* PFN_MiniDumpWriteDump)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE, PMINIDUMP_EXCEPTION_INFORMATION,
 											PMINIDUMP_USER_STREAM_INFORMATION, PMINIDUMP_CALLBACK_INFORMATION);
 
-static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
-static HANDLE g_crashRequest, g_crashDone;
-static EXCEPTION_POINTERS* volatile g_crashEp;
-static volatile DWORD g_crashThread;
-static volatile LONG g_crashReported;
-static PFN_MiniDumpWriteDump g_writeDump;
-static DWORD g_reporterTid;
+static LPTOP_LEVEL_EXCEPTION_FILTER s_prevFilter;
+static HANDLE s_crashRequest, s_crashDone;
+static EXCEPTION_POINTERS* volatile s_crashEp;
+static volatile DWORD s_crashThread;
+static volatile LONG s_crashReported;
+static PFN_MiniDumpWriteDump s_writeDump;
+static DWORD s_reporterTid;
 
 static void WriteCrashReport(EXCEPTION_POINTERS* ep, DWORD threadId) {
 	EXCEPTION_RECORD* er = ep->ExceptionRecord;
@@ -93,12 +93,12 @@ static void WriteCrashReport(EXCEPTION_POINTERS* ep, DWORD threadId) {
 		Log("!!! cannot create NieRVR_crash.dmp (error %u)", (unsigned)GetLastError());
 		return;
 	}
-	if (g_writeDump) {
+	if (s_writeDump) {
 		MINIDUMP_EXCEPTION_INFORMATION mei;
 		mei.ThreadId = threadId;
 		mei.ExceptionPointers = ep;
 		mei.ClientPointers = FALSE;
-		BOOL ok = g_writeDump(GetCurrentProcess(), GetCurrentProcessId(), f,
+		BOOL ok = s_writeDump(GetCurrentProcess(), GetCurrentProcessId(), f,
 							  (MINIDUMP_TYPE)(MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithUnloadedModules |
 											  MiniDumpWithThreadInfo),
 							  &mei, nullptr, nullptr);
@@ -111,26 +111,26 @@ static void WriteCrashReport(EXCEPTION_POINTERS* ep, DWORD threadId) {
 
 static DWORD WINAPI CrashReporterThread(void*) {
 	while (true) {
-		WaitForSingleObject(g_crashRequest, INFINITE);
-		if (g_crashEp) WriteCrashReport(g_crashEp, g_crashThread);
-		SetEvent(g_crashDone);
+		WaitForSingleObject(s_crashRequest, INFINITE);
+		if (s_crashEp) WriteCrashReport(s_crashEp, s_crashThread);
+		SetEvent(s_crashDone);
 	}
 }
 
 // Uses almost no stack: hands the work to the reporter thread and waits.
 static void ReportCrash(EXCEPTION_POINTERS* ep) {
-	if (!ep || !ep->ExceptionRecord || InterlockedExchange(&g_crashReported, 1) != 0) return;
-	g_crashEp = ep;
-	g_crashThread = GetCurrentThreadId();
-	if (g_crashRequest && g_crashThread != g_reporterTid) {  // the reporter can't wait on itself
-		SetEvent(g_crashRequest);
-		WaitForSingleObject(g_crashDone, 20000);
+	if (!ep || !ep->ExceptionRecord || InterlockedExchange(&s_crashReported, 1) != 0) return;
+	s_crashEp = ep;
+	s_crashThread = GetCurrentThreadId();
+	if (s_crashRequest && s_crashThread != s_reporterTid) {  // the reporter can't wait on itself
+		SetEvent(s_crashRequest);
+		WaitForSingleObject(s_crashDone, 20000);
 	}
 }
 
 static LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
 	ReportCrash(ep);
-	return g_prevFilter ? g_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
+	return s_prevFilter ? s_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
 }
 
 // Stack overflows are never meant to be survived; catch them first-chance in case the game's
@@ -141,18 +141,18 @@ static LONG WINAPI StackOverflowWatcher(EXCEPTION_POINTERS* ep) {
 }
 
 void InstallCrashHandler() {
-	if (!g_crashRequest) {
+	if (!s_crashRequest) {
 		HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll");  // preloaded: no LoadLibrary while crashing
-		g_writeDump = dbghelp ? (PFN_MiniDumpWriteDump)(void*)GetProcAddress(dbghelp, "MiniDumpWriteDump") : nullptr;
-		g_crashRequest = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-		g_crashDone = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-		HANDLE t = CreateThread(nullptr, 256 * 1024, CrashReporterThread, nullptr, 0, &g_reporterTid);
+		s_writeDump = dbghelp ? (PFN_MiniDumpWriteDump)(void*)GetProcAddress(dbghelp, "MiniDumpWriteDump") : nullptr;
+		s_crashRequest = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+		s_crashDone = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+		HANDLE t = CreateThread(nullptr, 256 * 1024, CrashReporterThread, nullptr, 0, &s_reporterTid);
 		if (t) CloseHandle(t);
-		else g_crashRequest = nullptr;
+		else s_crashRequest = nullptr;
 		AddVectoredExceptionHandler(1, StackOverflowWatcher);
 	}
 	LPTOP_LEVEL_EXCEPTION_FILTER prev = SetUnhandledExceptionFilter(CrashFilter);
-	if (prev != CrashFilter) g_prevFilter = prev;  // re-installing must not make us call ourselves
+	if (prev != CrashFilter) s_prevFilter = prev;  // re-installing must not make us call ourselves
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -216,7 +216,7 @@ static void LogEnvironment() {
 		list[0] = 0;
 		for (int i = 0; i < g_cfg.fovRealCount && at + 16 < sizeof(list); i++)
 			at += snprintf(list + at, sizeof(list) - at, "%s0x%x", i ? "," : "", g_cfg.fovRealCallers[i]);
-		Log("config: HeadCullingMargin=%.0f EyeSync=%d Synchronized=%d", (double)g_cfg.headCullMargin, g_cfg.eyeSync,
+		Log("config: HeadCullingMargin=%.0f Synchronized=%d", (double)g_cfg.headCullMargin,
 			g_cfg.synchronized);
 		Log("config: HeadCulling=%d WideProjection=%d FovRealCallers=%s FovEasingCaller=0x%x", g_cfg.headCulling,
 			g_cfg.wideProjection, at ? list : "(none)", g_cfg.fovEasingCaller);
@@ -249,7 +249,7 @@ static BOOL CALLBACK InitOnceCallback(PINIT_ONCE, PVOID, PVOID*) {
 	return TRUE;
 }
 
-void EnsureInit() { InitOnceExecuteOnce(&g_initOnce, InitOnceCallback, nullptr, nullptr); }
+void EnsureInit() { InitOnceExecuteOnce(&s_initOnce, InitOnceCallback, nullptr, nullptr); }
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID) {
 	if (reason == DLL_PROCESS_ATTACH) {

@@ -86,23 +86,6 @@ inline bool head_lookat(const float eye[3], const float target[3], const float u
 	return true;
 }
 
-// Eye sync (0.3.25). Alternating mode: the older eye's image was rendered with the game
-// camera as it was a game frame earlier. qwOld/qwNew map tracking (LOCAL) orientations to the game
-// world for the two frames (world = qw * tracking). Shown with the pose returned here, the older
-// image lines up with the newer camera's orientation: the runtime's reprojection turns it by the
-// camera's turn since. Returns false (pose unchanged) when the turn is larger than maxDeg (a cut).
-inline bool eye_sync_rotation(Q qwOld, Q qwNew, Q eyeOld, float maxDeg, Q* out) {
-	Q inv{-qwNew.x, -qwNew.y, -qwNew.z, qwNew.w};
-	Q d = q_mul(inv, qwOld);
-	float w = d.w < 0 ? -d.w : d.w;
-	if (w > 1) w = 1;
-	float sinHalf, cosHalf;
-	fsincos(maxDeg * 0.5f * 0.0174533f, &sinHalf, &cosHalf);
-	if (w < cosHalf) return false;
-	*out = q_mul(d, eyeOld);
-	return true;
-}
-
 // Texture registers (t0-t31, as a bit mask) that a DXBC shader samples or loads from as textures:
 // sample*/gather*/ld/ld_ms instructions, not resinfo or structured-buffer loads. 0 if unreadable.
 inline uint32_t dxbc_sampled_textures(const uint8_t* b, size_t len) {
@@ -254,18 +237,18 @@ inline bool mostly_up(V3 v, float upY, float minSin = 0.65f) {
 	return len > 0 && v.y * upY > minSin * len;
 }
 
-// Motion controls: a hand at the headset (adjusting it) and for a moment after it leaves (lowering
-// it again) doesn't swing. update() takes the hand's distance from the head in metres; true =
-// ignore this hand's movement now.
-struct HeadZone {
-	uint32_t until = 0;
-	bool inside = false;
-	bool update(float dist, uint32_t t, float radius = 0.25f, uint32_t graceMs = 400) {
-		inside = dist < radius;
-		if (inside) until = t + graceMs;
-		return inside || (int32_t)(until - t) > 0;
-	}
-};
+// // Motion controls: a hand at the headset (adjusting it) and for a moment after it leaves (lowering
+// // it again) doesn't swing. update() takes the hand's distance from the head in metres; true =
+// // ignore this hand's movement now.
+// struct HeadZone {
+// 	uint32_t until = 0;
+// 	bool inside = false;
+// 	bool update(float dist, uint32_t t, float radius = 0.25f, uint32_t graceMs = 400) {
+// 		inside = dist < radius;
+// 		if (inside) until = t + graceMs;
+// 		return inside || (int32_t)(until - t) > 0;
+// 	}
+// };
 
 // GI volumes (viewfix.cpp, 0.4.3). The game's probe-selection pass loops over g_CubeInput (96-byte
 // entries = 24 floats: a = position (a.w != 0: slot in use), b/c/d = rows of view -> box space,

@@ -21,8 +21,8 @@ struct PadHook {
 	PFN_XInputSetState origSet;
 	bool done;
 };
-PadHook g_pads[] = {{L"xinput1_4.dll"}, {L"xinput1_3.dll"}, {L"xinput9_1_0.dll"}, {L"xinput1_2.dll"}, {L"xinput1_1.dll"}};
-PFN_XInputGetState g_ReadGamepad;  // for our own reading (an original, never blocked)
+PadHook s_pads[] = {{L"xinput1_4.dll"}, {L"xinput1_3.dll"}, {L"xinput9_1_0.dll"}, {L"xinput1_2.dll"}, {L"xinput1_1.dll"}};
+PFN_XInputGetState s_ReadGamepad;  // for our own reading (an original, never blocked)
 
 // Adds the VR controllers' state to a gamepad state: buttons combined, the stronger trigger and
 // the stick that is pushed further.
@@ -58,12 +58,12 @@ DWORD Filter(DWORD user, DWORD r, XINPUT_STATE* s) {
 	return r;
 }
 template <int I>
-DWORD WINAPI H_XInputGetState(DWORD user, XINPUT_STATE* s) { return Filter(user, g_pads[I].orig(user, s), s); }
+DWORD WINAPI H_XInputGetState(DWORD user, XINPUT_STATE* s) { return Filter(user, s_pads[I].orig(user, s), s); }
 template <int I>
-DWORD WINAPI H_XInputGetStateEx(DWORD user, XINPUT_STATE* s) { return Filter(user, g_pads[I].origEx(user, s), s); }
+DWORD WINAPI H_XInputGetStateEx(DWORD user, XINPUT_STATE* s) { return Filter(user, s_pads[I].origEx(user, s), s); }
 template <int I>
 DWORD WINAPI H_XInputGetCapabilities(DWORD user, DWORD flags, XINPUT_CAPABILITIES* c) {
-	DWORD r = g_pads[I].origCaps(user, flags, c);
+	DWORD r = s_pads[I].origCaps(user, flags, c);
 	XINPUT_GAMEPAD v;
 	if (r != ERROR_SUCCESS && user == 0 && c && VrInputPad(&v)) {
 		memset(c, 0, sizeof(*c));  // describe an ordinary Xbox controller
@@ -79,7 +79,7 @@ DWORD WINAPI H_XInputGetCapabilities(DWORD user, DWORD flags, XINPUT_CAPABILITIE
 }
 template <int I>
 DWORD WINAPI H_XInputSetState(DWORD user, XINPUT_VIBRATION* vib) {
-	DWORD r = g_pads[I].origSet(user, vib);
+	DWORD r = s_pads[I].origSet(user, vib);
 	if (user == 0 && vib) {
 		VrInputRumble(vib->wLeftMotorSpeed, vib->wRightMotorSpeed);
 		XINPUT_GAMEPAD v;
@@ -91,7 +91,7 @@ DWORD WINAPI H_XInputSetState(DWORD user, XINPUT_VIBRATION* vib) {
 // Hook XInput calls to add VR controller input and block input while in mod menu
 template <int I>
 void HookXInputDLL() {
-	PadHook& p = g_pads[I];
+	PadHook& p = s_pads[I];
 	if (p.done) return;
 	HMODULE m = GetModuleHandleW(p.dll);
 	if (!m) return;
@@ -104,26 +104,26 @@ void HookXInputDLL() {
 	void* set = (void*)GetProcAddress(m, "XInputSetState");
 	bool okCaps = caps && HookFunction(caps, (void*)&H_XInputGetCapabilities<I>, (void**)&p.origCaps, "XInputGetCapabilities");
 	bool okSet = set && HookFunction(set, (void*)&H_XInputSetState<I>, (void**)&p.origSet, "XInputSetState");
-	if (ok && !g_ReadGamepad) g_ReadGamepad = p.orig;
+	if (ok && !s_ReadGamepad) s_ReadGamepad = p.orig;
 	Log("menu: gamepad input of %s %s%s", Utf8(p.dll).s,
 		ok ? "hooked (blocked from the game while the menu is open; VR controllers merged into pad 0)" : "could not be hooked",
 		ok && !(okCaps && okSet) ? " - capabilities/rumble not hooked" : "");
 }
 // Get inputs from a real controller
 bool ReadPhysicalPad(XINPUT_GAMEPAD* g) {
-	if (!g_ReadGamepad) {
+	if (!s_ReadGamepad) {
 		static bool tried;
 		if (!tried) {
 			tried = true;
 			HMODULE m = LoadLibraryW(L"xinput1_4.dll");
 			if (!m) m = LoadLibraryW(L"xinput1_3.dll");
-			if (m) g_ReadGamepad = (PFN_XInputGetState)(void*)GetProcAddress(m, "XInputGetState");
+			if (m) s_ReadGamepad = (PFN_XInputGetState)(void*)GetProcAddress(m, "XInputGetState");
 		}
-		if (!g_ReadGamepad) return false;
+		if (!s_ReadGamepad) return false;
 	}
 	for (DWORD u = 0; u < 4; u++) {
 		XINPUT_STATE s = {};
-		if (g_ReadGamepad(u, &s) == ERROR_SUCCESS) {
+		if (s_ReadGamepad(u, &s) == ERROR_SUCCESS) {
 			*g = s.Gamepad;
 			return true;
 		}

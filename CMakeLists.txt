@@ -2,6 +2,7 @@
 #   pacman -S mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-lld mingw-w64-clang-x86_64-clang-tools-extra mingw-w64-clang-x86_64-openxr-sdk mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja
 # Add C:/msys64/clang64/bin to path
 # handy commands for me (CMakePresets.json: "clang" builds in build)
+#   cmake -S . -B build -G Ninja -DCMAKE_INSTALL_PREFIX="C:/Program Files (x86)/Steam/steamapps/common/NieRAutomata"
 #   cmake --preset clang
 #   cmake --build build
 #   cmake --install build
@@ -91,7 +92,7 @@ target_link_options(nier_vr PRIVATE -static -Wl,--enable-stdcall-fixup -s
 target_link_libraries(nier_vr PRIVATE kernel32 user32 advapi32 winhttp bcrypt)
 
 # install target
-install(TARGETS nier_vr RUNTIME DESTINATION .)   # just d3d11.dll, not the import library
+install(TARGETS nier_vr RUNTIME DESTINATION .)
 if(NIERVR_DLSS)
 	install(FILES ${DLSS_DIR}/nvngx_dlss.dll DESTINATION .)
 	install(FILES ${DLSS_DIR}/LICENSE.txt DESTINATION . RENAME nvngx_dlss_LICENSE.txt)

@@ -10,7 +10,7 @@
 #include "imgui.h"
 
 namespace {
-UiPanel g_panel = {"stats overlay", 24.0f, false};
+UiPanel s_panel = {"stats overlay", 24.0f, false};
 
 void Contents(const OverlayStats& s) {
 	const ImVec4 title(ui::Colors::accent[0], ui::Colors::accent[1], ui::Colors::accent[2], 1);
@@ -49,7 +49,7 @@ void Contents(const OverlayStats& s) {
 // Draws the overlay into rtv (w x h pixels). False if ImGui couldn't start.
 bool OverlayRender(ID3D11Device* dev, ID3D11DeviceContext* dc, ID3D11RenderTargetView* rtv, int w, int h,
 				   const OverlayStats& s) {
-	if (!UiPrepare(g_panel, dev, dc, w, h)) return false;
+	if (!UiPrepare(s_panel, dev, dc, w, h)) return false;
 	UiNewFrame();
 	ImGui::SetNextWindowPos(ImVec2(0, 0));
 	ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);

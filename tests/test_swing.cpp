@@ -76,8 +76,7 @@ int main() {
 		check(fires == 1, "raise ignored, downswing fires once");
 	}
 	{  // headset zone: hand at the head, then lowered quickly -> no attack; a normal swing later -> attack
-		pure::SwingDetector d;
-		pure::HeadZone z;
+		pure::SwingDetector detector;
 		uint32_t t = 1000;
 		struct F {
 			float dist, speed;
@@ -89,14 +88,14 @@ int main() {
 					   {0.6f, 0.8f}};                                  // lowering
 		int fires = 0;
 		for (const F& s : f) {
-			fires += d.update(z.update(s.dist, t) ? 0 : s.speed, t, 2.0f);
+			fires += detector.update(s.speed, t, 2.0f);
 			t += 11;
 		}
 		check(fires == 0, "hand at the headset and lowered right after: no attack");
 		t += 500;  // later, a normal swing away from the head
 		const F g[] = {{0.5f, 1.0f}, {0.55f, 2.6f}, {0.6f, 3.2f}, {0.6f, 1.0f}};
 		for (const F& s : g) {
-			fires += d.update(z.update(s.dist, t) ? 0 : s.speed, t, 2.0f);
+			fires += detector.update(s.speed, t, 2.0f);
 			t += 11;
 		}
 		check(fires == 1, "normal swing after the headset zone fires");

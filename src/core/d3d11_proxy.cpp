@@ -17,9 +17,9 @@ void* g_realProcs[sizeof(kThunkNames) / sizeof(kThunkNames[0])];
 void NVR_ResolveAll();
 }
 
-static PFN_D3D11_CREATE_DEVICE g_realCreateDevice;
+static PFN_D3D11_CREATE_DEVICE s_realCreateDevice;
 PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN g_realCreateDeviceAndSwapChain;
-static HMODULE g_realDll;
+static HMODULE s_realDll;
 
 // Used for any export the real DLL doesn't have (e.g. older Windows builds).
 static HRESULT WINAPI MissingExport() { return E_NOTIMPL; }
@@ -34,33 +34,33 @@ bool ProxyLoadReal() {
 			lstrcpynW(path, g_modDir, MAX_PATH);
 			lstrcpynW(path + lstrlenW(path), g_cfg.chainLoad, MAX_PATH - lstrlenW(path));
 		}
-		g_realDll = LoadLibraryW(path);
-		if (g_realDll)
+		s_realDll = LoadLibraryW(path);
+		if (s_realDll)
 			Log("chain-loaded %s", Utf8(path).s);
 		else
 			Log("ERROR: ChainLoad '%s' failed to load (error %u), falling back to the system d3d11.dll", Utf8(path).s,
 				(unsigned)GetLastError());
 	}
-	if (!g_realDll) {
+	if (!s_realDll) {
 		UINT n = GetSystemDirectoryW(path, MAX_PATH - 16);
 		lstrcpyW(path + n, L"\\d3d11.dll");
-		g_realDll = LoadLibraryW(path);
-		if (!g_realDll) {
+		s_realDll = LoadLibraryW(path);
+		if (!s_realDll) {
 			Log("ERROR: could not load %s (error %u)", Utf8(path).s, (unsigned)GetLastError());
 			return false;
 		}
 		Log("loaded system %s", Utf8(path).s);
 	}
-	if (g_realDll == g_hSelf) {
+	if (s_realDll == g_hSelf) {
 		Log("ERROR: real d3d11 resolved to this mod itself - check ChainLoad");
 		return false;
 	}
-	g_realCreateDevice = (PFN_D3D11_CREATE_DEVICE)(void*)GetProcAddress(g_realDll, "D3D11CreateDevice");
+	s_realCreateDevice = (PFN_D3D11_CREATE_DEVICE)(void*)GetProcAddress(s_realDll, "D3D11CreateDevice");
 	g_realCreateDeviceAndSwapChain =
-		(PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)(void*)GetProcAddress(g_realDll, "D3D11CreateDeviceAndSwapChain");
+		(PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)(void*)GetProcAddress(s_realDll, "D3D11CreateDeviceAndSwapChain");
 	int missing = 0;
 	for (int i = 0; i < kThunkCount; i++) {
-		void* p = (void*)GetProcAddress(g_realDll, kThunkNames[i]);
+		void* p = (void*)GetProcAddress(s_realDll, kThunkNames[i]);
 		if (!p) {
 			missing++;
 			LogV("real d3d11 lacks export %s", kThunkNames[i]);
@@ -69,7 +69,7 @@ bool ProxyLoadReal() {
 		g_realProcs[i] = p;
 	}
 	Log("proxy ready: %d forwarded exports (%d not present in this Windows build)", kThunkCount, missing);
-	return g_realCreateDevice && g_realCreateDeviceAndSwapChain;
+	return s_realCreateDevice && g_realCreateDeviceAndSwapChain;
 }
 
 extern "C" void NVR_ResolveAll() { EnsureInit(); }
@@ -82,8 +82,8 @@ extern "C" HRESULT WINAPI NVR_D3D11CreateDevice(IDXGIAdapter* adapter, D3D_DRIVE
 												UINT sdkVersion, ID3D11Device** device, D3D_FEATURE_LEVEL* outLevel,
 												ID3D11DeviceContext** context) {
 	EnsureInit();
-	if (!g_realCreateDevice) return E_FAIL;
-	HRESULT hr = g_realCreateDevice(adapter, driverType, software, flags, levels, numLevels, sdkVersion, device,
+	if (!s_realCreateDevice) return E_FAIL;
+	HRESULT hr = s_realCreateDevice(adapter, driverType, software, flags, levels, numLevels, sdkVersion, device,
 									outLevel, context);
 	Log("game called D3D11CreateDevice(driverType=%d, flags=0x%x) -> 0x%08x", (int)driverType, flags, (unsigned)hr);
 	if (SUCCEEDED(hr) && device && *device && g_cfg.enabled) {

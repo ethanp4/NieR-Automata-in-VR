@@ -76,17 +76,6 @@ const Setting kSettings[] = {
 		5.0f,
 		"How fast (metres per second, relative to your head) a hand must move to count as a swing.\n"
 		"Lower = easier to trigger; higher = only big swings. The Info page shows your swing speeds"),
-	S_INT(
-		"Input",
-		"IgnoreUpwardSwings",
-		ignoreUpSwings,
-		1,
-		0,
-		1,
-		"1 = reaching for your headset doesn't attack: a hand moving mostly upward (more than ~40 degrees\n"
-		"above horizontal) doesn't count, nor one within 25 cm of your head and for 0.4 s after it leaves.\n"
-		"Raising your arm for a swing then only attacks on the way down. 0 = every fast movement attacks"),
-
 	S_FLT(
 		"Screen",
 		"Distance",
@@ -201,7 +190,7 @@ const Setting kSettings[] = {
 		1,
 		0,
 		1,
-		"EXPERIMENTAL, alternate eyes only: the eye drawn in the previous game frame is moved to the new\n"
+		"EXPERIMENTAL, alternating mode only: the eye drawn in the previous game frame is moved to the new\n"
 		"camera using its depth"),
 	S_INT(
 		"Stereo",
@@ -219,8 +208,8 @@ const Setting kSettings[] = {
 		0,
 		0,
 		1,
-		"Experimental: 1 = draw a frame for both eyes (the frame is drawn a second time for the right\n"
-		"eye: no alternating, but about twice the GPU work). 0 = reuse the same frame for both eyes. F5 switches it in game"),
+		"Stereo mode: 0 = alternating (one eye per game frame), 1 = synchronized (both eyes every game\n"
+		"frame: they always match, for about twice the GPU work). F5 switches it in game"),
 	S_INT(
 		"Stereo",
 		"PosePrediction",
@@ -362,7 +351,7 @@ const Setting kSettings[] = {
 		0,
 		1,
 		"0 = turn off ambient occlusion (NieR's half-resolution SAO: blotchy/pixelated on things close to\n"
-		"the camera, e.g. 2B with CameraDolly). Ctrl+F11 toggles it in game."),
+		"the camera, e.g. 2B with CameraDolly)"),
 	S_INT(
 		"Render",
 		"Shadows",
@@ -370,7 +359,7 @@ const Setting kSettings[] = {
 		1,
 		0,
 		1,
-		"0 = no shadows (test switch for the shadow pass; Ctrl+Shift+F11 in game)"),
+		"0 = skip the game's screen-space shadow pass (no shadows from the sun and lights): faster"),
 	S_INT(
 		"Render",
 		"Vignette",
@@ -471,7 +460,7 @@ const Setting kSettings[] = {
 		1,
 		0,
 		1,
-		"Both eyes: the right eye reuses the left eye's shadow map (saves graphics work; 0 = draw it again)"),
+		"Synchronized mode: the right eye reuses the left eye's shadow map (saves graphics work; 0 = draw it again)"),
 	S_FLT(
 		"Render",
 		"HeadCullingMargin",
@@ -581,15 +570,6 @@ const Setting kSettings[] = {
 		"Another d3d11.dll-based mod (e.g. ReShade renamed to d3d11_reshade.dll) to load in a chain.\n"
 		"Leave empty to use Windows' own d3d11.dll."),
 
-	S_INT(
-		"Debug",
-		"UpscaleJitterFlip",
-		upscaleJitterFlip,
-		0,
-		0,
-		3,
-		"Upscaler test: 1 flips the sub-pixel offset handed to DLSS across, 2 up-down, 3 both. Only if the\n"
-		"upscaled image shimmers or looks doubled; 0 is right for NVIDIA's convention"),
 	S_INT(
 		"Debug",
 		"Verbose",
@@ -815,7 +795,6 @@ void ConfigLoad() {
 	int n = 0;
 	if (ReadRaw("Render", "FovEasingCaller", buf, 200)) ParseHexList(buf, easing, &n, 1);
 	g_cfg.fovEasingCaller = n ? easing[0] : 0x7397de;
-	g_cfg.eyeSync = 0;  // no longer used: late warp re-aims both eyes
 }
 
 // Writes one setting of g_cfg (pass its field: &g_cfg.worldScale) to NieRVR.ini.

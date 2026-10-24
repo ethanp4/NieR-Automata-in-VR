@@ -48,9 +48,9 @@ enum {
 	DEV_CreateDeferredContext = 27,
 };
 
-ID3D11Device* g_dev;
-ID3D11DeviceContext* g_ctx;
-volatile LONG g_deferredContexts;
+ID3D11Device* s_dev;
+ID3D11DeviceContext* s_ctx;
+volatile LONG s_deferredContexts;
 
 typedef void(STDMETHODCALLTYPE* PFN_SetCB)(ID3D11DeviceContext*, UINT, UINT, ID3D11Buffer* const*);
 typedef void(STDMETHODCALLTYPE* PFN_SetShader)(ID3D11DeviceContext*, void*, ID3D11ClassInstance* const*, UINT);
@@ -103,16 +103,16 @@ bool IsConstantBuffer(ID3D11Resource* r, UINT* size) {
 }
 
 // The game's current pixel and compute shaders
-PixelShaderClass g_psClass;
-uint32_t g_psSampled;  // texture registers it samples
-uint64_t g_psHash;     // bytecode hash (stable between runs, for the log)
-ComputeShaderClass g_csClass;
+PixelShaderClass s_psClass;
+uint32_t s_psSampled;  // texture registers it samples
+uint64_t s_psHash;     // bytecode hash (stable between runs, for the log)
+ComputeShaderClass s_csClass;
 
 // --- hooks -------------------------------------------------------------------------------------
 template <int Stage>
 void STDMETHODCALLTYPE H_SetCB(ID3D11DeviceContext* c, UINT start, UINT n, ID3D11Buffer* const* bufs) {
 	if (g_replaying) return o_SetCB[Stage](c, start, n, bufs);
-	if (Stage == ST_VS && c == g_ctx && bufs) UiOnSetVSConstantBuffers(start, n, bufs);
+	if (Stage == ST_VS && c == s_ctx && bufs) UiOnSetVSConstantBuffers(start, n, bufs);
 	if (RecOn(c)) RecSetCB(Stage == ST_VS ? RS_VS : Stage == ST_PS ? RS_PS
 												: Stage == ST_GS   ? RS_GS
 																   : RS_CS,
@@ -124,7 +124,7 @@ void STDMETHODCALLTYPE H_SetCB(ID3D11DeviceContext* c, UINT start, UINT n, ID3D1
 void STDMETHODCALLTYPE H_VSSetShader(ID3D11DeviceContext* c, void* sh, ID3D11ClassInstance* const* ci, UINT n) {
 	if (g_replaying) return o_VSSetShader(c, sh, ci, n);
 	if (RecOn(c)) RecSetShader(RS_VS, sh, ci, n);
-	if (c == g_ctx) UiOnSetVS(ShaderTableIsUi(sh));
+	if (c == s_ctx) UiOnSetVS(ShaderTableIsUi(sh));
 	if (CaptureRecording(c)) CaptureSetShader(ST_VS, sh);
 	o_VSSetShader(c, sh, ci, n);
 }
@@ -132,13 +132,13 @@ void STDMETHODCALLTYPE H_VSSetShader(ID3D11DeviceContext* c, void* sh, ID3D11Cla
 void STDMETHODCALLTYPE H_PSSetShader(ID3D11DeviceContext* c, void* sh, ID3D11ClassInstance* const* ci, UINT n) {
 	if (g_replaying) return o_PSSetShader(c, sh, ci, n);
 	if (RecOn(c)) RecSetShader(RS_PS, sh, ci, n);
-	if (c == g_ctx) {
-		PixelShaderClass was = g_psClass;
-		g_psClass = ShaderTableClassifyPixel(sh, &g_psSampled, &g_psHash);
+	if (c == s_ctx) {
+		PixelShaderClass was = s_psClass;
+		s_psClass = ShaderTableClassifyPixel(sh, &s_psSampled, &s_psHash);
 		// GPU timing: the expensive full-screen passes get their own marks
 		static const char* const kNames[6] = {nullptr, "AO (SAO)", "shadow mask", nullptr, nullptr, "light scattering"};
-		if (g_psClass != was) {
-			const char* now = kNames[g_psClass];
+		if (s_psClass != was) {
+			const char* now = kNames[s_psClass];
 			if (now) GpuTimingMark(c, now);
 			else if (kNames[was]) GpuTimingMark(c, "(after a full-screen pass)");
 		}
@@ -151,9 +151,9 @@ void STDMETHODCALLTYPE H_PSSetShader(ID3D11DeviceContext* c, void* sh, ID3D11Cla
 bool PreDraw(ID3D11DeviceContext* c) {
 	CapturePollMidFrame();
 	StereoCountDraw();
-	if (GameEffectsBeforeDraw(c, g_psClass)) return true;
+	if (GameEffectsBeforeDraw(c, s_psClass)) return true;
 	if (UiBeforeDraw(c)) return true;
-	if (g_psClass == PS_EFFECT && GameEffectsSkipEffectDraw(c, g_psSampled, g_psHash)) return true;
+	if (s_psClass == PS_EFFECT && GameEffectsSkipEffectDraw(c, s_psSampled, s_psHash)) return true;
 	GpuTimingDraw();
 	return false;
 }
@@ -164,7 +164,7 @@ void PostDraw(ID3D11DeviceContext* c, const DrawArgs& a) {
 
 void STDMETHODCALLTYPE H_Draw(ID3D11DeviceContext* c, UINT n, UINT s) {
 	if (g_replaying) return o_Draw(c, n, s);
-	bool game = c == g_ctx;
+	bool game = c == s_ctx;
 	if (game && PreDraw(c)) return;
 	if (RecOn(c)) RecDraw(0, n, s, 0, 0, 0);
 	if (CaptureRecording(c)) CaptureDraw(0, n, s, 0);
@@ -173,7 +173,7 @@ void STDMETHODCALLTYPE H_Draw(ID3D11DeviceContext* c, UINT n, UINT s) {
 }
 void STDMETHODCALLTYPE H_DrawIndexed(ID3D11DeviceContext* c, UINT n, UINT s, INT b) {
 	if (g_replaying) return o_DrawIndexed(c, n, s, b);
-	bool game = c == g_ctx;
+	bool game = c == s_ctx;
 	if (game && PreDraw(c)) return;
 	if (RecOn(c)) RecDraw(1, n, s, b, 0, 0);
 	if (CaptureRecording(c)) CaptureDraw(1, n, s, (UINT)b);
@@ -182,7 +182,7 @@ void STDMETHODCALLTYPE H_DrawIndexed(ID3D11DeviceContext* c, UINT n, UINT s, INT
 }
 void STDMETHODCALLTYPE H_DrawInstanced(ID3D11DeviceContext* c, UINT v, UINT i, UINT sv, UINT si) {
 	if (g_replaying) return o_DrawInstanced(c, v, i, sv, si);
-	bool game = c == g_ctx;
+	bool game = c == s_ctx;
 	if (game && PreDraw(c)) return;
 	if (RecOn(c)) RecDraw(2, v, i, (INT)sv, si, 0);
 	if (CaptureRecording(c)) CaptureDraw(2, v, i, sv);
@@ -191,7 +191,7 @@ void STDMETHODCALLTYPE H_DrawInstanced(ID3D11DeviceContext* c, UINT v, UINT i, U
 }
 void STDMETHODCALLTYPE H_DrawIndexedInstanced(ID3D11DeviceContext* c, UINT n, UINT i, UINT s, INT b, UINT si) {
 	if (g_replaying) return o_DrawIndexedInstanced(c, n, i, s, b, si);
-	bool game = c == g_ctx;
+	bool game = c == s_ctx;
 	if (game && PreDraw(c)) return;
 	if (RecOn(c)) RecDraw(3, n, i, (INT)s, (UINT)b, si);
 	if (CaptureRecording(c)) CaptureDraw(3, n, i, s);
@@ -206,7 +206,7 @@ HRESULT STDMETHODCALLTYPE H_Map(ID3D11DeviceContext* c, ID3D11Resource* r, UINT 
 	if (g_replaying) return hr;
 	if (SUCCEEDED(hr) && RecOn(c)) RecMap(r, sub, type, flags, m);
 	UINT size;
-	if (c != g_ctx || FAILED(hr) || !m || !r || type == D3D11_MAP_READ) return hr;
+	if (c != s_ctx || FAILED(hr) || !m || !r || type == D3D11_MAP_READ) return hr;
 	if (!IsConstantBuffer(r, &size)) return hr;
 	if (StereoWatching()) StereoOnMap(r, m->pData, size);
 	GameEffectsOnMap(r, m->pData, size);
@@ -218,7 +218,7 @@ HRESULT STDMETHODCALLTYPE H_Map(ID3D11DeviceContext* c, ID3D11Resource* r, UINT 
 void STDMETHODCALLTYPE H_Unmap(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub) {
 	if (g_replaying) return o_Unmap(c, r, sub);
 	if (RecOn(c) && r) RecUnmap(r, sub);  // the game's own data, before the camera is patched in
-	if (c == g_ctx && r) {
+	if (c == s_ctx && r) {
 		StereoBeforeUnmap(r);  // patch the camera for this frame's eye
 		UiBeforeUnmap(r);      // remember UI draw parameters
 		GameEffectsBeforeUnmap(r);
@@ -233,7 +233,7 @@ void STDMETHODCALLTYPE H_UpdateSubresource(ID3D11DeviceContext* c, ID3D11Resourc
 	if (RecOn(c)) RecUpdate(r, sub, box, data, rp, dp);
 	UINT size;
 	float scratch[64];
-	if (c == g_ctx && r && data && !box && IsConstantBuffer(r, &size)) {
+	if (c == s_ctx && r && data && !box && IsConstantBuffer(r, &size)) {
 		// Constant buffers can only be updated whole, so `data` holds byteWidth bytes.
 		if (StereoWatching()) data = StereoPatchUpdate(size, data, scratch);
 		data = GameEffectsPatchUpdate(r, data, size, scratch);
@@ -247,7 +247,7 @@ void STDMETHODCALLTYPE H_OMSetRT(ID3D11DeviceContext* c, UINT n, ID3D11RenderTar
 								 ID3D11DepthStencilView* dsv) {
 	if (g_replaying) return o_OMSetRT(c, n, rtvs, dsv);
 	if (RecOn(c)) RecOMSetRT(n, rtvs, dsv);
-	if (c == g_ctx) {
+	if (c == s_ctx) {
 		GpuTimingTargets(c, n, rtvs, dsv, "");
 		if (dsv) ReprojectNoteDsv(dsv);
 	}
@@ -291,20 +291,20 @@ void STDMETHODCALLTYPE H_CSSetUAV(ID3D11DeviceContext* c, UINT s, UINT n, ID3D11
 void STDMETHODCALLTYPE H_CSSetShader(ID3D11DeviceContext* c, void* sh, ID3D11ClassInstance* const* ci, UINT n) {
 	if (g_replaying) return o_CSSetShader(c, sh, ci, n);
 	if (RecOn(c)) RecSetShader(RS_CS, sh, ci, n);
-	if (c == g_ctx) g_csClass = ShaderTableClassifyCompute(sh);
+	if (c == s_ctx) s_csClass = ShaderTableClassifyCompute(sh);
 	if (CaptureRecording(c)) CaptureSetShader(ST_CS, sh);
 	o_CSSetShader(c, sh, ci, n);
 }
 
 void STDMETHODCALLTYPE H_Dispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z) {
 	if (g_replaying) return o_Dispatch(c, x, y, z);
-	if (RecOn(c)) RecDispatch(x, y, z, c == g_ctx ? g_csClass : 0);
-	if (c == g_ctx) GpuTimingCompute(c, "", g_csClass);
+	if (RecOn(c)) RecDispatch(x, y, z, c == s_ctx ? s_csClass : 0);
+	if (c == s_ctx) GpuTimingCompute(c, "", s_csClass);
 	if (CaptureRecording(c)) CaptureDispatch(x, y, z);
-	bool fix = c == g_ctx && g_csClass != CS_OTHER;
+	bool fix = c == s_ctx && s_csClass != CS_OTHER;
 	if (fix) {  // the fix's own calls aren't the game's: not recorded (playback runs the fix again)
 		InterlockedIncrement(&g_recSuspend);
-		ViewFixBeforeDispatch(c, g_csClass);
+		ViewFixBeforeDispatch(c, s_csClass);
 		InterlockedDecrement(&g_recSuspend);
 	}
 	o_Dispatch(c, x, y, z);
@@ -317,23 +317,23 @@ void STDMETHODCALLTYPE H_Dispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z
 
 HRESULT STDMETHODCALLTYPE H_CreateVS(ID3D11Device* d, const void* bc, SIZE_T len, ID3D11ClassLinkage* l, void** out) {
 	HRESULT hr = o_CreateVS(d, bc, len, l, out);
-	if (d == g_dev && SUCCEEDED(hr) && out) ShaderTableRemember(*out, bc, len, ST_VS);
+	if (d == s_dev && SUCCEEDED(hr) && out) ShaderTableRemember(*out, bc, len, ST_VS);
 	return hr;
 }
 HRESULT STDMETHODCALLTYPE H_CreatePS(ID3D11Device* d, const void* bc, SIZE_T len, ID3D11ClassLinkage* l, void** out) {
 	HRESULT hr = o_CreatePS(d, bc, len, l, out);
-	if (d == g_dev && SUCCEEDED(hr) && out) ShaderTableRemember(*out, bc, len, ST_PS);
+	if (d == s_dev && SUCCEEDED(hr) && out) ShaderTableRemember(*out, bc, len, ST_PS);
 	return hr;
 }
 HRESULT STDMETHODCALLTYPE H_CreateCS(ID3D11Device* d, const void* bc, SIZE_T len, ID3D11ClassLinkage* l, void** out) {
 	HRESULT hr = o_CreateCS(d, bc, len, l, out);
-	if (d == g_dev && SUCCEEDED(hr) && out) ShaderTableRemember(*out, bc, len, ST_CS);
+	if (d == s_dev && SUCCEEDED(hr) && out) ShaderTableRemember(*out, bc, len, ST_CS);
 	return hr;
 }
 HRESULT STDMETHODCALLTYPE H_CreateDeferredContext(ID3D11Device* d, UINT flags, ID3D11DeviceContext** out) {
 	HRESULT hr = o_CreateDeferredContext(d, flags, out);
-	if (d == g_dev && SUCCEEDED(hr)) {
-		LONG n = InterlockedIncrement(&g_deferredContexts);
+	if (d == s_dev && SUCCEEDED(hr)) {
+		LONG n = InterlockedIncrement(&s_deferredContexts);
 		Log("d3d hooks: game created deferred context #%d (multithreaded rendering)", (int)n);
 	}
 	return hr;
@@ -353,10 +353,10 @@ void FrameLatencyTick() {
 	static int applied = -1;
 	static UINT gameOwn;  // the game's own queue length, seen before we changed it (0 = not yet)
 	DWORD t = GetTickCount();
-	if (!g_dev || (t - last < 2000 && applied == g_cfg.maxFrameLatency)) return;
+	if (!s_dev || (t - last < 2000 && applied == g_cfg.maxFrameLatency)) return;
 	last = t;
 	IDXGIDevice1* d = nullptr;
-	if (FAILED(g_dev->QueryInterface(__uuidof(IDXGIDevice1), (void**)&d)) || !d) return;
+	if (FAILED(s_dev->QueryInterface(__uuidof(IDXGIDevice1), (void**)&d)) || !d) return;
 	UINT cur = 0;
 	d->GetMaximumFrameLatency(&cur);
 	if (!gameOwn) gameOwn = cur ? cur : 3;
@@ -382,13 +382,13 @@ void D3dHooksInstall(ID3D11Device* dev) {
 	static volatile LONG done = 0;
 	if (InterlockedCompareExchange(&done, 1, 0) != 0) return;
 	if (!g_cfg.probe) Log("frame capture key disabled ([Debug] Probe=0)");
-	g_dev = dev;
-	dev->GetImmediateContext(&g_ctx);  // keep the reference: lives as long as the game's device
-	CaptureSetDevice(g_dev, g_ctx);
+	s_dev = dev;
+	dev->GetImmediateContext(&s_ctx);  // keep the reference: lives as long as the game's device
+	CaptureSetDevice(s_dev, s_ctx);
 	ShaderTableInit();
 
 	void** dv = *(void***)dev;
-	void** cv = *(void***)g_ctx;
+	void** cv = *(void***)s_ctx;
 	int ok = 0;
 	ok += Hook(dv, DEV_CreateVertexShader, (void*)&H_CreateVS, &o_CreateVS, "CreateVertexShader");
 	ok += Hook(dv, DEV_CreatePixelShader, (void*)&H_CreatePS, &o_CreatePS, "CreatePixelShader");
@@ -417,17 +417,17 @@ void D3dHooksInstall(ID3D11Device* dev) {
 	ok += Hook(cv, CTX_CSSetShaderResources, (void*)&H_CSSetSRV, &o_CSSetSRV, "CSSetShaderResources");
 	ok += Hook(cv, CTX_CSSetUnorderedAccessViews, (void*)&H_CSSetUAV, &o_CSSetUAV, "CSSetUnorderedAccessViews");
 	ok += Hook(cv, CTX_CSSetShader, (void*)&H_CSSetShader, &o_CSSetShader, "CSSetShader");
-	ReplayInstall(g_ctx);
+	ReplayInstall(s_ctx);
 	Log("D3D11 hooks ready: %d/25 installed (capture key 0x%x)", ok, (unsigned)g_cfg.keyCapture);
 }
 
 void D3dHooksFollowDevice(ID3D11Device* presentingDevice) {
-	if (!g_dev || presentingDevice == g_dev) return;
+	if (!s_dev || presentingDevice == s_dev) return;
 	Log("d3d hooks: the presenting device differs from the first created device - following the presenting one");
-	if (g_ctx) g_ctx->Release();
-	g_dev = presentingDevice;
-	g_dev->GetImmediateContext(&g_ctx);
-	CaptureSetDevice(g_dev, g_ctx);
+	if (s_ctx) s_ctx->Release();
+	s_dev = presentingDevice;
+	s_dev->GetImmediateContext(&s_ctx);
+	CaptureSetDevice(s_dev, s_ctx);
 }
 
 void OriginalDispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z) { o_Dispatch(c, x, y, z); }

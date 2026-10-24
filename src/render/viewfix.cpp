@@ -78,7 +78,7 @@ struct Fix {
 	const char* name;
 	bool logged, failed;
 };
-Fix g_fix[2] = {{nullptr, {}, nullptr, nullptr, nullptr, {}, {}, 5, 48, "point lights", false, false},
+Fix s_fix[2] = {{nullptr, {}, nullptr, nullptr, nullptr, {}, {}, 5, 48, "point lights", false, false},
 				{nullptr, {}, nullptr, nullptr, nullptr, {}, {}, 1, 96, "reflection probes", false, false}};
 
 // read-back of the game's GI volume buffer: a ring of staging copies, one per frame, each read
@@ -89,19 +89,19 @@ struct GiCopy {
 	bool pending;
 	UINT first, count;
 };
-GiCopy g_giRing[kGiRing];
-UINT g_giStagingSize;
-int g_giNext;
-pure::GiPick g_giPick;     // the latest decision
-bool g_giHave;             // g_giPick is valid
-DWORD g_giLogTick, g_giInfoTick;
-int g_giUsedMin = 9999, g_giUsedMax = -1, g_giHighMax = -1, g_giLenMin = 9999, g_giLenMax = -1, g_giSlots;
-float g_giEntries[256 * 24];
+GiCopy s_giRing[kGiRing];
+UINT s_giStagingSize;
+int s_giNext;
+pure::GiPick s_giPick;     // the latest decision
+bool s_giHave;             // s_giPick is valid
+DWORD s_giLogTick, s_giInfoTick;
+int s_giUsedMin = 9999, s_giUsedMax = -1, s_giHighMax = -1, s_giLenMin = 9999, s_giLenMax = -1, s_giSlots;
+float s_giEntries[256 * 24];
 
-ID3D11Buffer* g_params;
-bool g_init, g_initFailed;
-ID3D11ShaderResourceView* g_restoreSrv;
-int g_restoreSlot = -1;
+ID3D11Buffer* s_params;
+bool s_init, s_initFailed;
+ID3D11ShaderResourceView* s_restoreSrv;
+int s_restoreSlot = -1;
 
 template <typename T>
 void Rel(T*& p) {
@@ -110,7 +110,7 @@ void Rel(T*& p) {
 }
 
 bool Init(ID3D11Device* dev) {
-	if (g_init || g_initFailed) return g_init;
+	if (s_init || s_initFailed) return s_init;
 	HMODULE comp = LoadLibraryW(L"d3dcompiler_47.dll");
 	pD3DCompile compile = comp ? (pD3DCompile)(void*)GetProcAddress(comp, "D3DCompile") : nullptr;
 	const char* entry[2] = {"Lights", "Probes"};
@@ -119,7 +119,7 @@ bool Init(ID3D11Device* dev) {
 		ID3DBlob *b = nullptr, *err = nullptr;
 		HRESULT hr = compile(src[i], lstrlenA(src[i]), entry[i], nullptr, nullptr, "main", "cs_5_0",
 							 D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &b, &err);
-		if (SUCCEEDED(hr)) hr = dev->CreateComputeShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &g_fix[i].cs);
+		if (SUCCEEDED(hr)) hr = dev->CreateComputeShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &s_fix[i].cs);
 		if (FAILED(hr))
 			Log("ERROR: view fix shader %s: 0x%08x %s", entry[i], (unsigned)hr,
 				err ? (const char*)err->GetBufferPointer() : "");
@@ -130,11 +130,11 @@ bool Init(ID3D11Device* dev) {
 	bd.ByteWidth = 176;  // = sizeof the parameter struct below
 	bd.Usage = D3D11_USAGE_DEFAULT;
 	bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-	if (FAILED(dev->CreateBuffer(&bd, nullptr, &g_params))) g_params = nullptr;
-	g_init = g_params && g_fix[0].cs && g_fix[1].cs;
-	g_initFailed = !g_init;
-	if (g_initFailed) Log("view fix: unavailable (shader compiler or resources missing); lighting may show tiles");
-	return g_init;
+	if (FAILED(dev->CreateBuffer(&bd, nullptr, &s_params))) s_params = nullptr;
+	s_init = s_params && s_fix[0].cs && s_fix[1].cs;
+	s_initFailed = !s_init;
+	if (s_initFailed) Log("view fix: unavailable (shader compiler or resources missing); lighting may show tiles");
+	return s_init;
 }
 
 // Our copy of the game's buffer behind `src`: same size/stride, plus UAV, and an SRV like the game's.
@@ -189,22 +189,22 @@ bool EnsureCopy(ID3D11Device* dev, Fix& f, ID3D11ShaderResourceView* src, UINT* 
 void GiReadback(ID3D11DeviceContext* c, ID3D11Device* dev, ID3D11ShaderResourceView* src, UINT first, UINT count) {
 	// newest finished copy
 	for (int k = 0; k < kGiRing; k++) {
-		GiCopy& g = g_giRing[(g_giNext + k) % kGiRing];  // oldest first
+		GiCopy& g = s_giRing[(s_giNext + k) % kGiRing];  // oldest first
 		if (!g.pending) continue;
 		D3D11_MAPPED_SUBRESOURCE m;
 		if (c->Map(g.buf, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m) != S_OK) break;
 		UINT n = g.count > 256 ? 256 : g.count;
-		if ((g.first + n) * 96 <= g_giStagingSize) {
-			memcpy(g_giEntries, (const uint8_t*)m.pData + g.first * 96, n * 96);
+		if ((g.first + n) * 96 <= s_giStagingSize) {
+			memcpy(s_giEntries, (const uint8_t*)m.pData + g.first * 96, n * 96);
 			int keep = g_cfg.giVolumes >= 128 ? 256 : g_cfg.giVolumes;
-			g_giPick = pure::gi_pick(g_giEntries, (int)n, keep, 8);
-			g_giHave = true;
-			g_giSlots = (int)g.count;
-			if (g_giPick.used < g_giUsedMin) g_giUsedMin = g_giPick.used;
-			if (g_giPick.used > g_giUsedMax) g_giUsedMax = g_giPick.used;
-			if (g_giPick.highest > g_giHighMax) g_giHighMax = g_giPick.highest;
-			if (g_giPick.length < g_giLenMin) g_giLenMin = g_giPick.length;
-			if (g_giPick.length > g_giLenMax) g_giLenMax = g_giPick.length;
+			s_giPick = pure::gi_pick(s_giEntries, (int)n, keep, 8);
+			s_giHave = true;
+			s_giSlots = (int)g.count;
+			if (s_giPick.used < s_giUsedMin) s_giUsedMin = s_giPick.used;
+			if (s_giPick.used > s_giUsedMax) s_giUsedMax = s_giPick.used;
+			if (s_giPick.highest > s_giHighMax) s_giHighMax = s_giPick.highest;
+			if (s_giPick.length < s_giLenMin) s_giLenMin = s_giPick.length;
+			if (s_giPick.length > s_giLenMax) s_giLenMax = s_giPick.length;
 		}
 		c->Unmap(g.buf, 0);
 		g.pending = false;
@@ -215,12 +215,12 @@ void GiReadback(ID3D11DeviceContext* c, ID3D11Device* dev, ID3D11ShaderResourceV
 	if (!r) return;
 	D3D11_BUFFER_DESC d;
 	((ID3D11Buffer*)r)->GetDesc(&d);
-	if (g_giStagingSize != d.ByteWidth) {
-		for (auto& g : g_giRing) {
+	if (s_giStagingSize != d.ByteWidth) {
+		for (auto& g : s_giRing) {
 			Rel(g.buf);
 			g.pending = false;
 		}
-		g_giStagingSize = 0;
+		s_giStagingSize = 0;
 		D3D11_BUFFER_DESC sd = {};
 		sd.ByteWidth = d.ByteWidth;
 		sd.Usage = D3D11_USAGE_STAGING;
@@ -228,58 +228,58 @@ void GiReadback(ID3D11DeviceContext* c, ID3D11Device* dev, ID3D11ShaderResourceV
 		sd.MiscFlags = d.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
 		sd.StructureByteStride = d.StructureByteStride;
 		bool ok = true;
-		for (auto& g : g_giRing) ok = ok && SUCCEEDED(dev->CreateBuffer(&sd, nullptr, &g.buf));
+		for (auto& g : s_giRing) ok = ok && SUCCEEDED(dev->CreateBuffer(&sd, nullptr, &g.buf));
 		if (!ok) {  // try a plain buffer
-			for (auto& g : g_giRing) Rel(g.buf);
+			for (auto& g : s_giRing) Rel(g.buf);
 			sd.MiscFlags = 0;
 			sd.StructureByteStride = 0;
 			ok = true;
-			for (auto& g : g_giRing) ok = ok && SUCCEEDED(dev->CreateBuffer(&sd, nullptr, &g.buf));
+			for (auto& g : s_giRing) ok = ok && SUCCEEDED(dev->CreateBuffer(&sd, nullptr, &g.buf));
 		}
-		if (ok) g_giStagingSize = d.ByteWidth;
+		if (ok) s_giStagingSize = d.ByteWidth;
 		else
-			for (auto& g : g_giRing) Rel(g.buf);
+			for (auto& g : s_giRing) Rel(g.buf);
 	}
-	GiCopy& g = g_giRing[g_giNext];
-	if (g_giStagingSize && !g.pending) {
+	GiCopy& g = s_giRing[s_giNext];
+	if (s_giStagingSize && !g.pending) {
 		c->CopyResource(g.buf, r);
 		g.pending = true;
 		g.first = first;
 		g.count = count;
-		g_giNext = (g_giNext + 1) % kGiRing;
+		s_giNext = (s_giNext + 1) % kGiRing;
 	}
 	r->Release();
 }
 
 void GiReport() {
-	if (!g_giHave) return;
+	if (!s_giHave) return;
 	DWORD t = GetTickCount();
-	if (t - g_giInfoTick > 500) {
-		g_giInfoTick = t;
+	if (t - s_giInfoTick > 500) {
+		s_giInfoTick = t;
 		char info[160];
-		if (g_giPick.dropping)
+		if (s_giPick.dropping)
 			snprintf(info, sizeof(info), "GI volumes: %d in use, %d nearest kept; the pass checks slots 0-%d of %d",
-					 g_giPick.used, g_giPick.kept, g_giPick.length - 1, g_giSlots);
+					 s_giPick.used, s_giPick.kept, s_giPick.length - 1, s_giSlots);
 		else
 			snprintf(info, sizeof(info), "GI volumes: %d in use (last slot %d), all kept; the pass checks slots 0-%d of %d",
-					 g_giPick.used, g_giPick.highest, g_giPick.length - 1, g_giSlots);
+					 s_giPick.used, s_giPick.highest, s_giPick.length - 1, s_giSlots);
 		MenuSetInfo(12, info);
 	}
-	if (t - g_giLogTick < 30000 || g_giUsedMax < 0) return;
-	g_giLogTick = t;
+	if (t - s_giLogTick < 30000 || s_giUsedMax < 0) return;
+	s_giLogTick = t;
 	Log("GI volumes (30 s): %d-%d of %d slots in use, last used slot up to %d; the game's pass checked %d-%d slots "
 		"(GIVolumes=%d: %s)",
-		g_giUsedMin, g_giUsedMax, g_giSlots, g_giHighMax, g_giLenMin, g_giLenMax, g_cfg.giVolumes,
+		s_giUsedMin, s_giUsedMax, s_giSlots, s_giHighMax, s_giLenMin, s_giLenMax, g_cfg.giVolumes,
 		g_cfg.giVolumes >= 128 ? "all kept, only the empty tail skipped" : "the nearest kept, the rest switched off");
-	g_giUsedMin = 9999;
-	g_giUsedMax = g_giHighMax = g_giLenMax = -1;
-	g_giLenMin = 9999;
+	s_giUsedMin = 9999;
+	s_giUsedMax = s_giHighMax = s_giLenMax = -1;
+	s_giLenMin = 9999;
 }
 }  // namespace
 
 // kind: 1 = light culling, 2 = probe selection (GI volumes). Called right before the game's dispatch.
 void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
-	g_restoreSlot = -1;
+	s_restoreSlot = -1;
 	if (kind < 1 || kind > 2) return;
 	float T[16], Tinv[16];
 	bool view = g_cfg.viewFix && StereoGetViewFix(T, Tinv);  // false in mono frames: the data already matches
@@ -291,7 +291,7 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 	ID3D11Device* dev = nullptr;
 	c->GetDevice(&dev);
 	if (!dev) return;
-	Fix& f = g_fix[kind - 1];
+	Fix& f = s_fix[kind - 1];
 	ID3D11ShaderResourceView* src = nullptr;
 	UINT first = 0, count = 0;
 	bool ok = Init(dev);
@@ -302,7 +302,7 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 	if (!ok) {
 		dev->Release();
 		if (src) src->Release();
-		if (!f.failed && g_init) {
+		if (!f.failed && s_init) {
 			f.failed = true;
 			Log("view fix: %s buffer not in the expected format; left unchanged", f.name);
 		}
@@ -314,9 +314,9 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 	ID3D11ShaderResourceView* use = f.srv;
 	uint32_t on[8];
 	for (auto& w : on) w = 0xffffffffu;
-	bool trim = gi && g_giHave && count <= 256 && g_giSlots == (int)count;
+	bool trim = gi && s_giHave && count <= 256 && s_giSlots == (int)count;
 	if (trim) {
-		UINT len = (UINT)g_giPick.length;
+		UINT len = (UINT)s_giPick.length;
 		if (len > count) len = count;
 		if (!f.lenSrv[len]) {
 			D3D11_SHADER_RESOURCE_VIEW_DESC sd = f.srvDesc;
@@ -325,7 +325,7 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 		}
 		if (f.lenSrv[len]) {
 			use = f.lenSrv[len];
-			memcpy(on, g_giPick.mask, sizeof(on));
+			memcpy(on, s_giPick.mask, sizeof(on));
 		} else {
 			trim = false;
 		}
@@ -340,14 +340,14 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 		UINT first, count, pad[2];
 		uint32_t on[8];
 	} p;
-	static_assert(sizeof(p) == 176, "matches g_params ByteWidth and the HLSL cbuffer");
+	static_assert(sizeof(p) == 176, "matches s_params ByteWidth and the HLSL cbuffer");
 	memcpy(p.T, T, 64);
 	memcpy(p.Tinv, Tinv, 64);
 	p.first = first;
 	p.count = count;
 	p.pad[0] = p.pad[1] = 0;
 	memcpy(p.on, on, sizeof(on));
-	c->UpdateSubresource(g_params, 0, nullptr, &p, 0, 0);
+	c->UpdateSubresource(s_params, 0, nullptr, &p, 0, 0);
 
 	// save the game's compute state we touch
 	ID3D11ComputeShader* gcs = nullptr;
@@ -364,7 +364,7 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 	ID3D11ShaderResourceView* none = nullptr;
 	c->CSSetShaderResources(0, 1, &none);  // the game's t0 may alias nothing of ours, but be safe
 	c->CSSetShader(f.cs, nullptr, 0);
-	c->CSSetConstantBuffers(0, 1, &g_params);
+	c->CSSetConstantBuffers(0, 1, &s_params);
 	c->CSSetShaderResources(0, 1, &src);
 	UINT keepCounts = (UINT)-1;
 	c->CSSetUnorderedAccessViews(0, 1, &f.uav, &keepCounts);
@@ -378,8 +378,8 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 	c->CSSetShaderResources(0, 1, &gsrv0);
 	c->CSSetUnorderedAccessViews(0, 1, &guav0, &keepCounts);
 	c->CSSetShaderResources(f.slot, 1, &use);
-	g_restoreSrv = src;  // keeps our reference until after the dispatch
-	g_restoreSlot = f.slot;
+	s_restoreSrv = src;  // keeps our reference until after the dispatch
+	s_restoreSlot = f.slot;
 	if (gcs) gcs->Release();
 	for (UINT i = 0; i < ninst && i < 8; i++)
 		if (inst[i]) inst[i]->Release();
@@ -394,14 +394,14 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 	if (trim && !trimLogged) {
 		trimLogged = true;
 		Log("GI volumes: the game's GI pass now checks slots 0-%d of %u (%d in use, %d kept; GIVolumes=%d)",
-			g_giPick.length - 1, count, g_giPick.used, g_giPick.kept, g_cfg.giVolumes);
+			s_giPick.length - 1, count, s_giPick.used, s_giPick.kept, g_cfg.giVolumes);
 	}
 }
 
 void ViewFixAfterDispatch(ID3D11DeviceContext* c) {
-	if (g_restoreSlot < 0) return;
-	c->CSSetShaderResources((UINT)g_restoreSlot, 1, &g_restoreSrv);
-	if (g_restoreSrv) g_restoreSrv->Release();
-	g_restoreSrv = nullptr;
-	g_restoreSlot = -1;
+	if (s_restoreSlot < 0) return;
+	c->CSSetShaderResources((UINT)s_restoreSlot, 1, &s_restoreSrv);
+	if (s_restoreSrv) s_restoreSrv->Release();
+	s_restoreSrv = nullptr;
+	s_restoreSlot = -1;
 }

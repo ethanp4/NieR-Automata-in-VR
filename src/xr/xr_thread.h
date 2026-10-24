@@ -7,29 +7,31 @@
 #include "ui/stats_overlay.h"
 #include "xr/openxr.h"
 
-#define XR_INSTANCE_FUNCS(X)                                                                           \
-	X(xrGetInstanceProperties)                                                                         \
-	X(xrGetSystem)                                                                                     \
-	X(xrGetSystemProperties)                                                                           \
-	X(xrDestroyInstance)                                                                               \
-	X(xrResultToString)                                                                                \
-	X(xrPollEvent)                                                                                     \
-	X(xrCreateSession)                                                                                 \
-	X(xrDestroySession)                                                                                \
-	X(xrBeginSession)                                                                                  \
-	X(xrEndSession)                                                                                    \
-	X(xrWaitFrame)                                                                                     \
-	X(xrBeginFrame)                                                                                    \
-	X(xrEndFrame)                                                                                      \
-	X(xrCreateReferenceSpace)                                                                          \
-	X(xrDestroySpace)                                                                                  \
-	X(xrLocateSpace)                                                                                   \
-	X(xrEnumerateSwapchainFormats)                                                                     \
-	X(xrCreateSwapchain)                                                                               \
-		X(xrDestroySwapchain) X(xrEnumerateSwapchainImages) X(xrAcquireSwapchainImage)                 \
-			X(xrWaitSwapchainImage) X(xrReleaseSwapchainImage) X(xrEnumerateEnvironmentBlendModes)     \
-				X(xrGetD3D11GraphicsRequirementsKHR) X(xrLocateViews) X(xrEnumerateViewConfigurations) \
-					X(xrEnumerateViewConfigurationViews)
+#define XR_INSTANCE_FUNCS(X)                                                                       \
+	X(xrGetInstanceProperties)                                                                     \
+	X(xrGetSystem)                                                                                 \
+	X(xrGetSystemProperties)                                                                       \
+	X(xrDestroyInstance)                                                                           \
+	X(xrResultToString)                                                                            \
+	X(xrPollEvent)                                                                                 \
+	X(xrCreateSession)                                                                             \
+	X(xrDestroySession)                                                                            \
+	X(xrBeginSession)                                                                              \
+	X(xrEndSession)                                                                                \
+	X(xrWaitFrame)                                                                                 \
+	X(xrBeginFrame)                                                                                \
+	X(xrEndFrame)                                                                                  \
+	X(xrCreateReferenceSpace)                                                                      \
+	X(xrDestroySpace)                                                                              \
+	X(xrLocateSpace)                                                                               \
+	X(xrEnumerateSwapchainFormats)                                                                 \
+	X(xrCreateSwapchain)                                                                           \
+	X(xrDestroySwapchain)                                                                          \
+	X(xrEnumerateSwapchainImages)                                                                  \
+	X(xrAcquireSwapchainImage)                                                                     \
+		X(xrWaitSwapchainImage) X(xrReleaseSwapchainImage) X(xrEnumerateEnvironmentBlendModes)     \
+			X(xrGetD3D11GraphicsRequirementsKHR) X(xrLocateViews) X(xrEnumerateViewConfigurations) \
+				X(xrEnumerateViewConfigurationViews)
 
 const uint32_t kMaxImages = 8;
 

@@ -50,7 +50,7 @@ can comfortably run. If performance is poor, try a lower resolution and upscale 
 
 ## Performance tips
 
-- Alternating eyes will affect performance greatly, but may cause eye strain or jitteryness
+- Alternating mode (the default) is the fastest; Synchronized (F5) looks smoother but needs about twice the GPU work
 - Try DLSS to improve resolution
 
 
@@ -78,22 +78,19 @@ trackpads = sticks.
   Insert          settings menu
   F8              recenter the view and the screen in front of you
   F12             stereo 3D / flat screen
-  F5              both eyes every frame on/off
+  F5              stereo mode: alternating / synchronized
   Shift+F12       steep top-down views flat on/off
   F6 / F7         screen and HUD closer / farther
   F9 / F10        screen and HUD smaller / larger
   Ctrl+F6 / F7    camera closer / farther (stronger / weaker 3D)
   Ctrl+F9 / F10   world bigger / smaller
-  Ctrl+F11        ambient occlusion on/off
-  Ctrl+Shift+F11  shadows on/off
   Ctrl+Shift+F5   head culling on/off
-Diagnostics: F11 capture, Ctrl+F12 single-eye test, Ctrl+F5 camera watch,
-Shift+F5 culling test steps.
+Diagnostics: F11 frame capture.
 
 ## Notes
 
 - Visuals can appear at low framerates or be jittery. Some post processing looks weird in VR (water)
-- DLSS and Alternating eyes can affect the visuals and performance greatly
+- DLSS and the stereo mode (alternating / synchronized) can affect the visuals and performance greatly
 
 ## Problems?
 

@@ -32,9 +32,9 @@ typedef BOOL(WINAPI* PFN_EnumDisplaySettingsExW)(LPCWSTR, DWORD, DEVMODEW*, DWOR
 typedef BOOL(WINAPI* PFN_EnumDisplaySettingsExA)(LPCSTR, DWORD, DEVMODEA*, DWORD);
 PFN_EnumDisplaySettingsExW o_EnumDisplaySettingsExW;
 PFN_EnumDisplaySettingsExA o_EnumDisplaySettingsExA;
-volatile LONG g_bFactory;
-bool g_earlyDxgi;          // dxgi.dll was already loaded when the mod started (factory hooks in place early)
-int g_earlyHooks;          // user32/dxgi hooks installed at load time
+volatile LONG s_bFactory;
+bool s_earlyDxgi;          // dxgi.dll was already loaded when the mod started (factory hooks in place early)
+int s_earlyHooks;          // user32/dxgi hooks installed at load time
 PFN_FindClosest o_FindClosest;
 PFN_CreateSwapChain o_CreateSwapChain;
 PFN_SetFullscreenState o_SetFullscreenState;
@@ -44,11 +44,11 @@ PFN_EnumDisplaySettingsA o_EnumDisplaySettingsA;
 PFN_SetWindowPos o_SetWindowPos;
 PFN_MoveWindow o_MoveWindow;
 
-HWND g_gameHwnd;
-uintptr_t g_exeBase, g_exeEnd;
-UINT g_spoofW, g_spoofH;  // desktop size reported to the game (0 = not spoofing)
-volatile LONG g_bSysMet, g_bMonInfo, g_bEnumCur, g_bEnumList;
-volatile LONG g_bModes, g_bClosest, g_bSwap, g_bFull, g_bTarget, g_bWin;
+HWND s_gameHwnd;
+uintptr_t s_exeBase, s_exeEnd;
+UINT s_spoofW, s_spoofH;  // desktop size reported to the game (0 = not spoofing)
+volatile LONG s_bSysMet, s_bMonInfo, s_bEnumCur, s_bEnumList;
+volatile LONG s_bModes, s_bClosest, s_bSwap, s_bFull, s_bTarget, s_bWin;
 // 0.4.5: up to 300% (a 1080p monitor reaches 5760x3240 for high-resolution headsets)
 const float kFactors[] = {1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f};
 const int kExtra = 6;
@@ -61,7 +61,7 @@ int ExtraCount(UINT w, UINT h) {
 	return n;
 }
 
-bool FromGame(void* ret) { return (uintptr_t)ret >= g_exeBase && (uintptr_t)ret < g_exeEnd; }
+bool FromGame(void* ret) { return (uintptr_t)ret >= s_exeBase && (uintptr_t)ret < s_exeEnd; }
 
 void Caller(void* ret, char* out, size_t cap) { DescribeAddress(ret, out, cap); }
 
@@ -114,7 +114,7 @@ HRESULT ModeListWithExtras(const char* api, void* ret, ORIG orig, DXGI_FORMAT fm
 	bool game = FromGame(ret);
 	if (!g_cfg.extraResolutions || !num || !game) {
 		HRESULT hr = orig(num, desc);
-		if (LogBudget(&g_bModes, 8)) {
+		if (LogBudget(&s_bModes, 8)) {
 			char who[300];
 			Caller(ret, who, sizeof(who));
 			Log("display: %s from %s (format %d, flags 0x%x, %s) -> %u modes, 0x%08x", api, who, (int)fmt, flags,
@@ -162,7 +162,7 @@ HRESULT ModeListWithExtras(const char* api, void* ret, ORIG orig, DXGI_FORMAT fm
 		tmp[real + k].Height = xh[k];
 	}
 	UINT total = real + added;
-	if (LogBudget(&g_bModes, 8)) {
+	if (LogBudget(&s_bModes, 8)) {
 		char who[300];
 		Caller(ret, who, sizeof(who));
 		Log("display: %s from %s (format %d, %s): %u native modes up to %ux%u; supersampling base %ux%u (%s) + %d "
@@ -206,7 +206,7 @@ HRESULT STDMETHODCALLTYPE H_FindClosest(IDXGIOutput* o, const DXGI_MODE_DESC* wa
 		m.Height = want->Height;
 		*out = m;
 	}
-	if (LogBudget(&g_bClosest, 6))
+	if (LogBudget(&s_bClosest, 6))
 		Log("display: FindClosestMatchingMode %ux%u -> %ux%u", want ? want->Width : 0, want ? want->Height : 0,
 			out ? out->Width : 0, out ? out->Height : 0);
 	return hr;
@@ -216,7 +216,7 @@ HRESULT STDMETHODCALLTYPE H_FindClosest(IDXGIOutput* o, const DXGI_MODE_DESC* wa
 HRESULT STDMETHODCALLTYPE H_CreateSwapChain(IDXGIFactory* f, IUnknown* dev, DXGI_SWAP_CHAIN_DESC* desc,
 											IDXGISwapChain** out) {
 	if (desc && desc->BufferDesc.Width >= 640) {
-		g_gameHwnd = desc->OutputWindow;
+		s_gameHwnd = desc->OutputWindow;
 		if (g_cfg.extraResolutions && !desc->Windowed &&
 			LargerThanMonitor(desc->OutputWindow, desc->BufferDesc.Width, desc->BufferDesc.Height)) {
 			Log("display: %ux%u is above the monitor's resolution - creating the swapchain windowed instead of "
@@ -226,7 +226,7 @@ HRESULT STDMETHODCALLTYPE H_CreateSwapChain(IDXGIFactory* f, IUnknown* dev, DXGI
 		}
 	}
 	HRESULT hr = o_CreateSwapChain(f, dev, desc, out);
-	if (desc && LogBudget(&g_bSwap, 8))
+	if (desc && LogBudget(&s_bSwap, 8))
 		Log("display: game created swapchain %ux%u format %d, %s, effect %d, %u buffers, flags 0x%x -> 0x%08x",
 			desc->BufferDesc.Width, desc->BufferDesc.Height, (int)desc->BufferDesc.Format,
 			desc->Windowed ? "windowed" : "fullscreen", (int)desc->SwapEffect, desc->BufferCount, desc->Flags,
@@ -245,7 +245,7 @@ HRESULT STDMETHODCALLTYPE H_SetFullscreenState(IDXGISwapChain* sc, BOOL full, ID
 		}
 	}
 	HRESULT hr = o_SetFullscreenState(sc, full, target);
-	if (LogBudget(&g_bFull, 8)) Log("display: SetFullscreenState(%d) -> 0x%08x", (int)full, (unsigned)hr);
+	if (LogBudget(&s_bFull, 8)) Log("display: SetFullscreenState(%d) -> 0x%08x", (int)full, (unsigned)hr);
 	return hr;
 }
 
@@ -264,7 +264,7 @@ HRESULT STDMETHODCALLTYPE H_ResizeTarget(IDXGISwapChain* sc, const DXGI_MODE_DES
 		}
 	}
 	HRESULT hr = o_ResizeTarget(sc, m);
-	if (LogBudget(&g_bTarget, 8))
+	if (LogBudget(&s_bTarget, 8))
 		Log("display: ResizeTarget %ux%u -> 0x%08x", m ? m->Width : 0, m ? m->Height : 0, (unsigned)hr);
 	return hr;
 }
@@ -282,21 +282,21 @@ struct EnumState {
 	UINT extraW[8], extraH[8];  // the extra sizes not already listed (made when the real list ends)
 	int nextra;
 };
-EnumState<DEVMODEW> g_enumW;
-EnumState<DEVMODEA> g_enumA;
+EnumState<DEVMODEW> s_enumW;
+EnumState<DEVMODEA> s_enumA;
 
 template <typename DEVMODE_T, typename F, typename C>
 BOOL EnumWithExtras(EnumState<DEVMODE_T>& st, const char* api, DWORD i, DEVMODE_T* dm, void* ret, F orig, C current) {
 	bool game = FromGame(ret);
 	if ((LONG)i < 0) {  // ENUM_CURRENT_SETTINGS / ENUM_REGISTRY_SETTINGS
 		BOOL ok = orig();
-		bool spoof = ok && dm && game && g_spoofW && (dm->dmFields & DM_PELSWIDTH);
+		bool spoof = ok && dm && game && s_spoofW && (dm->dmFields & DM_PELSWIDTH);
 		UINT rw = ok && dm ? dm->dmPelsWidth : 0, rh = ok && dm ? dm->dmPelsHeight : 0;
 		if (spoof) {
-			dm->dmPelsWidth = g_spoofW;
-			dm->dmPelsHeight = g_spoofH;
+			dm->dmPelsWidth = s_spoofW;
+			dm->dmPelsHeight = s_spoofH;
 		}
-		if (LogBudget(&g_bEnumCur, 6)) {
+		if (LogBudget(&s_bEnumCur, 6)) {
 			char who[300];
 			Caller(ret, who, sizeof(who));
 			Log("display: %s(%s) from %s -> %ux%u @%u Hz%s", api, i == ENUM_CURRENT_SETTINGS ? "current" : "registry",
@@ -307,8 +307,8 @@ BOOL EnumWithExtras(EnumState<DEVMODE_T>& st, const char* api, DWORD i, DEVMODE_
 			static bool once;
 			if (!once) {
 				once = true;
-				Log("display: telling the game the desktop is %ux%u so it offers resolutions above %ux%u", g_spoofW,
-					g_spoofH, rw, rh);
+				Log("display: telling the game the desktop is %ux%u so it offers resolutions above %ux%u", s_spoofW,
+					s_spoofH, rw, rh);
 			}
 		}
 		return ok;
@@ -359,7 +359,7 @@ BOOL EnumWithExtras(EnumState<DEVMODE_T>& st, const char* api, DWORD i, DEVMODE_
 		dm->dmPelsHeight = st.extraH[k];
 		return TRUE;
 	}
-	if (LogBudget(&g_bEnumList, 4)) {
+	if (LogBudget(&s_bEnumList, 4)) {
 		char who[300];
 		Caller(ret, who, sizeof(who));
 		Log("display: %s list from %s: %u modes; supersampling base %ux%u (%s), %d new sizes up to %d%%", api, who,
@@ -383,22 +383,22 @@ bool Ready(void* ret) {
 BOOL WINAPI H_EnumDisplaySettingsW(LPCWSTR dev, DWORD i, DEVMODEW* dm) {
 	void* ret = __builtin_return_address(0);
 	if (!Ready(ret)) return o_EnumDisplaySettingsW(dev, i, dm);
-	return EnumWithExtras(g_enumW, "EnumDisplaySettingsW", i, dm, ret, [&] { return o_EnumDisplaySettingsW(dev, i, dm); }, [&](DEVMODEW* c) { return o_EnumDisplaySettingsW(dev, ENUM_CURRENT_SETTINGS, c); });
+	return EnumWithExtras(s_enumW, "EnumDisplaySettingsW", i, dm, ret, [&] { return o_EnumDisplaySettingsW(dev, i, dm); }, [&](DEVMODEW* c) { return o_EnumDisplaySettingsW(dev, ENUM_CURRENT_SETTINGS, c); });
 }
 BOOL WINAPI H_EnumDisplaySettingsA(LPCSTR dev, DWORD i, DEVMODEA* dm) {
 	void* ret = __builtin_return_address(0);
 	if (!Ready(ret)) return o_EnumDisplaySettingsA(dev, i, dm);
-	return EnumWithExtras(g_enumA, "EnumDisplaySettingsA", i, dm, ret, [&] { return o_EnumDisplaySettingsA(dev, i, dm); }, [&](DEVMODEA* c) { return o_EnumDisplaySettingsA(dev, ENUM_CURRENT_SETTINGS, c); });
+	return EnumWithExtras(s_enumA, "EnumDisplaySettingsA", i, dm, ret, [&] { return o_EnumDisplaySettingsA(dev, i, dm); }, [&](DEVMODEA* c) { return o_EnumDisplaySettingsA(dev, ENUM_CURRENT_SETTINGS, c); });
 }
 BOOL WINAPI H_EnumDisplaySettingsExW(LPCWSTR dev, DWORD i, DEVMODEW* dm, DWORD fl) {
 	void* ret = __builtin_return_address(0);
 	if (!Ready(ret)) return o_EnumDisplaySettingsExW(dev, i, dm, fl);
-	return EnumWithExtras(g_enumW, "EnumDisplaySettingsExW", i, dm, ret, [&] { return o_EnumDisplaySettingsExW(dev, i, dm, fl); }, [&](DEVMODEW* c) { return o_EnumDisplaySettingsExW(dev, ENUM_CURRENT_SETTINGS, c, 0); });
+	return EnumWithExtras(s_enumW, "EnumDisplaySettingsExW", i, dm, ret, [&] { return o_EnumDisplaySettingsExW(dev, i, dm, fl); }, [&](DEVMODEW* c) { return o_EnumDisplaySettingsExW(dev, ENUM_CURRENT_SETTINGS, c, 0); });
 }
 BOOL WINAPI H_EnumDisplaySettingsExA(LPCSTR dev, DWORD i, DEVMODEA* dm, DWORD fl) {
 	void* ret = __builtin_return_address(0);
 	if (!Ready(ret)) return o_EnumDisplaySettingsExA(dev, i, dm, fl);
-	return EnumWithExtras(g_enumA, "EnumDisplaySettingsExA", i, dm, ret, [&] { return o_EnumDisplaySettingsExA(dev, i, dm, fl); }, [&](DEVMODEA* c) { return o_EnumDisplaySettingsExA(dev, ENUM_CURRENT_SETTINGS, c, 0); });
+	return EnumWithExtras(s_enumA, "EnumDisplaySettingsExA", i, dm, ret, [&] { return o_EnumDisplaySettingsExA(dev, i, dm, fl); }, [&](DEVMODEA* c) { return o_EnumDisplaySettingsExA(dev, ENUM_CURRENT_SETTINGS, c, 0); });
 }
 
 // DXGI factories made by the game: initialise the mod first, so the mode-list hooks exist before
@@ -406,7 +406,7 @@ BOOL WINAPI H_EnumDisplaySettingsExA(LPCSTR dev, DWORD i, DEVMODEA* dm, DWORD fl
 void NoteFactory(const char* api, void* ret) {
 	if (!FromGame(ret)) return;
 	EnsureInit();
-	if (LogBudget(&g_bFactory, 4)) {
+	if (LogBudget(&s_bFactory, 4)) {
 		char who[300];
 		Caller(ret, who, sizeof(who));
 		Log("display: game created a DXGI factory (%s) from %s", api, who);
@@ -436,7 +436,7 @@ int WINAPI H_GetSystemMetrics(int idx) {
 	int v = o_GetSystemMetrics(idx);
 	if ((idx == SM_CXSCREEN || idx == SM_CYSCREEN || idx == SM_CXVIRTUALSCREEN || idx == SM_CYVIRTUALSCREEN ||
 		 idx == SM_CXFULLSCREEN || idx == SM_CYFULLSCREEN) &&
-		FromGame(ret) && LogBudget(&g_bSysMet, 8)) {
+		FromGame(ret) && LogBudget(&s_bSysMet, 8)) {
 		char who[300];
 		Caller(ret, who, sizeof(who));
 		Log("display: GetSystemMetrics(%d) from %s -> %d", idx, who, v);
@@ -447,7 +447,7 @@ BOOL WINAPI H_GetMonitorInfoW(HMONITOR m, LPMONITORINFO mi) {
 	void* ret = __builtin_return_address(0);
 	if (!Ready(ret)) return o_GetMonitorInfoW(m, mi);
 	BOOL ok = o_GetMonitorInfoW(m, mi);
-	if (ok && mi && FromGame(ret) && LogBudget(&g_bMonInfo, 6)) {
+	if (ok && mi && FromGame(ret) && LogBudget(&s_bMonInfo, 6)) {
 		char who[300];
 		Caller(ret, who, sizeof(who));
 		Log("display: GetMonitorInfoW from %s -> %dx%d", who, (int)(mi->rcMonitor.right - mi->rcMonitor.left),
@@ -486,16 +486,16 @@ struct ResTable {
 };
 
 int ScanResolutionTables(ResTable* out, int cap) {
-	if (!g_exeBase) return 0;
-	auto* dos = (IMAGE_DOS_HEADER*)g_exeBase;
-	auto* nt = (IMAGE_NT_HEADERS64*)(g_exeBase + dos->e_lfanew);
+	if (!s_exeBase) return 0;
+	auto* dos = (IMAGE_DOS_HEADER*)s_exeBase;
+	auto* nt = (IMAGE_NT_HEADERS64*)(s_exeBase + dos->e_lfanew);
 	auto* sec = IMAGE_FIRST_SECTION(nt);
 	int found = 0;
 	static const int strides[] = {8, 12, 16, 20, 24, 32};
 	for (int si = 0; si < nt->FileHeader.NumberOfSections; si++) {
 		if (sec[si].Characteristics & IMAGE_SCN_MEM_EXECUTE) continue;  // code
 		if (!(sec[si].Characteristics & IMAGE_SCN_MEM_READ)) continue;
-		uintptr_t b = g_exeBase + sec[si].VirtualAddress, e = b + sec[si].Misc.VirtualSize;
+		uintptr_t b = s_exeBase + sec[si].VirtualAddress, e = b + sec[si].Misc.VirtualSize;
 		if (!Readable(b, e - b)) continue;
 		for (uintptr_t p = b; p + 8 <= e; p += 4) {
 			const int32_t* q = (const int32_t*)p;
@@ -545,7 +545,7 @@ void LogAndPatchTables(bool patch) {
 			len += w > 0 ? (size_t)w : 0;
 		}
 		Log("display: resolution table candidate at NieRAutomata.exe+0x%llx (stride %d, %d entries): %s",
-			(unsigned long long)(t[i].addr - g_exeBase), t[i].stride, t[i].n, buf);
+			(unsigned long long)(t[i].addr - s_exeBase), t[i].stride, t[i].n, buf);
 		if (t[i].has1080 && t[i].n >= 5) {
 			good = i;
 			goodCount++;
@@ -595,7 +595,7 @@ void LogAndPatchTables(bool patch) {
 // --- keep the game window on the monitor when rendering above its resolution ----------------
 bool IsGameTopLevel(HWND hwnd) {
 	if (!hwnd) return false;
-	if (hwnd == g_gameHwnd) return true;
+	if (hwnd == s_gameHwnd) return true;
 	DWORD pid = 0;
 	GetWindowThreadProcessId(hwnd, &pid);
 	return pid == GetCurrentProcessId() && !(GetWindowLongW(hwnd, GWL_STYLE) & WS_CHILD);
@@ -608,7 +608,7 @@ bool ClampWindow(HWND hwnd, int* x, int* y, int* cx, int* cy) {
 	// a window a little larger than the monitor (windowed mode at the monitor's size, with its
 	// borders) is normal; only supersampling sizes (125%+) are pulled back
 	if (*cx * 10 <= mw * 11 && *cy * 10 <= mh * 11) return false;
-	if (LogBudget(&g_bWin, 4))
+	if (LogBudget(&s_bWin, 4))
 		Log("display: keeping the game window at the monitor size (%dx%d instead of %dx%d)", mw, mh, *cx, *cy);
 	*x = mx;
 	*y = my;
@@ -640,8 +640,8 @@ void ExtraResolutionsEarlyHooks() {
 	HMODULE exe = GetModuleHandleW(nullptr);
 	auto* dos = (IMAGE_DOS_HEADER*)exe;
 	auto* nt = (IMAGE_NT_HEADERS64*)((char*)exe + dos->e_lfanew);
-	g_exeBase = (uintptr_t)exe;
-	g_exeEnd = g_exeBase + nt->OptionalHeader.SizeOfImage;
+	s_exeBase = (uintptr_t)exe;
+	s_exeEnd = s_exeBase + nt->OptionalHeader.SizeOfImage;
 	struct H {
 		const wchar_t* dll;
 		const char* name;
@@ -662,8 +662,8 @@ void ExtraResolutionsEarlyHooks() {
 		HMODULE m = GetModuleHandleW(h.dll);  // never loads anything here
 		void* target = m ? (void*)GetProcAddress(m, h.name) : nullptr;
 		if (!target) continue;
-		if (m == GetModuleHandleW(L"dxgi.dll")) g_earlyDxgi = true;
-		if (HookFunction(target, h.detour, h.orig, h.name)) g_earlyHooks++;
+		if (m == GetModuleHandleW(L"dxgi.dll")) s_earlyDxgi = true;
+		if (HookFunction(target, h.detour, h.orig, h.name)) s_earlyHooks++;
 	}
 }
 
@@ -671,7 +671,7 @@ void ExtraResolutionsEarlyHooks() {
 void ExtraResolutionsInstallHooks() {
 	static volatile LONG done = 0;
 	if (InterlockedCompareExchange(&done, 1, 0) != 0) return;
-	if (!g_exeBase) ExtraResolutionsEarlyHooks();
+	if (!s_exeBase) ExtraResolutionsEarlyHooks();
 	HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
 	if (!o_CreateDXGIFactory && dxgi) {  // dxgi wasn't loaded at start: hook the factory functions now
 		HookFunction((void*)GetProcAddress(dxgi, "CreateDXGIFactory"), (void*)&H_CreateDXGIFactory,
@@ -714,15 +714,15 @@ void ExtraResolutionsInstallHooks() {
 	if (g_cfg.extraResolutions) {
 		int ne = ExtraCount((UINT)mw, (UINT)mh);
 		if (ne > 0) {
-			g_spoofW = Round8(mw * kFactors[ne - 1]);
-			g_spoofH = Round8(mh * kFactors[ne - 1]);
+			s_spoofW = Round8(mw * kFactors[ne - 1]);
+			s_spoofH = Round8(mh * kFactors[ne - 1]);
 		}
 	}
 	Log("display: monitor %dx%d; extra resolutions %s; %d display hooks in place from load time%s", mw, mh,
 		g_cfg.extraResolutions >= 2 ? "ON + resolution table patch (125-300%, use windowed/borderless)"
 		: g_cfg.extraResolutions    ? "ON (125-300%, use windowed/borderless)"
 									: "off",
-		g_earlyHooks, g_earlyDxgi ? "" : " (dxgi.dll was not loaded yet at that point)");
+		s_earlyHooks, s_earlyDxgi ? "" : " (dxgi.dll was not loaded yet at that point)");
 	LogAndPatchTables(g_cfg.extraResolutions >= 2);
 }
 
@@ -730,7 +730,7 @@ void ExtraResolutionsInstallHooks() {
 void ExtraResolutionsOnFirstPresent(IDXGISwapChain* sc) {
 	DXGI_SWAP_CHAIN_DESC d;
 	if (FAILED(sc->GetDesc(&d))) return;
-	g_gameHwnd = d.OutputWindow;
+	s_gameHwnd = d.OutputWindow;
 	Log("display: game swapchain %ux%u, %s, swap effect %d, %u buffers", d.BufferDesc.Width, d.BufferDesc.Height,
 		d.Windowed ? "windowed/borderless" : "exclusive fullscreen", (int)d.SwapEffect, d.BufferCount);
 }

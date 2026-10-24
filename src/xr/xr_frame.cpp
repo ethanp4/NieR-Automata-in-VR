@@ -36,7 +36,7 @@ static void HandleHotkeys() {
 	// Always poll so edge detection stays correct, only act while the game has focus.
 	bool rc = KeyPressed(g_cfg.keyRecenter), sm = KeyPressed(g_cfg.keySmaller), lg = KeyPressed(g_cfg.keyLarger),
 		 cl = KeyPressed(g_cfg.keyCloser), fa = KeyPressed(g_cfg.keyFarther), st = KeyPressed(g_cfg.keyStereo),
-		 f11 = KeyPressed(VK_F11), f5 = KeyPressed(VK_F5), fp = KeyPressed(g_cfg.keyFirstPerson);
+		 f5 = KeyPressed(VK_F5), fp = KeyPressed(g_cfg.keyFirstPerson);
 	if (!fg) return;
 	if (fp) {
 		g_cfg.firstPerson = !g_cfg.firstPerson;
@@ -46,44 +46,19 @@ static void HandleHotkeys() {
 	if (f5) {
 		bool c = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0, s = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 		if (c && s) CullingToggleHeadCulling();  // Ctrl+Shift+F5: head-direction culling on/off
-		else if (c) CullingWatch();               // Ctrl+F5: diagnostic watch
-		else if (s) CullingCycleTest();           // Shift+F5: wide-fov test steps
-		else {                                    // F5: synchronized / alternating
+		else if (!c && !s) {                     // F5: synchronized / alternating
 			g_cfg.synchronized = !g_cfg.synchronized;
-			Log("both eyes every frame %s", !g_cfg.synchronized ? "OFF (alternate eyes)"
-											: ReplayAvailable() ? "ON (the game's frame is drawn again for the right eye)"
-																: "ON, but not available (see the log above)");
+			Log("stereo mode: %s", !g_cfg.synchronized ? "alternating (one eye per game frame)"
+								   : ReplayAvailable() ? "synchronized (the game's frame is drawn again for the right eye)"
+													   : "synchronized, but not available (see the log above)");
 			ConfigSave(&g_cfg.synchronized);
 		}
-	}
-	if (f11 && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
-		if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
-			// Ctrl+Shift+F11: shadows on/off (test switch)
-			g_cfg.shadows = !g_cfg.shadows;
-			Log("shadows %s", g_cfg.shadows ? "ON" : "OFF");
-		} else {
-			// Ctrl+F11: NieR's ambient occlusion on/off (half-resolution SAO looks blotchy up close)
-			g_cfg.ambientOcclusion = !g_cfg.ambientOcclusion;
-			Log("ambient occlusion %s", g_cfg.ambientOcclusion ? "ON" : "OFF");
-		}
-		ConfigSave(&g_cfg.shadows);
-		ConfigSave(&g_cfg.ambientOcclusion);
 	}
 	if (st && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
 		// Shift+F12: TopDownFlat on/off (steep top-down views on the flat screen)
 		g_cfg.topDownFlat = !g_cfg.topDownFlat;
 		Log("top-down views: %s", g_cfg.topDownFlat ? "flat screen (TopDownFlat=1)" : "stereo (TopDownFlat=0)");
 		ConfigSave(&g_cfg.topDownFlat);
-		st = false;
-	}
-	if (st && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
-		// Ctrl+F12: diagnostic single-eye mode (the left eye's image every frame, shown to both
-		// eyes: no 3D, but also no alternating between eyes)
-		AcquireSRWLockExclusive(&g_stereo.lock);
-		g_stereo.singleEye = !g_stereo.singleEye;
-		bool on = g_stereo.singleEye;
-		ReleaseSRWLockExclusive(&g_stereo.lock);
-		Log("single-eye test %s", on ? "ON (left eye every frame, no 3D)" : "OFF");
 		st = false;
 	}
 	if (st) {
@@ -224,7 +199,7 @@ static void LogStats() {
 		g_vr.statCovN ? 100.0 * g_vr.statCovSum / g_vr.statCovN : 0.0, 100.0 * g_vr.statCovMax);
 	{
 		char info[160];
-		snprintf(info, sizeof(info), "Mode: %s", !g_vr.statStereoFrames ? "flat screen" : (g_cfg.synchronized ? "stereo, both eyes every frame" : "stereo, alternate eyes"));
+		snprintf(info, sizeof(info), "Mode: %s", !g_vr.statStereoFrames ? "flat screen" : (g_cfg.synchronized ? "stereo, synchronized" : "stereo, alternating"));
 		MenuSetInfo(0, info);
 		snprintf(info, sizeof(info), "Headset %.0f fps; game images per second: left %.0f, right %.0f, flat %.0f",
 				 g_vr.statFrames / secs, g_vr.statGameFrames[0] / secs, g_vr.statGameFrames[1] / secs, g_vr.statGameFrames[2] / secs);
@@ -386,10 +361,7 @@ void Frame() {
 		bool stereoOn = g_stereo.enabled;
 		ReleaseSRWLockShared(&g_stereo.lock);
 		auto& L = g_vr.views[0];
-		AcquireSRWLockShared(&g_stereo.lock);
-		bool single = g_stereo.singleEye;
-		ReleaseSRWLockShared(&g_stereo.lock);
-		auto& R = single ? g_vr.views[0] : g_vr.views[1];  // single-eye test: the left image for both eyes
+		auto& R = g_vr.views[1];
 		auto& M = g_vr.views[2];
 		// Stereo when both eyes have rendered recently and are newer than any flat frame.
 		bool stereo = stereoOn && !g_vr.menuMode && L.has && R.has && L.tag.patched && R.tag.patched && L.seq > M.seq && R.seq > M.seq;
@@ -721,7 +693,7 @@ static bool UpdateOverlay() {
 		bool stereoOn = g_stereo.enabled;
 		ReleaseSRWLockShared(&g_stereo.lock);
 		snprintf(g_vr.ovMode, sizeof(g_vr.ovMode), "%s",
-				 !stereoOn || g_vr.menuMode ? "flat screen" : (g_cfg.synchronized ? "both eyes" : "alternate eyes"));
+				 !stereoOn || g_vr.menuMode ? "flat screen" : (g_cfg.synchronized ? "synchronized" : "alternating"));
 		st.headsetFps = (float)(g_vr.ovFrames / secs);
 		for (int i = 0; i < 3; i++) st.gameFps[i] = (float)(g_vr.ovGameFrames[i] / secs);
 		st.gameW = g_vr.contentW;

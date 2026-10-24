@@ -3,14 +3,14 @@
 #include "core/config.h"
 #include <stdio.h>
 
-static HANDLE g_logFile = INVALID_HANDLE_VALUE;
-static CRITICAL_SECTION g_logCs;
-static LARGE_INTEGER g_qpcFreq, g_qpcStart;
+static HANDLE s_logFile = INVALID_HANDLE_VALUE;
+static CRITICAL_SECTION s_logCs;
+static LARGE_INTEGER s_qpcFreq, s_qpcStart;
 
 void LogOpen(const wchar_t* path) {
-	InitializeCriticalSection(&g_logCs);
-	QueryPerformanceFrequency(&g_qpcFreq);
-	QueryPerformanceCounter(&g_qpcStart);
+	InitializeCriticalSection(&s_logCs);
+	QueryPerformanceFrequency(&s_qpcFreq);
+	QueryPerformanceCounter(&s_qpcStart);
 	// Keep the previous session's log as NieRVR.prev.log for comparison
 	wchar_t prev[MAX_PATH];
 	lstrcpynW(prev, path, MAX_PATH - 16);
@@ -21,7 +21,7 @@ void LogOpen(const wchar_t* path) {
 		MoveFileExW(path, prev, MOVEFILE_REPLACE_EXISTING);
 	}
 	// Writes go straight to the OS cache, so the log survives a game crash.
-	g_logFile = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
+	s_logFile = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
 							FILE_ATTRIBUTE_NORMAL, nullptr);
 }
 
@@ -31,13 +31,13 @@ Utf8::Utf8(const wchar_t* w) {
 }
 
 static void LogWrite(const char* fmt, va_list ap) {
-	if (g_logFile == INVALID_HANDLE_VALUE) return;
+	if (s_logFile == INVALID_HANDLE_VALUE) return;
 	char line[2048];
 	SYSTEMTIME st;
 	GetLocalTime(&st);
 	LARGE_INTEGER now;
 	QueryPerformanceCounter(&now);
-	double secs = (double)(now.QuadPart - g_qpcStart.QuadPart) / (double)g_qpcFreq.QuadPart;
+	double secs = (double)(now.QuadPart - s_qpcStart.QuadPart) / (double)s_qpcFreq.QuadPart;
 	int n = snprintf(line, sizeof(line), "%02d:%02d:%02d.%03d [%9.3f] [t%5u] ", st.wHour, st.wMinute, st.wSecond,
 					 st.wMilliseconds, secs, (unsigned)GetCurrentThreadId());
 	if (n > (int)sizeof(line) - 3) n = (int)sizeof(line) - 3;
@@ -47,10 +47,10 @@ static void LogWrite(const char* fmt, va_list ap) {
 	if (total > (int)sizeof(line) - 3) total = (int)sizeof(line) - 3;
 	line[total++] = '\r';
 	line[total++] = '\n';
-	EnterCriticalSection(&g_logCs);
+	EnterCriticalSection(&s_logCs);
 	DWORD written;
-	WriteFile(g_logFile, line, (DWORD)total, &written, nullptr);
-	LeaveCriticalSection(&g_logCs);
+	WriteFile(s_logFile, line, (DWORD)total, &written, nullptr);
+	LeaveCriticalSection(&s_logCs);
 }
 
 void Log(const char* fmt, ...) {

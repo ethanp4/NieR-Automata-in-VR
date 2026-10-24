@@ -73,9 +73,6 @@ FOVSTUB nvr_fov_stub0, rbx, xmm1, 0   # camera update: projection rebuild   movs
 .globl nvr_fov_stub1
 .p2align 4
 nvr_fov_stub1:
-	mov qword ptr [rip + nvr_diag_regs], r14
-	mov qword ptr [rip + nvr_diag_regs + 8], rbp
-	mov qword ptr [rip + nvr_diag_regs + 16], rsi
 	cmp rax, qword ptr [rip + nvr_fov_obj]
 	jne nvr_fov_stub1b
 	cmp dword ptr [rip + nvr_head_cull], 0
@@ -96,8 +93,7 @@ nvr_post_builder:
 
 .data
 .p2align 3
-.globl nvr_fov_wide_b, nvr_post_orig, nvr_fov_obj, nvr_fov_site_obj, nvr_head_cull, nvr_fov_wide, nvr_fov_resume, nvr_fov_orig, nvr_fov_hits, nvr_diag_regs
-nvr_diag_regs:  .quad 0, 0, 0
+.globl nvr_fov_wide_b, nvr_post_orig, nvr_fov_obj, nvr_fov_site_obj, nvr_head_cull, nvr_fov_wide, nvr_fov_resume, nvr_fov_orig, nvr_fov_hits
 nvr_fov_obj:    .quad 0
 nvr_post_orig:  .quad 0
 nvr_fov_site_obj: .quad 0, 0, 0, 0

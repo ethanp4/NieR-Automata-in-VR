@@ -34,30 +34,30 @@ struct RecordHeader {
 	uint32_t size;
 };
 
-ID3D11Device* g_dev;
-ID3D11DeviceContext* g_ctx;
-volatile bool g_capturing;
-bool g_armed;
-bool g_keyWasDown;
-unsigned g_captureIndex;
-SRWLOCK g_recordLock = SRWLOCK_INIT;
-uint8_t* g_buf;
-size_t g_len, g_cap;
-bool g_overflow;
+ID3D11Device* s_dev;
+ID3D11DeviceContext* s_ctx;
+volatile bool s_capturing;
+bool s_armed;
+bool s_keyWasDown;
+unsigned s_captureIndex;
+SRWLOCK s_recordLock = SRWLOCK_INIT;
+uint8_t* s_buf;
+size_t s_len, s_cap;
+bool s_overflow;
 
 void Emit(uint16_t type, const void* a, uint32_t alen, const void* b = nullptr, uint32_t blen = 0) {
-	AcquireSRWLockExclusive(&g_recordLock);
+	AcquireSRWLockExclusive(&s_recordLock);
 	size_t need = sizeof(RecordHeader) + alen + blen;
-	if (!g_buf || g_len + need > g_cap) {
-		g_overflow = true;
+	if (!s_buf || s_len + need > s_cap) {
+		s_overflow = true;
 	} else {
 		RecordHeader h = {type, 0, alen + blen};
-		memcpy(g_buf + g_len, &h, sizeof(h));
-		memcpy(g_buf + g_len + sizeof(h), a, alen);
-		if (blen) memcpy(g_buf + g_len + sizeof(h) + alen, b, blen);
-		g_len += need;
+		memcpy(s_buf + s_len, &h, sizeof(h));
+		memcpy(s_buf + s_len + sizeof(h), a, alen);
+		if (blen) memcpy(s_buf + s_len + sizeof(h) + alen, b, blen);
+		s_len += need;
 	}
-	ReleaseSRWLockExclusive(&g_recordLock);
+	ReleaseSRWLockExclusive(&s_recordLock);
 }
 
 // Constant buffers seen this frame: kept alive (AddRef) until the frame is written.
@@ -66,26 +66,26 @@ struct SeenBuffer {
 	bool hasData;
 };
 const int kMaxSeen = 8192;
-SeenBuffer g_seen[kMaxSeen];
-int g_seenCount;
+SeenBuffer s_seen[kMaxSeen];
+int s_seenCount;
 
 SeenBuffer* SeenFind(ID3D11Buffer* b) {
-	for (int i = 0; i < g_seenCount; i++)
-		if (g_seen[i].buf == b) return &g_seen[i];
+	for (int i = 0; i < s_seenCount; i++)
+		if (s_seen[i].buf == b) return &s_seen[i];
 	return nullptr;
 }
 void SeenAdd(ID3D11Buffer* b, bool data) {
 	if (!b) return;
-	AcquireSRWLockExclusive(&g_recordLock);
+	AcquireSRWLockExclusive(&s_recordLock);
 	SeenBuffer* s = SeenFind(b);
-	if (!s && g_seenCount < kMaxSeen) {
-		s = &g_seen[g_seenCount++];
+	if (!s && s_seenCount < kMaxSeen) {
+		s = &s_seen[s_seenCount++];
 		s->buf = b;
 		s->hasData = false;
 		b->AddRef();
 	}
 	if (s && data) s->hasData = true;
-	ReleaseSRWLockExclusive(&g_recordLock);
+	ReleaseSRWLockExclusive(&s_recordLock);
 }
 
 // Buffers currently mapped (Map .. Unmap) during the capture.
@@ -94,7 +94,7 @@ struct MappedBuffer {
 	void* data;
 	UINT size;
 };
-MappedBuffer g_mapped[128];
+MappedBuffer s_mapped[128];
 
 void EmitCbData(ID3D11Buffer* buf, UINT byteWidth, uint8_t via, const void* data, UINT len) {
 	struct {
@@ -161,8 +161,8 @@ void EmitViews(uint16_t type, uint8_t stage, UINT start, UINT n, View* const* vi
 
 // --- frame end: readback, shader blobs, file, summary ---------------------------------------
 void ReadbackUnseenBuffers(int* readbacks) {
-	for (int i = 0; i < g_seenCount; i++) {
-		SeenBuffer& s = g_seen[i];
+	for (int i = 0; i < s_seenCount; i++) {
+		SeenBuffer& s = s_seen[i];
 		if (s.hasData) continue;
 		D3D11_BUFFER_DESC d;
 		s.buf->GetDesc(&d);
@@ -173,10 +173,10 @@ void ReadbackUnseenBuffers(int* readbacks) {
 		d.MiscFlags = 0;
 		d.StructureByteStride = 0;
 		ID3D11Buffer* staging = nullptr;
-		if (FAILED(g_dev->CreateBuffer(&d, nullptr, &staging))) continue;
-		g_ctx->CopyResource(staging, s.buf);
+		if (FAILED(s_dev->CreateBuffer(&d, nullptr, &staging))) continue;
+		s_ctx->CopyResource(staging, s.buf);
 		D3D11_MAPPED_SUBRESOURCE m;
-		if (SUCCEEDED(g_ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
+		if (SUCCEEDED(s_ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
 			struct {
 				uint64_t buf;
 				uint32_t byteWidth;
@@ -184,7 +184,7 @@ void ReadbackUnseenBuffers(int* readbacks) {
 			} h = {(uint64_t)(uintptr_t)s.buf, d.ByteWidth, 2, {0, 0, 0}};
 			static_assert(sizeof(h) == 16, "R_CB_DATA layout");
 			Emit(R_CB_DATA, &h, sizeof(h), m.pData, d.ByteWidth);
-			g_ctx->Unmap(staging, 0);
+			s_ctx->Unmap(staging, 0);
 			(*readbacks)++;
 		}
 		staging->Release();
@@ -210,10 +210,10 @@ void Summarise() {
 	} cands[24];
 	int nc = 0;
 	unsigned draws = 0, cbData = 0, rts = 0, dispatches = 0;
-	for (size_t off = 0; off + sizeof(RecordHeader) <= g_len;) {
+	for (size_t off = 0; off + sizeof(RecordHeader) <= s_len;) {
 		RecordHeader h;
-		memcpy(&h, g_buf + off, sizeof(h));
-		const uint8_t* p = g_buf + off + sizeof(h);
+		memcpy(&h, s_buf + off, sizeof(h));
+		const uint8_t* p = s_buf + off + sizeof(h);
 		if (h.type == R_DRAW) draws++;
 		if (h.type == R_SET_RT) rts++;
 		if (h.type == R_DISPATCH) dispatches++;
@@ -238,10 +238,10 @@ void Summarise() {
 	}
 	// how many draws had each candidate buffer bound (any stage)
 	uint64_t bound[4][14] = {};
-	for (size_t off = 0; off + sizeof(RecordHeader) <= g_len;) {
+	for (size_t off = 0; off + sizeof(RecordHeader) <= s_len;) {
 		RecordHeader h;
-		memcpy(&h, g_buf + off, sizeof(h));
-		const uint8_t* p = g_buf + off + sizeof(h);
+		memcpy(&h, s_buf + off, sizeof(h));
+		const uint8_t* p = s_buf + off + sizeof(h);
 		if (h.type == R_SET_CB) {
 			uint8_t st = p[0];
 			uint32_t start, count;
@@ -259,7 +259,7 @@ void Summarise() {
 		off += sizeof(h) + h.size;
 	}
 	Log("capture: frame had %u draws, %u dispatches, %u render-target changes, %u constant-buffer uploads%s", draws,
-		dispatches, rts, cbData, g_overflow ? " (CAPTURE TRUNCATED: buffer full)" : "");
+		dispatches, rts, cbData, s_overflow ? " (CAPTURE TRUNCATED: buffer full)" : "");
 	if (!nc) Log("capture: no perspective projection matrix found in constant buffers this frame");
 	for (int i = 0; i < nc; i++) {
 		const pure::ProjInfo& p = cands[i].p;
@@ -274,7 +274,7 @@ void WriteCapture() {
 	wchar_t path[MAX_PATH];
 	lstrcpynW(path, g_modDir, MAX_PATH - 40);
 	char name[48];
-	snprintf(name, sizeof(name), "NieRVR_capture_%u.bin", g_captureIndex);
+	snprintf(name, sizeof(name), "NieRVR_capture_%u.bin", s_captureIndex);
 	int n = lstrlenW(path);
 	for (int i = 0; name[i] && n < MAX_PATH - 1; i++) path[n++] = (wchar_t)name[i];
 	path[n] = 0;
@@ -286,80 +286,80 @@ void WriteCapture() {
 	const char magic[8] = {'N', 'V', 'R', 'C', 'A', 'P', '0', '1'};
 	DWORD w;
 	WriteFile(f, magic, 8, &w, nullptr);
-	for (size_t off = 0; off < g_len;) {
-		DWORD chunk = (DWORD)(g_len - off > (16u << 20) ? (16u << 20) : g_len - off);
-		if (!WriteFile(f, g_buf + off, chunk, &w, nullptr)) break;
+	for (size_t off = 0; off < s_len;) {
+		DWORD chunk = (DWORD)(s_len - off > (16u << 20) ? (16u << 20) : s_len - off);
+		if (!WriteFile(f, s_buf + off, chunk, &w, nullptr)) break;
 		off += chunk;
 	}
 	CloseHandle(f);
-	Log("capture: wrote %s (%u KB)", name, (unsigned)((g_len + 8) >> 10));
+	Log("capture: wrote %s (%u KB)", name, (unsigned)((s_len + 8) >> 10));
 }
 
 void FinishCapture() {
-	g_capturing = false;
+	s_capturing = false;
 	int readbacks = 0;
 	ReadbackUnseenBuffers(&readbacks);
 	int blobs = ShaderTableTakeUsed(EmitShaderBlob);
-	uint32_t z[3] = {g_captureIndex, 0, 0};
+	uint32_t z[3] = {s_captureIndex, 0, 0};
 	Emit(R_FRAME_END, z, 12);
 	Summarise();
 	Log("capture: %d constant buffers read back, %d shaders included, %u shaders known", readbacks, blobs,
 		ShaderTableCount());
 	WriteCapture();
-	AcquireSRWLockExclusive(&g_recordLock);  // a late hook call on another thread must see g_buf == null
-	uint8_t* buf = g_buf;
-	g_buf = nullptr;
-	g_len = g_cap = 0;
-	for (int i = 0; i < g_seenCount; i++) g_seen[i].buf->Release();
-	g_seenCount = 0;
-	for (auto& e : g_mapped) e.res = nullptr;
-	ReleaseSRWLockExclusive(&g_recordLock);
+	AcquireSRWLockExclusive(&s_recordLock);  // a late hook call on another thread must see s_buf == null
+	uint8_t* buf = s_buf;
+	s_buf = nullptr;
+	s_len = s_cap = 0;
+	for (int i = 0; i < s_seenCount; i++) s_seen[i].buf->Release();
+	s_seenCount = 0;
+	for (auto& e : s_mapped) e.res = nullptr;
+	ReleaseSRWLockExclusive(&s_recordLock);
 	VirtualFree(buf, 0, MEM_RELEASE);
 }
 }  // namespace
 
 void CaptureSetDevice(ID3D11Device* device, ID3D11DeviceContext* context) {
-	g_dev = device;
-	g_ctx = context;
+	s_dev = device;
+	s_ctx = context;
 }
 
-bool CaptureRecording(ID3D11DeviceContext* c) { return g_capturing && c == g_ctx; }
+bool CaptureRecording(ID3D11DeviceContext* c) { return s_capturing && c == s_ctx; }
 
 void CaptureBeforePresent() {
-	if (!g_ctx) return;
-	if (g_capturing) FinishCapture();
+	if (!s_ctx) return;
+	if (s_capturing) FinishCapture();
 	// hotkey (edge-triggered, only while the game window has focus)
 	int vk = g_cfg.probe ? g_cfg.keyCapture : 0;
 	if (vk > 0 && vk < 256) {
 		bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
 		bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;  // Ctrl+key is another hotkey
-		if (down && !g_keyWasDown && !ctrl) {
+		if (down && !s_keyWasDown && !ctrl) {
 			HWND fg = GetForegroundWindow();
 			DWORD pid = 0;
 			if (fg) GetWindowThreadProcessId(fg, &pid);
-			if (pid == GetCurrentProcessId()) g_armed = true;
+			if (pid == GetCurrentProcessId()) s_armed = true;
 		}
-		g_keyWasDown = down;
+		s_keyWasDown = down;
 	}
 }
 
 void CaptureAfterPresent() {
-	if (!g_armed || g_capturing) return;
-	g_armed = false;
-	g_cap = 256u << 20;  // reserved+committed lazily by the OS as it is touched
-	g_buf = (uint8_t*)VirtualAlloc(nullptr, g_cap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-	if (!g_buf) {
+	if (!s_armed || s_capturing) return;
+	s_armed = false;
+	s_cap = 256u << 20;  // reserved+committed lazily by the OS as it is touched
+	s_buf = (uint8_t*)VirtualAlloc(nullptr, s_cap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	if (!s_buf) {
 		Log("ERROR: capture: could not allocate capture memory");
-		g_cap = 0;
+		s_cap = 0;
 		return;
 	}
-	g_len = 0;
-	g_overflow = false;
-	g_captureIndex++;
-	uint32_t h[3] = {g_captureIndex, 0, 0};
+	s_len = 0;
+	s_overflow = false;
+	s_captureIndex++;
+	uint32_t h[3] = {s_captureIndex, 0, 0};
 	Emit(R_FRAME_BEGIN, h, 12);
-	Log("capture: capturing frame (capture %u)", g_captureIndex);
-	g_capturing = true;
+	Log("capture: capturing frame (capture %u)", s_captureIndex);
+	s_capturing = true;
 }
 
 void CaptureSetConstantBuffers(ShaderStage stage, UINT start, UINT n, ID3D11Buffer* const* buffers) {
@@ -397,25 +397,25 @@ void CaptureDraw(uint8_t kind, UINT a, UINT b, UINT c) {
 }
 
 void CaptureMap(ID3D11Resource* buffer, void* data, UINT size) {
-	AcquireSRWLockExclusive(&g_recordLock);
-	for (auto& e : g_mapped)
+	AcquireSRWLockExclusive(&s_recordLock);
+	for (auto& e : s_mapped)
 		if (!e.res) {
 			e = {buffer, data, size};
 			break;
 		}
-	ReleaseSRWLockExclusive(&g_recordLock);
+	ReleaseSRWLockExclusive(&s_recordLock);
 }
 
 void CaptureUnmap(ID3D11Resource* buffer) {
 	MappedBuffer found = {};
-	AcquireSRWLockExclusive(&g_recordLock);
-	for (auto& e : g_mapped)
+	AcquireSRWLockExclusive(&s_recordLock);
+	for (auto& e : s_mapped)
 		if (e.res == buffer) {
 			found = e;
 			e.res = nullptr;
 			break;
 		}
-	ReleaseSRWLockExclusive(&g_recordLock);
+	ReleaseSRWLockExclusive(&s_recordLock);
 	if (found.res && found.data) EmitCbData((ID3D11Buffer*)buffer, found.size, 0, found.data, found.size);
 }
 

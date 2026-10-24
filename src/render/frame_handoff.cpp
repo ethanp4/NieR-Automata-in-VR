@@ -26,16 +26,16 @@ typedef HRESULT(STDMETHODCALLTYPE* PFN_Present)(IDXGISwapChain*, UINT, UINT);
 static const int kPresentIndex = 8;  // IUnknown(3) + IDXGIObject(4) + IDXGIDeviceSubObject(1) -> Present
 static const int kMaxTargets = 2;
 
-static PFN_Present g_origPresent[kMaxTargets];
-static void* g_hookTarget[kMaxTargets];
-static volatile LONG g_hookCount;
-static SRWLOCK g_hookLock = SRWLOCK_INIT;
-static DWORD g_tlsDepth = TLS_OUT_OF_INDEXES;  // per-thread Present nesting depth
+static PFN_Present s_origPresent[kMaxTargets];
+static void* s_hookTarget[kMaxTargets];
+static volatile LONG s_hookCount;
+static SRWLOCK s_hookLock = SRWLOCK_INIT;
+static DWORD s_tlsDepth = TLS_OUT_OF_INDEXES;  // per-thread Present nesting depth
 
 typedef HRESULT(STDMETHODCALLTYPE* PFN_ResizeBuffers)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
 static const int kResizeBuffersIndex = 13;
-static PFN_ResizeBuffers g_origResizeBuffers;
-static volatile LONG g_resizeLogBudget;
+static PFN_ResizeBuffers s_origResizeBuffers;
+static volatile LONG s_resizeLogBudget;
 
 // ---------------------------------------------------------------------------------------------
 // Game-side capture state (only touched at nesting depth 0 on the presenting thread)
@@ -375,7 +375,7 @@ static void CaptureFrame(IDXGISwapChain* sc) {
 		}
 		if (s_droppedPairs && GetTickCount() - s_dropReportTick > 30000) {
 			s_dropReportTick = GetTickCount();
-			Log("both eyes: %u game frames not shown in the last 30 s (GPU behind: lower the game's resolution)",
+			Log("synchronized: %u game frames not shown in the last 30 s (GPU behind: lower the game's resolution)",
 				s_droppedPairs);
 			s_droppedPairs = 0;
 		}
@@ -399,8 +399,8 @@ static void AfterPresent() {
 }
 
 static HRESULT PresentCommon(int slot, void* retAddr, IDXGISwapChain* self, UINT syncInterval, UINT flags) {
-	size_t depth = (size_t)TlsGetValue(g_tlsDepth);
-	TlsSetValue(g_tlsDepth, (void*)(depth + 1));
+	size_t depth = (size_t)TlsGetValue(s_tlsDepth);
+	TlsSetValue(s_tlsDepth, (void*)(depth + 1));
 	if (depth == 0) {
 		static bool guaranteed = false;
 		if (!guaranteed) {
@@ -428,16 +428,16 @@ static HRESULT PresentCommon(int slot, void* retAddr, IDXGISwapChain* self, UINT
 			static bool logged = false;
 			if (!logged) Log("ERROR: Present recursion depth %u - breaking the loop", (unsigned)depth);
 			logged = true;
-			TlsSetValue(g_tlsDepth, (void*)depth);
+			TlsSetValue(s_tlsDepth, (void*)depth);
 			return S_OK;
 		}
 	}
-	HRESULT hr = g_origPresent[slot](self, syncInterval, flags);
+	HRESULT hr = s_origPresent[slot](self, syncInterval, flags);
 	if (depth == 0 && !(flags & DXGI_PRESENT_TEST)) {
 		AfterPresent();
 		CaptureAfterPresent();
 	}
-	TlsSetValue(g_tlsDepth, (void*)depth);
+	TlsSetValue(s_tlsDepth, (void*)depth);
 	return hr;
 }
 
@@ -451,32 +451,32 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(IDXGISwapChain* self, UINT s, UI
 static void InstallDetour(void* target, const char* how) {
 	char where[300];
 	DescribeAddress(target, where, sizeof(where));
-	AcquireSRWLockExclusive(&g_hookLock);
-	for (LONG i = 0; i < g_hookCount; i++)
-		if (g_hookTarget[i] == target) {
-			ReleaseSRWLockExclusive(&g_hookLock);
+	AcquireSRWLockExclusive(&s_hookLock);
+	for (LONG i = 0; i < s_hookCount; i++)
+		if (s_hookTarget[i] == target) {
+			ReleaseSRWLockExclusive(&s_hookLock);
 			return;
 		}
 	if (target == (void*)&HookedPresent0 || target == (void*)&HookedPresent1) {
-		ReleaseSRWLockExclusive(&g_hookLock);
+		ReleaseSRWLockExclusive(&s_hookLock);
 		return;
 	}
-	if (g_hookCount >= kMaxTargets) {
+	if (s_hookCount >= kMaxTargets) {
 		Log("ERROR: more Present implementations than expected (%s)", where);
-		ReleaseSRWLockExclusive(&g_hookLock);
+		ReleaseSRWLockExclusive(&s_hookLock);
 		return;
 	}
-	if (g_tlsDepth == TLS_OUT_OF_INDEXES) g_tlsDepth = TlsAlloc();
-	LONG n = g_hookCount;
+	if (s_tlsDepth == TLS_OUT_OF_INDEXES) s_tlsDepth = TlsAlloc();
+	LONG n = s_hookCount;
 	void* detour = n == 0 ? (void*)&HookedPresent0 : (void*)&HookedPresent1;
-	if (!HookFunction(target, detour, (void**)&g_origPresent[n], "Present")) {
-		ReleaseSRWLockExclusive(&g_hookLock);
+	if (!HookFunction(target, detour, (void**)&s_origPresent[n], "Present")) {
+		ReleaseSRWLockExclusive(&s_hookLock);
 		return;
 	}
-	g_hookTarget[n] = target;
-	g_hookCount = n + 1;
+	s_hookTarget[n] = target;
+	s_hookCount = n + 1;
 	Log("Present hooked (%s) at %s", how, where);
-	ReleaseSRWLockExclusive(&g_hookLock);
+	ReleaseSRWLockExclusive(&s_hookLock);
 }
 
 // The backbuffer changes size: every feature frees its textures of the old size first.
@@ -486,8 +486,8 @@ static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* sc, UINT co
 	ReplayRelease();
 	ReprojectRelease();
 	UpscaleRelease();
-	HRESULT hr = g_origResizeBuffers(sc, count, w, h, format, flags);
-	if (LogBudget(&g_resizeLogBudget, 8))
+	HRESULT hr = s_origResizeBuffers(sc, count, w, h, format, flags);
+	if (LogBudget(&s_resizeLogBudget, 8))
 		Log("swapchain: ResizeBuffers %ux%u format %d -> 0x%08x", w, h, (int)format, (unsigned)hr);
 	return hr;
 }
@@ -532,7 +532,7 @@ void HookWithDummySwapChain() {
 	}
 	if (SUCCEEDED(hr) && sc) {
 		InstallDetour((*(void***)sc)[kPresentIndex], "via dummy swapchain");
-		HookFunction((*(void***)sc)[kResizeBuffersIndex], (void*)&HookedResizeBuffers, (void**)&g_origResizeBuffers,
+		HookFunction((*(void***)sc)[kResizeBuffersIndex], (void*)&HookedResizeBuffers, (void**)&s_origResizeBuffers,
 					 "IDXGISwapChain::ResizeBuffers");
 		ExtraResolutionsHookSwapChain(sc);
 		sc->Release();

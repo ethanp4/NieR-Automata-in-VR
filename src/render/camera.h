@@ -13,7 +13,6 @@ struct StereoShared {  // written by the VR thread, read by the game thread
 	bool menuMode;                     // the UI covers the screen: render flat (mono)
 	bool refValid;                     // recentred reference (yaw-only head pose)
 	float refPos[3], refRot[4];
-	bool singleEye;      // diagnostic: render only the left eye, every frame (Ctrl+F12)
 	long long poseBase;  // VR frame display time (XrTime) the poses were predicted from;
 						 // they are predicted for poseBase + the measured lag
 };

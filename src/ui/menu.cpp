@@ -49,15 +49,15 @@ struct Item {
 
 Item kView[] = {
 	{
-		"Both eyes every frame",
-		T_BOOL,
+		"Stereo mode",
+		T_CHOICE,
 		&g_cfg.synchronized,
 		0,
 		1,
-		nullptr,
+		"Alternating|Synchronized",
 		0,
-		"Draws the game's frame a second time for the right eye: both eyes show the same moment, 60 times a second. "
-		"About twice the graphics work. Off: the eyes take turns (30 images a second each). Also F5.",
+		"Alternating renders one eye per game frame; Synchronized renders both, so they always match, for about "
+		"twice the graphics work. Also F5.",
 	},
 	{
 		"World scale",
@@ -213,7 +213,7 @@ Item kView[] = {
 		nullptr,
 		0,
 		"Each headset frame, both eye images are re-aimed to where your head is now and cut to each eye's own field of "
-		"view. Needed by headsets that stream (Quest, Pico): without it alternate eyes stutter and a Quest looks "
+		"view. Needed by headsets that stream (Quest, Pico): without it alternating mode stutters and a Quest looks "
 		"cross-eyed. Off: images are sent as rendered (0.5.0).",
 	},
 	{
@@ -224,9 +224,8 @@ Item kView[] = {
 		1,
 		nullptr,
 		F_ALTERNATING,
-		"Experimental. Alternate eyes only: the other eye's last image is moved to where the camera is now, using its depth, so both "
-		"eyes follow camera motion 60 times a second. Off: each eye updates 30 times a second. No effect with both eyes "
-		"every frame.",
+		"Experimental, alternating mode only: moves the other eye's last image to where the camera is now, so both "
+		"eyes follow camera motion every frame.",
 	},
 	{
 		"Reprojection gap fill (exp.)",
@@ -305,7 +304,7 @@ Item kRender[] = {
 		nullptr,
 		0,
 		"NieR's ambient occlusion (soft contact shadows). Off removes it (it is half resolution and can look blotchy "
-		"up close). Also Ctrl+F11.",
+		"up close).",
 	},
 	{
 		"Shadows",
@@ -315,7 +314,7 @@ Item kRender[] = {
 		1,
 		nullptr,
 		0,
-		"Off skips the game's screen-space shadow pass (no shadows from the sun and lights): faster. Also Ctrl+Shift+F11.",
+		"Off skips the game's screen-space shadow pass (no shadows from the sun and lights): faster.",
 	},
 	{
 		"Vignette",
@@ -348,16 +347,6 @@ Item kRender[] = {
 		"The glitch/distortion effects when hit. Off removes them in stereo (they redraw a flat copy of the screen).",
 	},
 	{
-		"Fix lighting",
-		T_BOOL,
-		&g_cfg.viewFix,
-		0,
-		1,
-		nullptr,
-		0,
-		"Moves the game's lights and reflections into each eye's view. Leave on (off only to compare).",
-	},
-	{
 		"Frame queue",
 		T_INT,
 		&g_cfg.maxFrameLatency,
@@ -381,14 +370,14 @@ Item kRender[] = {
 		"the area uses and the GI pass time. Idea from the FAR mod.",
 	},
 	{
-		"Reuse shadows (both eyes)",
+		"Reuse shadows (synchronized)",
 		T_BOOL,
 		&g_cfg.reuseShadows,
 		0,
 		1,
 		nullptr,
 		F_SYNCHRONIZED,
-		"Both-eye mode: the right eye reuses the left eye's shadow map instead of drawing it again (saves graphics work).",
+		"Synchronized mode only: the right eye reuses the left eye's shadow map instead of drawing it again (saves graphics work).",
 	},
 	{
 		"Flat below draws",
@@ -441,26 +430,6 @@ Item kCull[] = {
 		"%.0f deg",
 		0,
 		"Height of the game's culling view while in stereo (used as is when head culling is off). 0 = the game's own.",
-	},
-	{
-		"Wide projection",
-		T_BOOL,
-		&g_cfg.wideProjection,
-		0,
-		1,
-		nullptr,
-		0,
-		"Also gives the game camera's own projection the wide view (0.3.22 behaviour). Makes Pod 042 aim at the sky.",
-	},
-	{
-		"Model detail fix",
-		T_BOOL,
-		&g_cfg.lodFix,
-		0,
-		1,
-		nullptr,
-		F_RESTART,
-		"Keeps model and texture detail at the game's own level while culling is widened.",
 	},
 };
 Item kScreen[] = {
@@ -601,18 +570,6 @@ Item kInput[] = {
 		"How fast a hand must move (relative to your head) to count as a swing. Lower = easier; higher = only big "
 		"swings. The Info page shows how fast your swings are.",
 	},
-	{
-		"Ignore hand-to-headset movements",
-		T_BOOL,
-		&g_cfg.ignoreUpSwings,
-		0,
-		1,
-		nullptr,
-		0,
-		"Reaching for your headset doesn't attack: a hand moving mostly upward doesn't count, nor one near your head "
-		"or just lowered from it. Raising your arm for a swing then only attacks on the way down. Off: every fast "
-		"movement attacks.",
-	},
 };
 const int kInfoLines = 18;
 
@@ -621,39 +578,39 @@ struct Page {
 	Item* items;
 	int count;
 };
-Page g_pages[] = {{"View", kView, sizeof(kView) / sizeof(Item)},
+Page s_pages[] = {{"View", kView, sizeof(kView) / sizeof(Item)},
 				  {"Rendering", kRender, sizeof(kRender) / sizeof(Item)},
 				  {"Culling", kCull, sizeof(kCull) / sizeof(Item)},
 				  {"Screen", kScreen, sizeof(kScreen) / sizeof(Item)},
 				  {"Controls", kInput, sizeof(kInput) / sizeof(Item)},
 				  {"Info", nullptr, 0}};
-const int kPages = sizeof(g_pages) / sizeof(Page);
+const int kPages = sizeof(s_pages) / sizeof(Page);
 
-char g_infoText[kInfoLines][160];
-SRWLOCK g_infoLock = SRWLOCK_INIT;
+char s_infoText[kInfoLines][160];
+SRWLOCK s_infoLock = SRWLOCK_INIT;
 
 // ---------------------------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------------------------
-UiPanel g_panel = {"menu", 30.0f, true};
+UiPanel s_panel = {"menu", 30.0f, true};
 const float kSmall = 22.0f;  // font size of tags and hints
 
-volatile bool g_open, g_justOpened, g_wantRecenter;
-bool g_waitRelease;   // after closing: keep blocking the game's gamepad until every button is released
-int g_page;
-bool g_pageChanged;   // select g_page's tab on the next frames (paging buttons, opening)
-bool g_focusFirst;    // put the navigation cursor on the page's first setting
-bool g_focusWindow;   // the menu window takes keyboard/gamepad focus (when it opens)
-bool g_uiActive;      // a slider is being adjusted: B (finish) and LB/RB (finer/coarser) go to ImGui
-XINPUT_GAMEPAD g_pad; // this frame's gamepad (a real one and the VR controllers), fed to ImGui
-bool g_padOk, g_foreground;
-bool g_holdA;         // the A press that opened the menu: kept from ImGui until A is let go
-WORD g_prevButtons;
-bool g_comboLocked;   // B closed the menu: B + A can't open it again until B is let go
-bool g_keyPrev[256];
-const char* g_help;   // help text of the focused setting
-char g_helpDefault[96];  // and its default value, "" for actions
-bool g_resetPending;  // X / Delete was pressed: the focused setting goes back to its default
+volatile bool s_open, s_justOpened, s_wantRecenter;
+bool s_waitRelease;   // after closing: keep blocking the game's gamepad until every button is released
+int s_page;
+bool s_pageChanged;   // select s_page's tab on the next frames (paging buttons, opening)
+bool s_focusFirst;    // put the navigation cursor on the page's first setting
+bool s_focusWindow;   // the menu window takes keyboard/gamepad focus (when it opens)
+bool s_uiActive;      // a slider is being adjusted: B (finish) and LB/RB (finer/coarser) go to ImGui
+XINPUT_GAMEPAD s_pad; // this frame's gamepad (a real one and the VR controllers), fed to ImGui
+bool s_padOk, s_foreground;
+bool s_holdA;         // the A press that opened the menu: kept from ImGui until A is let go
+WORD s_prevButtons;
+bool s_comboLocked;   // B closed the menu: B + A can't open it again until B is let go
+bool s_keyPrev[256];
+const char* s_help;   // help text of the focused setting
+char s_helpDefault[96];  // and its default value, "" for actions
+bool s_resetPending;  // X / Delete was pressed: the focused setting goes back to its default
 
 // ---------------------------------------------------------------------------------------------
 // Keys
@@ -691,24 +648,24 @@ void KeyName(int vk, char* out, size_t cap) {
 bool KeyEdge(int vk, bool fg) {
 	if (vk <= 0 || vk > 255) return false;
 	bool d = (GetAsyncKeyState(vk) & 0x8000) != 0;
-	bool e = d && !g_keyPrev[vk];
-	g_keyPrev[vk] = d;
+	bool e = d && !s_keyPrev[vk];
+	s_keyPrev[vk] = d;
 	return e && fg;
 }
-bool KeyDown(int vk) { return g_foreground && (GetAsyncKeyState(vk) & 0x8000) != 0; }
+bool KeyDown(int vk) { return s_foreground && (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
 void Open(bool on) {
-	if (g_open == on) return;
-	g_open = on;
+	if (s_open == on) return;
+	s_open = on;
 	if (on) {
-		g_justOpened = true;
+		s_justOpened = true;
 		g_blockPad = 1;
-		g_pageChanged = g_focusFirst = g_focusWindow = true;
-		g_holdA = true;
-		g_uiActive = false;
+		s_pageChanged = s_focusFirst = s_focusWindow = true;
+		s_holdA = true;
+		s_uiActive = false;
 		Log("menu: opened");
 	} else {
-		g_waitRelease = true;
+		s_waitRelease = true;
 		Log("menu: closed");
 	}
 }
@@ -737,8 +694,8 @@ const char* Tag(const Item& it) {
 		if (file.state == DF_UPDATE_AVAILABLE) return "(update available)";
 		return file.state == DF_MISSING && file.text[0] ? file.text : nullptr;  // why the last download failed
 	}
-	if ((it.flags & F_ALTERNATING) && g_cfg.synchronized) return "(not used: both eyes is on)";
-	if ((it.flags & F_SYNCHRONIZED) && !g_cfg.synchronized) return "(not used: alternate eyes)";
+	if ((it.flags & F_ALTERNATING) && g_cfg.synchronized) return "(not used: synchronized mode)";
+	if ((it.flags & F_SYNCHRONIZED) && !g_cfg.synchronized) return "(not used: alternating mode)";
 	if (it.flags & F_RESTART) return "(restart)";
 	return nullptr;
 }
@@ -782,7 +739,7 @@ void ResetToDefault(Item& it) {
 		if (*(int*)it.ptr == (int)d) return;
 		*(int*)it.ptr = (int)d;
 	}
-	if (it.flags & F_RECENTER) g_wantRecenter = true;
+	if (it.flags & F_RECENTER) s_wantRecenter = true;
 	Saved(it);
 }
 
@@ -860,7 +817,7 @@ bool Widget(Item& it) {
 				DlssFileButton();
 				return false;
 			}
-			if (ImGui::Button("Do it", ImVec2(-FLT_MIN, 0)) && (intptr_t)it.ptr == A_RECENTER) g_wantRecenter = true;
+			if (ImGui::Button("Do it", ImVec2(-FLT_MIN, 0)) && (intptr_t)it.ptr == A_RECENTER) s_wantRecenter = true;
 			return false;
 		default:
 			return false;
@@ -881,10 +838,10 @@ void Row(Item& it, int index) {
 	ImGui::TableSetColumnIndex(1);
 	ImGui::PushID(index);
 	bool changed = Widget(it);
-	if (g_focusFirst) {  // the page was just opened: start on its first setting
+	if (s_focusFirst) {  // the page was just opened: start on its first setting
 		ImGui::FocusItem();
 		ImGui::SetNavCursorVisible(true);
-		g_focusFirst = false;
+		s_focusFirst = false;
 	}
 	bool focused = ImGui::IsItemFocused();
 	bool done = it.type == T_BOOL ? changed : ImGui::IsItemDeactivatedAfterEdit();  // sliders: when let go
@@ -893,20 +850,20 @@ void Row(Item& it, int index) {
 		ImGui::TextUnformatted(*(int*)it.ptr ? "On" : "Off");
 	}
 	ImGui::PopID();
-	if (changed && (it.flags & F_RECENTER)) g_wantRecenter = true;
+	if (changed && (it.flags & F_RECENTER)) s_wantRecenter = true;
 	if (done) Saved(it);
 	if (focused) {
-		if (g_resetPending) {
-			g_resetPending = false;
+		if (s_resetPending) {
+			s_resetPending = false;
 			ResetToDefault(it);
 		}
-		g_help = it.help;
+		s_help = it.help;
 		float d;
 		char v[64];
-		g_helpDefault[0] = 0;
+		s_helpDefault[0] = 0;
 		if (it.type != T_ACTION && ConfigDefault(it.ptr, &d)) {
 			ValueText(it, d, v, sizeof(v));
-			snprintf(g_helpDefault, sizeof(g_helpDefault), "Default: %s  (X or Delete: back to it)", v);
+			snprintf(s_helpDefault, sizeof(s_helpDefault), "Default: %s  (X or Delete: back to it)", v);
 		}
 		ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(Col(ui::Colors::bar)));
 	}
@@ -914,11 +871,11 @@ void Row(Item& it, int index) {
 
 void PageContents(const Page& p, bool info) {
 	if (info) {  // the Info page: lines of live text set by the other parts of the mod
-		AcquireSRWLockShared(&g_infoLock);
+		AcquireSRWLockShared(&s_infoLock);
 		for (int i = 0; i < kInfoLines; i++)
-			if (g_infoText[i][0]) ImGui::TextWrapped("%s", g_infoText[i]);
-		ReleaseSRWLockShared(&g_infoLock);
-		g_focusFirst = false;
+			if (s_infoText[i][0]) ImGui::TextWrapped("%s", s_infoText[i]);
+		ReleaseSRWLockShared(&s_infoLock);
+		s_focusFirst = false;
 		return;
 	}
 	if (!ImGui::BeginTable("items", 2, ImGuiTableFlags_None)) return;
@@ -940,16 +897,16 @@ void Draw() {
 	const float smallLine = kSmall * 1.35f;
 	const float footer = ImGui::GetFontSize() * 1.3f * 3 + smallLine * 3 + ImGui::GetStyle().ItemSpacing.y * 6;
 
-	g_help = nullptr;
-	g_helpDefault[0] = 0;
+	s_help = nullptr;
+	s_helpDefault[0] = 0;
 	int shown = -1;
 	if (ImGui::BeginTabBar("pages")) {
 		for (int i = 0; i < kPages; i++) {
-			ImGuiTabItemFlags f = g_pageChanged && i == g_page ? ImGuiTabItemFlags_SetSelected : 0;
-			if (!ImGui::BeginTabItem(g_pages[i].name, nullptr, f)) continue;
+			ImGuiTabItemFlags f = s_pageChanged && i == s_page ? ImGuiTabItemFlags_SetSelected : 0;
+			if (!ImGui::BeginTabItem(s_pages[i].name, nullptr, f)) continue;
 			shown = i;
 			ImGui::BeginChild("page", ImVec2(0, ImGui::GetContentRegionAvail().y - footer), ImGuiChildFlags_NavFlattened);
-			if (!g_pageChanged || i == g_page) PageContents(g_pages[i], i == kPages - 1);
+			if (!s_pageChanged || i == s_page) PageContents(s_pages[i], i == kPages - 1);
 			ImGui::EndChild();
 			ImGui::EndTabItem();
 		}
@@ -957,24 +914,24 @@ void Draw() {
 	}
 	// the shown tab: ours once a page change has taken effect, else the one ImGui navigation chose
 	if (shown >= 0) {
-		if (g_pageChanged) {
-			if (shown == g_page) g_pageChanged = false;
-		} else if (shown != g_page) {
-			g_page = shown;
+		if (s_pageChanged) {
+			if (shown == s_page) s_pageChanged = false;
+		} else if (shown != s_page) {
+			s_page = shown;
 		}
 	}
 
 	// help for the focused setting, then the controls
 	ImGui::Separator();
 	ImGui::BeginChild("help", ImVec2(0, ImGui::GetFontSize() * 1.3f * 3 + smallLine), ImGuiChildFlags_None, ImGuiWindowFlags_NoNav);
-	if (g_help) ImGui::TextWrapped("%s", g_help);
-	if (g_help && g_helpDefault[0]) {
+	if (s_help) ImGui::TextWrapped("%s", s_help);
+	if (s_help && s_helpDefault[0]) {
 		ImGui::PushFont(nullptr, kSmall);
-		ImGui::TextDisabled("%s", g_helpDefault);
+		ImGui::TextDisabled("%s", s_helpDefault);
 		ImGui::PopFont();
 	}
 	ImGui::EndChild();
-	g_resetPending = false;  // a reset press with nothing to reset
+	s_resetPending = false;  // a reset press with nothing to reset
 	ImGui::Separator();
 	ImGui::PushFont(nullptr, kSmall);
 	ImGui::TextDisabled("Gamepad:  left stick / D-pad move   right stick scroll   A switch / adjust a slider (A again: done)");
@@ -991,13 +948,13 @@ void Draw() {
 // change pages, MenuTick).
 void FeedInput() {
 	ImGuiIO& io = ImGui::GetIO();
-	WORD b = g_padOk ? g_pad.wButtons : 0;
-	if (!(b & XINPUT_GAMEPAD_A)) g_holdA = false;
+	WORD b = s_padOk ? s_pad.wButtons : 0;
+	if (!(b & XINPUT_GAMEPAD_A)) s_holdA = false;
 	// The left stick works like the D-pad (ImGui would scroll with it; on the VR controllers the
 	// thumbstick is what you move with). On past half way, off again below a third.
 	static bool stUp, stDown, stLeft, stRight;
 	auto dir = [](bool& on, float v) { on = on ? v > 0.33f : v > 0.5f; return on; };
-	float sx = g_padOk ? (float)g_pad.sThumbLX / 32767.0f : 0.0f, sy = g_padOk ? (float)g_pad.sThumbLY / 32767.0f : 0.0f;
+	float sx = s_padOk ? (float)s_pad.sThumbLX / 32767.0f : 0.0f, sy = s_padOk ? (float)s_pad.sThumbLY / 32767.0f : 0.0f;
 	dir(stUp, sy);
 	dir(stDown, -sy);
 	dir(stLeft, -sx);
@@ -1007,17 +964,17 @@ void FeedInput() {
 	io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, (b & XINPUT_GAMEPAD_DPAD_LEFT) || stLeft);
 	io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (b & XINPUT_GAMEPAD_DPAD_RIGHT) || stRight);
 	// The right stick scrolls the page (ImGui's stick scrolling, which it reads from its "left stick").
-	float rx = g_padOk ? (float)g_pad.sThumbRX / 32767.0f : 0.0f, ry = g_padOk ? (float)g_pad.sThumbRY / 32767.0f : 0.0f;
+	float rx = s_padOk ? (float)s_pad.sThumbRX / 32767.0f : 0.0f, ry = s_padOk ? (float)s_pad.sThumbRY / 32767.0f : 0.0f;
 	auto scroll = [&](ImGuiKey neg, ImGuiKey pos, float v) {
 		io.AddKeyAnalogEvent(neg, v < -0.25f, v < -0.25f ? -v : 0.0f);
 		io.AddKeyAnalogEvent(pos, v > 0.25f, v > 0.25f ? v : 0.0f);
 	};
 	scroll(ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight, rx);
 	scroll(ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadLStickUp, ry);
-	io.AddKeyEvent(ImGuiKey_GamepadFaceDown, (b & XINPUT_GAMEPAD_A) && !g_holdA);
-	io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (b & XINPUT_GAMEPAD_B) && g_uiActive);
-	io.AddKeyEvent(ImGuiKey_GamepadL1, (b & XINPUT_GAMEPAD_LEFT_SHOULDER) && g_uiActive);
-	io.AddKeyEvent(ImGuiKey_GamepadR1, (b & XINPUT_GAMEPAD_RIGHT_SHOULDER) && g_uiActive);
+	io.AddKeyEvent(ImGuiKey_GamepadFaceDown, (b & XINPUT_GAMEPAD_A) && !s_holdA);
+	io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (b & XINPUT_GAMEPAD_B) && s_uiActive);
+	io.AddKeyEvent(ImGuiKey_GamepadL1, (b & XINPUT_GAMEPAD_LEFT_SHOULDER) && s_uiActive);
+	io.AddKeyEvent(ImGuiKey_GamepadR1, (b & XINPUT_GAMEPAD_RIGHT_SHOULDER) && s_uiActive);
 	io.AddKeyEvent(ImGuiKey_UpArrow, KeyDown(VK_UP));
 	io.AddKeyEvent(ImGuiKey_DownArrow, KeyDown(VK_DOWN));
 	io.AddKeyEvent(ImGuiKey_LeftArrow, KeyDown(VK_LEFT));
@@ -1034,9 +991,9 @@ void FeedInput() {
 // Any thread: one line of the Info page.
 void MenuSetInfo(int line, const char* text) {
 	if (line < 0 || line >= kInfoLines) return;
-	AcquireSRWLockExclusive(&g_infoLock);
-	snprintf(g_infoText[line], sizeof(g_infoText[line]), "%s", text);
-	ReleaseSRWLockExclusive(&g_infoLock);
+	AcquireSRWLockExclusive(&s_infoLock);
+	snprintf(s_infoText[line], sizeof(s_infoText[line]), "%s", text);
+	ReleaseSRWLockExclusive(&s_infoLock);
 }
 
 // Every headset frame: opening and closing, page buttons, and the gamepad state for ImGui.
@@ -1049,12 +1006,12 @@ void MenuTick(bool foreground) {
 	}
 	XINPUT_GAMEPAD g = {};
 	bool pad = ReadGamepad(&g);
-	g_pad = g;
-	g_padOk = pad;
-	g_foreground = foreground;
+	s_pad = g;
+	s_padOk = pad;
+	s_foreground = foreground;
 	WORD b = pad ? g.wButtons : 0;
-	WORD pressed = b & ~g_prevButtons;  // newly pressed buttons
-	g_prevButtons = b;
+	WORD pressed = b & ~s_prevButtons;  // newly pressed buttons
+	s_prevButtons = b;
 	// Triggers also change pages (VR controllers: the grips are LB/RB, which is easy to miss).
 	// A pull counts once: above 160, and it must drop below 64 before it counts again.
 	static bool ltHeld, rtHeld;
@@ -1066,65 +1023,65 @@ void MenuTick(bool foreground) {
 	else if (!pad || g.bRightTrigger < 64) rtHeld = false;
 
 	// open / close. Gamepad: hold B, then press A. Closing: B, Start or the menu key.
-	if (!(b & XINPUT_GAMEPAD_B)) g_comboLocked = false;
-	bool comboFire = !g_comboLocked && (b & XINPUT_GAMEPAD_B) && (pressed & XINPUT_GAMEPAD_A);
+	if (!(b & XINPUT_GAMEPAD_B)) s_comboLocked = false;
+	bool comboFire = !s_comboLocked && (b & XINPUT_GAMEPAD_B) && (pressed & XINPUT_GAMEPAD_A);
 	bool keyToggle = KeyEdge(g_cfg.keyMenu, foreground);
 	bool pgKeyL = KeyEdge(VK_PRIOR, foreground), pgKeyR = KeyEdge(VK_NEXT, foreground);
 	bool delKey = KeyEdge(VK_DELETE, foreground), backKey = KeyEdge(VK_BACK, foreground);  // both read every frame
 	bool resetKey = delKey || backKey;
-	if (!g_open) {
+	if (!s_open) {
 		if (keyToggle || comboFire) Open(true);
-	} else if (keyToggle || (!g_uiActive && (pressed & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START)))) {
+	} else if (keyToggle || (!s_uiActive && (pressed & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START)))) {
 		Open(false);
-		if (b & XINPUT_GAMEPAD_B) g_comboLocked = true;  // else A with B still down reopens it at once
+		if (b & XINPUT_GAMEPAD_B) s_comboLocked = true;  // else A with B still down reopens it at once
 	}
-	if (!g_open) {
-		if (g_waitRelease && !b) {
-			g_waitRelease = false;
+	if (!s_open) {
+		if (s_waitRelease && !b) {
+			s_waitRelease = false;
 			g_blockPad = 0;
 		}
 		return;
 	}
 	// X / Delete: the highlighted setting back to its default (not while a slider is being adjusted)
-	if (!g_uiActive && ((pressed & XINPUT_GAMEPAD_X) || resetKey)) g_resetPending = true;
+	if (!s_uiActive && ((pressed & XINPUT_GAMEPAD_X) || resetKey)) s_resetPending = true;
 	// pages (while a slider is being adjusted, LB/RB make it finer/coarser instead)
-	bool pgL = pgKeyL || (!g_uiActive && ((pressed & XINPUT_GAMEPAD_LEFT_SHOULDER) || ltPull));
-	bool pgR = pgKeyR || (!g_uiActive && ((pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER) || rtPull));
+	bool pgL = pgKeyL || (!s_uiActive && ((pressed & XINPUT_GAMEPAD_LEFT_SHOULDER) || ltPull));
+	bool pgR = pgKeyR || (!s_uiActive && ((pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER) || rtPull));
 	if (pgL || pgR) {
-		g_page = (g_page + (pgR ? 1 : kPages - 1)) % kPages;
-		g_pageChanged = g_focusFirst = true;
+		s_page = (s_page + (pgR ? 1 : kPages - 1)) % kPages;
+		s_pageChanged = s_focusFirst = true;
 	}
 }
 
-bool MenuIsOpen() { return g_open; }
+bool MenuIsOpen() { return s_open; }
 // Returns whether the menu was just opened, and clears it.
 bool MenuTakeJustOpened() {
-	bool j = g_justOpened;
-	g_justOpened = false;
+	bool j = s_justOpened;
+	s_justOpened = false;
 	return j;
 }
 bool MenuTakeRecenter() {
-	bool r = g_wantRecenter;
-	g_wantRecenter = false;
+	bool r = s_wantRecenter;
+	s_wantRecenter = false;
 	return r;
 }
 
 // Draws the menu into rtv (w x h pixels). False if ImGui couldn't start.
 bool MenuRender(ID3D11Device* dev, ID3D11DeviceContext* dc, ID3D11RenderTargetView* rtv, int w, int h) {
-	if (!UiPrepare(g_panel, dev, dc, w, h)) return false;
+	if (!UiPrepare(s_panel, dev, dc, w, h)) return false;
 	FeedInput();
 	UiNewFrame();
 	ImGui::SetNextWindowPos(ImVec2(0, 0));
 	ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-	if (g_focusWindow) {
+	if (s_focusWindow) {
 		ImGui::SetNextWindowFocus();
-		g_focusWindow = false;
+		s_focusWindow = false;
 	}
 	ImGui::Begin("NieRVR settings", nullptr,
 				 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove);
 	Draw();
 	ImGui::End();
-	g_uiActive = ImGui::IsAnyItemActive();
+	s_uiActive = ImGui::IsAnyItemActive();
 	UiRender(dc, rtv);
 	return true;
 }

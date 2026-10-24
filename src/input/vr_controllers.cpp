@@ -1,33 +1,3 @@
-// vr_controllers.cpp - VR controllers as a gamepad, and motion controls.
-//
-// The VR controllers (Quest/Touch, Index, Vive wands, Windows MR, Pico via SteamVR/VD, ...) are read
-// through OpenXR actions and handed to the game as an Xbox-style gamepad: the XInput hook in
-// menu.cpp merges this state into what XInputGetState returns for the first pad, so a real gamepad
-// keeps working at the same time. Rumble from the game (XInputSetState) is played on the
-// controllers. VRControllers=0 (or the menu) turns it off.
-//
-// Layout (Quest-style controllers; Index uses its A/B buttons on both hands the same way):
-//   left stick / right stick      -> left stick / right stick
-//   left / right trigger          -> LT / RT
-//   left / right grip             -> LB / RB
-//   right A / B                   -> A / B
-//   left X / Y                    -> X / Y
-//   stick clicks                  -> L3 / R3
-//   left menu button, tap         -> Start
-//   left menu button, hold 0.5 s  -> Back (View)
-//   left menu button + left stick -> D-pad (while the menu button is held)
-//   right menu (Vive, WMR)        -> B (these have no B button)
-// Index has no menu button: pressing its left trackpad acts as the menu button.
-// Pico 4 controllers use the Touch layout (their own profile when the runtime offers
-// XR_BD_controller_interaction). PSVR2 Sense, Pico via SteamVR etc. are mapped onto one of these
-// profiles by the runtime (SteamVR does this for any controller).
-//
-// Motion controls ([Input] MotionControls=1): swinging a hand attacks. Right hand = light attack
-// (X), left hand = heavy attack (Y), matching 2B's two weapons. A swing is the hand moving faster
-// than [Input] SwingSpeed (m/s) relative to the head, so walking or leaning doesn't count; it
-// presses the button for 100 ms and gives a short rumble on that hand (VrInputMotion). With
-// [Input] IgnoreUpwardSwings=1 (default) reaching for the headset doesn't attack: a hand moving mostly
-// upward doesn't count, nor one within 25 cm of the head and for 0.4 s after it leaves.
 #include "input/vr_controllers.h"
 #include "core/config.h"
 #include "core/log.h"
@@ -73,44 +43,44 @@ enum Act { A_STICK,
 		   A_HAPTIC,
 		   A_POSE,
 		   A_COUNT };
-XrInstance g_inst;
-XrActionSet g_set;
-XrAction g_act[A_COUNT];
-XrPath g_hand[2];
-XrSession g_session;
-bool g_ready, g_attached;
-XrSpace g_handSpace[2];  // the grip pose of each hand (motion controls)
+XrInstance s_inst;
+XrActionSet s_set;
+XrAction s_act[A_COUNT];
+XrPath s_hand[2];
+XrSession s_session;
+bool s_ready, s_attached;
+XrSpace s_handSpace[2];  // the grip pose of each hand (motion controls)
 
 // shared with the game thread
-SRWLOCK g_lock = SRWLOCK_INIT;
-XINPUT_GAMEPAD g_pad;
-DWORD g_padTick;       // when g_pad was last updated with an active controller
-bool g_anyActive, g_everActive;  // everActive: for the log
-volatile LONG g_hapL, g_hapR;  // 0..65535 from XInputSetState
-float g_lastHap[2];
-DWORD g_hapTick[2];
+SRWLOCK s_lock = SRWLOCK_INIT;
+XINPUT_GAMEPAD s_pad;
+DWORD s_padTick;       // when s_pad was last updated with an active controller
+bool s_anyActive, s_everActive;  // everActive: for the log
+volatile LONG s_hapL, s_hapR;  // 0..65535 from XInputSetState
+float s_lastHap[2];
+DWORD s_hapTick[2];
 
-pure::MenuButton g_menuBtn;  // Start / Back / D-pad from the left menu button
+pure::MenuButton s_menuBtn;  // Start / Back / D-pad from the left menu button
 
 // motion controls
-pure::SwingDetector g_swing[2];
-pure::HeadZone g_headZone[2];
-DWORD g_swingUntil[2];        // the attack button is held until then (100 ms per swing)
-XrVector3f g_lastPos[2], g_lastHead;  // for speeds when the runtime gives no velocity
-XrTime g_lastTime;
-bool g_lastValid;
-unsigned g_swings[2];
-float g_peak[2];
-DWORD g_peakTick;
+pure::SwingDetector s_swing[2];
+// pure::HeadZone g_headZone[2];
+DWORD s_swingUntil[2];        // the attack button is held until then (100 ms per swing)
+XrVector3f s_lastPos[2], s_lastHead;  // for speeds when the runtime gives no velocity
+XrTime s_lastTime;
+bool s_lastValid;
+unsigned s_swings[2];
+float s_peak[2];
+DWORD s_peakTick;
 
 // Keyboard / mouse handoff (0.4.1): a key or mouse button pressed in the game pauses the VR
 // controllers (the game sees a neutral pad, no rumble) until a button, trigger or stick on them is
 // used on purpose. Controllers strapped to your hands while you type (Index) send nothing then.
-bool g_kbmMode;
-bool g_keyWas[256];
-WORD g_prevVrButtons;
-float g_prevTrig[2];
-unsigned g_kbmSwitches, g_vrSwitches;
+bool s_kbmMode;
+bool s_keyWas[256];
+WORD s_prevVrButtons;
+float s_prevTrig[2];
+unsigned s_kbmSwitches, s_vrSwitches;
 
 bool HandoffKey(int vk) {
 	if (vk >= VK_F1 && vk <= VK_F24) return false;  // the mod's hotkeys
@@ -142,16 +112,16 @@ bool KeyboardMouseUsed(bool foreground) {
 	for (int vk = 1; vk < 256; vk++) {
 		if (vk == VK_CANCEL || vk == 0x07) continue;
 		bool d = (GetAsyncKeyState(vk) & 0x8000) != 0;
-		if (d && !g_keyWas[vk] && foreground && HandoffKey(vk)) used = true;
-		g_keyWas[vk] = d;
+		if (d && !s_keyWas[vk] && foreground && HandoffKey(vk)) used = true;
+		s_keyWas[vk] = d;
 	}
 	return used;
 }
-char g_profile[2][128];
+char s_profile[2][128];
 
 XrPath Path(const char* s) {
 	XrPath p = XR_NULL_PATH;
-	F.xrStringToPath(g_inst, s, &p);
+	F.xrStringToPath(s_inst, s, &p);
 	return p;
 }
 
@@ -162,8 +132,8 @@ bool MakeAction(Act a, XrActionType type, const char* name, const char* loc) {
 	lstrcpynA(ci.actionName, name, XR_MAX_ACTION_NAME_SIZE);
 	lstrcpynA(ci.localizedActionName, loc, XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
 	ci.countSubactionPaths = 2;
-	ci.subactionPaths = g_hand;
-	return XR_SUCCEEDED(F.xrCreateAction(g_set, &ci, &g_act[a]));
+	ci.subactionPaths = s_hand;
+	return XR_SUCCEEDED(F.xrCreateAction(s_set, &ci, &s_act[a]));
 }
 
 struct Bind {
@@ -175,14 +145,14 @@ void Suggest(const char* profile, const Bind* b, int n) {
 	int k = 0;
 	for (int i = 0; i < n && k < 40; i++) {
 		XrPath p = Path(b[i].path);
-		if (p != XR_NULL_PATH) sb[k++] = {g_act[b[i].a], p};
+		if (p != XR_NULL_PATH) sb[k++] = {s_act[b[i].a], p};
 	}
 	XrInteractionProfileSuggestedBinding s = {};
 	s.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
 	s.interactionProfile = Path(profile);
 	s.countSuggestedBindings = (uint32_t)k;
 	s.suggestedBindings = sb;
-	XrResult r = F.xrSuggestInteractionProfileBindings(g_inst, &s);
+	XrResult r = F.xrSuggestInteractionProfileBindings(s_inst, &s);
 	if (XR_FAILED(r)) Log("vr controllers: bindings for %s refused (%d)", profile, (int)r);
 }
 
@@ -199,21 +169,21 @@ const Bind kSimple[] = {{A_TRIGGER, L "input/select/click"}, {A_TRIGGER, R "inpu
 #undef R
 
 bool GetBool(Act a, int hand) {
-	XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO, nullptr, g_act[a], g_hand[hand]};
+	XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO, nullptr, s_act[a], s_hand[hand]};
 	XrActionStateBoolean s = {XR_TYPE_ACTION_STATE_BOOLEAN};
-	return XR_SUCCEEDED(F.xrGetActionStateBoolean(g_session, &gi, &s)) && s.isActive && s.currentState;
+	return XR_SUCCEEDED(F.xrGetActionStateBoolean(s_session, &gi, &s)) && s.isActive && s.currentState;
 }
 float GetFloat(Act a, int hand, bool* active = nullptr) {
-	XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO, nullptr, g_act[a], g_hand[hand]};
+	XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO, nullptr, s_act[a], s_hand[hand]};
 	XrActionStateFloat s = {XR_TYPE_ACTION_STATE_FLOAT};
-	bool ok = XR_SUCCEEDED(F.xrGetActionStateFloat(g_session, &gi, &s)) && s.isActive;
+	bool ok = XR_SUCCEEDED(F.xrGetActionStateFloat(s_session, &gi, &s)) && s.isActive;
 	if (active) *active = ok;
 	return ok ? s.currentState : 0;
 }
 XrVector2f GetStick(int hand, bool* active) {
-	XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO, nullptr, g_act[A_STICK], g_hand[hand]};
+	XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO, nullptr, s_act[A_STICK], s_hand[hand]};
 	XrActionStateVector2f s = {XR_TYPE_ACTION_STATE_VECTOR2F};
-	bool ok = XR_SUCCEEDED(F.xrGetActionStateVector2f(g_session, &gi, &s)) && s.isActive;
+	bool ok = XR_SUCCEEDED(F.xrGetActionStateVector2f(s_session, &gi, &s)) && s.isActive;
 	*active = ok;
 	return ok ? s.currentState : XrVector2f{0, 0};
 }
@@ -231,46 +201,46 @@ XrVector2f StickDead(XrVector2f v) {
 float TriggerDead(float v) { return v < 0.04f ? 0 : v; }
 
 void Haptics() {
-	float amp[2] = {(float)g_hapL / 65535.0f, (float)g_hapR / 65535.0f};
+	float amp[2] = {(float)s_hapL / 65535.0f, (float)s_hapR / 65535.0f};
 	for (int h = 0; h < 2; h++) {
-		XrHapticActionInfo hi = {XR_TYPE_HAPTIC_ACTION_INFO, nullptr, g_act[A_HAPTIC], g_hand[h]};
+		XrHapticActionInfo hi = {XR_TYPE_HAPTIC_ACTION_INFO, nullptr, s_act[A_HAPTIC], s_hand[h]};
 		DWORD t = GetTickCount();
 		if (amp[h] > 0.02f) {
 			// renew a 100 ms pulse every 50 ms, or at once when the strength changes
-			float d = amp[h] - g_lastHap[h];
-			if (d < 0.05f && d > -0.05f && t - g_hapTick[h] < 50) continue;
-			g_hapTick[h] = t;
+			float d = amp[h] - s_lastHap[h];
+			if (d < 0.05f && d > -0.05f && t - s_hapTick[h] < 50) continue;
+			s_hapTick[h] = t;
 			XrHapticVibration v = {XR_TYPE_HAPTIC_VIBRATION};
 			v.amplitude = amp[h];
 			v.duration = 100 * 1000 * 1000;  // 100 ms (ns)
 			v.frequency = XR_FREQUENCY_UNSPECIFIED;
-			F.xrApplyHapticFeedback(g_session, &hi, (const XrHapticBaseHeader*)&v);
-		} else if (g_lastHap[h] > 0.02f) {
-			F.xrStopHapticFeedback(g_session, &hi);
+			F.xrApplyHapticFeedback(s_session, &hi, (const XrHapticBaseHeader*)&v);
+		} else if (s_lastHap[h] > 0.02f) {
+			F.xrStopHapticFeedback(s_session, &hi);
 		}
-		g_lastHap[h] = amp[h];
+		s_lastHap[h] = amp[h];
 	}
 }
 
 // Which controllers the runtime bound: read once after the actions are attached and again whenever
 // the runtime reports XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED (0.5.0; was polled every 2 s).
-bool g_profileDirty = true;
+bool s_profileDirty = true;
 void LogProfiles() {
-	if (!g_profileDirty) return;
-	g_profileDirty = false;
+	if (!s_profileDirty) return;
+	s_profileDirty = false;
 	for (int h = 0; h < 2; h++) {
 		XrInteractionProfileState st = {XR_TYPE_INTERACTION_PROFILE_STATE};
-		if (XR_FAILED(F.xrGetCurrentInteractionProfile(g_session, g_hand[h], &st))) continue;
+		if (XR_FAILED(F.xrGetCurrentInteractionProfile(s_session, s_hand[h], &st))) continue;
 		char name[128] = "(none)";
 		uint32_t n = 0;
 		if (st.interactionProfile != XR_NULL_PATH)
-			F.xrPathToString(g_inst, st.interactionProfile, sizeof(name), &n, name);
-		if (lstrcmpA(name, g_profile[h])) {
-			lstrcpynA(g_profile[h], name, sizeof(g_profile[h]));
+			F.xrPathToString(s_inst, st.interactionProfile, sizeof(name), &n, name);
+		if (lstrcmpA(name, s_profile[h])) {
+			lstrcpynA(s_profile[h], name, sizeof(s_profile[h]));
 			Log("vr controllers: %s hand uses %s", h ? "right" : "left", name);
 			char info[160];
-			const char* a = g_profile[0][0] ? g_profile[0] : "(none)";
-			const char* b = g_profile[1][0] ? g_profile[1] : "(none)";
+			const char* a = s_profile[0][0] ? s_profile[0] : "(none)";
+			const char* b = s_profile[1][0] ? s_profile[1] : "(none)";
 			if (strstr(a, "/interaction_profiles/") == a) a += 22;
 			if (strstr(b, "/interaction_profiles/") == b) b += 22;
 			snprintf(info, sizeof(info), "VR controllers: left %s, right %s", a, b);
@@ -282,8 +252,8 @@ void LogProfiles() {
 
 // After xrCreateInstance: actions and suggested bindings (must come before the session attaches).
 void VrInputInit(PFN_xrGetInstanceProcAddr gipa, XrInstance inst, bool pico) {
-	g_ready = false;
-	g_inst = inst;
+	s_ready = false;
+	s_inst = inst;
 	bool ok = true;
 #define LOAD(n) \
 	if (XR_FAILED(gipa(inst, #n, (PFN_xrVoidFunction*)&F.n)) || !F.n) ok = false;
@@ -293,13 +263,13 @@ void VrInputInit(PFN_xrGetInstanceProcAddr gipa, XrInstance inst, bool pico) {
 		Log("vr controllers: OpenXR input functions missing; controllers not used");
 		return;
 	}
-	g_hand[0] = Path("/user/hand/left");
-	g_hand[1] = Path("/user/hand/right");
+	s_hand[0] = Path("/user/hand/left");
+	s_hand[1] = Path("/user/hand/right");
 	XrActionSetCreateInfo si = {};
 	si.type = XR_TYPE_ACTION_SET_CREATE_INFO;
 	lstrcpynA(si.actionSetName, "gamepad", XR_MAX_ACTION_SET_NAME_SIZE);
 	lstrcpynA(si.localizedActionSetName, "Gamepad", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
-	if (XR_FAILED(F.xrCreateActionSet(inst, &si, &g_set))) {
+	if (XR_FAILED(F.xrCreateActionSet(inst, &si, &s_set))) {
 		Log("vr controllers: could not create the action set");
 		return;
 	}
@@ -322,72 +292,72 @@ void VrInputInit(PFN_xrGetInstanceProcAddr gipa, XrInstance inst, bool pico) {
 	Suggest("/interaction_profiles/microsoft/motion_controller", kWmr, sizeof(kWmr) / sizeof(Bind));
 	if (pico) Suggest("/interaction_profiles/bytedance/pico4_controller", kPico, sizeof(kPico) / sizeof(Bind));
 	Suggest("/interaction_profiles/khr/simple_controller", kSimple, sizeof(kSimple) / sizeof(Bind));
-	g_ready = true;
+	s_ready = true;
 	Log("vr controllers: ready (VRControllers=%d)", g_cfg.vrControllers);
 }
 
 void VrInputAttach(XrSession s) {
-	g_session = s;
-	g_attached = false;
-	if (!g_ready) return;
+	s_session = s;
+	s_attached = false;
+	if (!s_ready) return;
 	XrSessionActionSetsAttachInfo ai = {};
 	ai.type = XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO;
 	ai.countActionSets = 1;
-	ai.actionSets = &g_set;
-	g_attached = XR_SUCCEEDED(F.xrAttachSessionActionSets(s, &ai));
-	g_profileDirty = true;
-	if (!g_attached) {
+	ai.actionSets = &s_set;
+	s_attached = XR_SUCCEEDED(F.xrAttachSessionActionSets(s, &ai));
+	s_profileDirty = true;
+	if (!s_attached) {
 		Log("vr controllers: could not attach the actions to the session");
 		return;
 	}
 	for (int h = 0; h < 2; h++) {
 		XrActionSpaceCreateInfo ci = {XR_TYPE_ACTION_SPACE_CREATE_INFO};
-		ci.action = g_act[A_POSE];
-		ci.subactionPath = g_hand[h];
+		ci.action = s_act[A_POSE];
+		ci.subactionPath = s_hand[h];
 		ci.poseInActionSpace.orientation.w = 1;
-		if (XR_FAILED(F.xrCreateActionSpace(s, &ci, &g_handSpace[h]))) {
-			g_handSpace[h] = XR_NULL_HANDLE;
+		if (XR_FAILED(F.xrCreateActionSpace(s, &ci, &s_handSpace[h]))) {
+			s_handSpace[h] = XR_NULL_HANDLE;
 			Log("vr controllers: no %s hand position (motion controls won't work)", h ? "right" : "left");
 		}
 	}
-	g_lastValid = false;
+	s_lastValid = false;
 }
 
 void VrInputDetach() {
 	for (int h = 0; h < 2; h++) {
-		if (g_handSpace[h]) F.xrDestroySpace(g_handSpace[h]);
-		g_handSpace[h] = XR_NULL_HANDLE;
-		g_swingUntil[h] = 0;
+		if (s_handSpace[h]) F.xrDestroySpace(s_handSpace[h]);
+		s_handSpace[h] = XR_NULL_HANDLE;
+		s_swingUntil[h] = 0;
 	}
-	g_attached = false;
-	g_session = XR_NULL_HANDLE;
-	g_lastHap[0] = g_lastHap[1] = 0;
-	g_profile[0][0] = g_profile[1][0] = 0;
-	AcquireSRWLockExclusive(&g_lock);
-	g_anyActive = g_everActive = false;
-	ReleaseSRWLockExclusive(&g_lock);
+	s_attached = false;
+	s_session = XR_NULL_HANDLE;
+	s_lastHap[0] = s_lastHap[1] = 0;
+	s_profile[0][0] = s_profile[1][0] = 0;
+	AcquireSRWLockExclusive(&s_lock);
+	s_anyActive = s_everActive = false;
+	ReleaseSRWLockExclusive(&s_lock);
 }
 
 void VrInputShutdown() {
 	VrInputDetach();
-	if (g_set) F.xrDestroyActionSet(g_set);  // destroys its actions too
-	g_set = XR_NULL_HANDLE;
-	g_ready = false;
+	if (s_set) F.xrDestroyActionSet(s_set);  // destroys its actions too
+	s_set = XR_NULL_HANDLE;
+	s_ready = false;
 }
 
 // VR thread, from the OpenXR event loop: the controllers in use changed.
-void VrInputProfileChanged() { g_profileDirty = true; }
+void VrInputProfileChanged() { s_profileDirty = true; }
 
 // Each VR frame while the session is focused.
 void VrInputSync(bool focused, bool foreground) {
 	bool kbm = KeyboardMouseUsed(foreground);  // polled every frame so key edges aren't missed
-	if (!g_attached || !focused) return;
-	XrActiveActionSet as = {g_set, XR_NULL_PATH};
+	if (!s_attached) return;
+	XrActiveActionSet as = {s_set, XR_NULL_PATH};
 	XrActionsSyncInfo si = {};
 	si.type = XR_TYPE_ACTIONS_SYNC_INFO;
 	si.countActiveActionSets = 1;
 	si.activeActionSets = &as;
-	if (XR_FAILED(F.xrSyncActions(g_session, &si))) return;
+	if (XR_FAILED(F.xrSyncActions(s_session, &si))) return;
 	LogProfiles();
 	bool la = false, ra = false;
 	XrVector2f ls = StickDead(GetStick(0, &la)), rs = StickDead(GetStick(1, &ra));
@@ -408,27 +378,27 @@ void VrInputSync(bool focused, bool foreground) {
 	p.bRightTrigger = (BYTE)(rtv * 255.0f + 0.5f);
 	// left menu button: tap = Start, hold = Back, + left stick = D-pad (pure.h, test_vr_controllers)
 	DWORD t = GetTickCount();
-	b |= g_menuBtn.update(GetBool(A_MENU, 0), &ls.x, &ls.y, t);
-	if ((LONG)(g_swingUntil[1] - t) > 0) b |= XINPUT_GAMEPAD_X;  // motion controls (VrInputMotion)
-	if ((LONG)(g_swingUntil[0] - t) > 0) b |= XINPUT_GAMEPAD_Y;
+	b |= s_menuBtn.update(GetBool(A_MENU, 0), &ls.x, &ls.y, t);
+	if ((LONG)(s_swingUntil[1] - t) > 0) b |= XINPUT_GAMEPAD_X;  // motion controls (VrInputMotion)
+	if ((LONG)(s_swingUntil[0] - t) > 0) b |= XINPUT_GAMEPAD_Y;
 	// handoff between keyboard/mouse and the VR controllers
 	{
-		WORD pressed = b & ~g_prevVrButtons & ~(XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER);
-		bool trig = (ltv > 0.6f && g_prevTrig[0] <= 0.6f) || (rtv > 0.6f && g_prevTrig[1] <= 0.6f);
+		WORD pressed = b & ~s_prevVrButtons & ~(XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER);
+		bool trig = (ltv > 0.6f && s_prevTrig[0] <= 0.6f) || (rtv > 0.6f && s_prevTrig[1] <= 0.6f);
 		bool stick = ls.x * ls.x + ls.y * ls.y > 0.7f * 0.7f || rs.x * rs.x + rs.y * rs.y > 0.7f * 0.7f;
-		g_prevVrButtons = b;
-		g_prevTrig[0] = ltv;
-		g_prevTrig[1] = rtv;
-		if (kbm && !g_kbmMode) {
-			g_kbmMode = true;
-			g_kbmSwitches++;
-			if (g_kbmSwitches <= 5 && g_cfg.vrControllers)
+		s_prevVrButtons = b;
+		s_prevTrig[0] = ltv;
+		s_prevTrig[1] = rtv;
+		if (kbm && !s_kbmMode) {
+			s_kbmMode = true;
+			s_kbmSwitches++;
+			if (s_kbmSwitches <= 5 && g_cfg.vrControllers)
 				Log("vr controllers: keyboard/mouse in use - VR controllers paused until you use them again%s",
-					g_kbmSwitches == 5 ? " (not logged again)" : "");
-		} else if (g_kbmMode && !kbm && (pressed || trig || stick)) {
-			g_kbmMode = false;
-			g_vrSwitches++;
-			if (g_vrSwitches <= 5 && g_cfg.vrControllers) Log("vr controllers: in use again");
+					s_kbmSwitches == 5 ? " (not logged again)" : "");
+		} else if (s_kbmMode && !kbm && (pressed || trig || stick)) {
+			s_kbmMode = false;
+			s_vrSwitches++;
+			if (s_vrSwitches <= 5 && g_cfg.vrControllers) Log("vr controllers: in use again");
 		}
 	}
 	p.wButtons = b;
@@ -436,19 +406,19 @@ void VrInputSync(bool focused, bool foreground) {
 	p.sThumbLY = Axis(ls.y);
 	p.sThumbRX = Axis(rs.x);
 	p.sThumbRY = Axis(rs.y);
-	AcquireSRWLockExclusive(&g_lock);
-	g_pad = p;
-	g_anyActive = active;
+	AcquireSRWLockExclusive(&s_lock);
+	s_pad = p;
+	s_anyActive = active;
 	if (active) {
-		g_padTick = t;
-		if (!g_everActive) Log("vr controllers: in use as gamepad %s", g_cfg.vrControllers ? "(on)" : "(off in the settings)");
-		g_everActive = true;
+		s_padTick = t;
+		if (!s_everActive) Log("vr controllers: in use as gamepad %s", g_cfg.vrControllers ? "(on)" : "(off in the settings)");
+		s_everActive = true;
 	}
-	ReleaseSRWLockExclusive(&g_lock);
-	if (g_cfg.vrControllers && g_cfg.vrRumble && !g_kbmMode) Haptics();
-	else if (g_lastHap[0] > 0.02f || g_lastHap[1] > 0.02f) {
-		InterlockedExchange(&g_hapL, 0);
-		InterlockedExchange(&g_hapR, 0);
+	ReleaseSRWLockExclusive(&s_lock);
+	if (g_cfg.vrControllers && g_cfg.vrRumble && !s_kbmMode) Haptics();
+	else if (s_lastHap[0] > 0.02f || s_lastHap[1] > 0.02f) {
+		InterlockedExchange(&s_hapL, 0);
+		InterlockedExchange(&s_hapR, 0);
 		Haptics();  // stops them
 	}
 }
@@ -461,16 +431,16 @@ void VrInputSync(bool focused, bool foreground) {
 bool VrInputPad(XINPUT_GAMEPAD* out, bool evenIfOff) {
 	memset(out, 0, sizeof(*out));
 	if ((!g_cfg.vrControllers && !evenIfOff) || !g_cfg.enabled) return false;
-	AcquireSRWLockShared(&g_lock);
-	if (g_attached && g_anyActive && GetTickCount() - g_padTick < 300 && (evenIfOff || !g_kbmMode)) *out = g_pad;
-	ReleaseSRWLockShared(&g_lock);
+	AcquireSRWLockShared(&s_lock);
+	if (s_attached && s_anyActive && GetTickCount() - s_padTick < 300 && (evenIfOff || !s_kbmMode)) *out = s_pad;
+	ReleaseSRWLockShared(&s_lock);
 	return true;
 }
 
 // Game thread (XInputSetState hook): rumble.
 void VrInputRumble(WORD left, WORD right) {
-	InterlockedExchange(&g_hapL, left);
-	InterlockedExchange(&g_hapR, right);
+	InterlockedExchange(&s_hapL, left);
+	InterlockedExchange(&s_hapR, right);
 }
 
 namespace {
@@ -489,68 +459,66 @@ XrVector3f Sub(XrVector3f a, XrVector3f b) { return {a.x - b.x, a.y - b.y, a.z -
 
 // A short pulse on one hand: the swing registered.
 void Tick(int hand) {
-	XrHapticActionInfo hi = {XR_TYPE_HAPTIC_ACTION_INFO, nullptr, g_act[A_HAPTIC], g_hand[hand]};
+	XrHapticActionInfo hi = {XR_TYPE_HAPTIC_ACTION_INFO, nullptr, s_act[A_HAPTIC], s_hand[hand]};
 	XrHapticVibration v = {XR_TYPE_HAPTIC_VIBRATION};
 	v.amplitude = 0.6f;
 	v.duration = 30 * 1000 * 1000;  // 30 ms (ns)
 	v.frequency = XR_FREQUENCY_UNSPECIFIED;
-	F.xrApplyHapticFeedback(g_session, &hi, (const XrHapticBaseHeader*)&v);
+	F.xrApplyHapticFeedback(s_session, &hi, (const XrHapticBaseHeader*)&v);
 }
 }  // namespace
 
 // Each VR frame after VrInputSync: motion controls. Hand speeds relative to the head (both located
 // in `local` at the frame's display time); a swing holds the attack button for 100 ms.
 void VrInputMotion(XrSpace local, XrSpace view, XrTime time, bool focused, bool flipped) {
-	if (!g_attached || !focused || !g_handSpace[0] || !g_handSpace[1] || !local || !view) return;
+	if (!s_attached || !focused || !s_handSpace[0] || !s_handSpace[1] || !local || !view) return;
 	XrVector3f head, headVel, pos[2], vel[2];
 	bool headVelOk, velOk[2];
 	if (!Locate(view, local, time, &head, &headVel, &headVelOk)) return;
 	bool have[2];
-	for (int h = 0; h < 2; h++) have[h] = Locate(g_handSpace[h], local, time, &pos[h], &vel[h], &velOk[h]);
+	for (int h = 0; h < 2; h++) have[h] = Locate(s_handSpace[h], local, time, &pos[h], &vel[h], &velOk[h]);
 	// no velocity from the runtime: from the positions since the last frame
-	double dt = g_lastValid ? (double)(time - g_lastTime) / 1e9 : 0;
+	double dt = s_lastValid ? (double)(time - s_lastTime) / 1e9 : 0;
 	bool diffOk = dt > 0.001 && dt < 0.1;
-	if (!headVelOk) headVel = diffOk ? XrVector3f{(float)((head.x - g_lastHead.x) / dt), (float)((head.y - g_lastHead.y) / dt),
-												  (float)((head.z - g_lastHead.z) / dt)}
+	if (!headVelOk) headVel = diffOk ? XrVector3f{(float)((head.x - s_lastHead.x) / dt), (float)((head.y - s_lastHead.y) / dt),
+												  (float)((head.z - s_lastHead.z) / dt)}
 									 : XrVector3f{0, 0, 0};
 	DWORD t = GetTickCount();
 	for (int h = 0; h < 2; h++) {
 		if (!have[h]) continue;
 		if (!velOk[h]) {
 			if (!diffOk) continue;
-			vel[h] = {(float)((pos[h].x - g_lastPos[h].x) / dt), (float)((pos[h].y - g_lastPos[h].y) / dt),
-					  (float)((pos[h].z - g_lastPos[h].z) / dt)};
+			vel[h] = {(float)((pos[h].x - s_lastPos[h].x) / dt), (float)((pos[h].y - s_lastPos[h].y) / dt),
+					  (float)((pos[h].z - s_lastPos[h].z) / dt)};
 		}
 		XrVector3f rel = Sub(vel[h], headVel);
 		float speed = Length(rel);
-		if (speed > g_peak[h]) g_peak[h] = speed;
-		bool on = g_cfg.motionControls && g_cfg.vrControllers && !MenuIsOpen() && !g_kbmMode;
-		bool atHead = g_headZone[h].update(Length(Sub(pos[h], head)), t);
-		bool skip = g_cfg.ignoreUpSwings && (atHead || pure::mostly_up({rel.x, rel.y, rel.z}, flipped ? -1.0f : 1.0f));
-		if (g_swing[h].update(on && !skip ? speed : 0, t, g_cfg.swingSpeed) && on) {
-			g_swingUntil[h] = t + 100;
-			g_swings[h]++;
-			if (g_swings[0] + g_swings[1] == 1) Log("motion controls: first swing (%s hand, %.1f m/s)", h ? "right" : "left", (double)speed);
+		if (speed > s_peak[h]) s_peak[h] = speed;
+		bool waggleEnable = g_cfg.motionControls && g_cfg.vrControllers && !MenuIsOpen() && !s_kbmMode;
+		if (s_swing[h].update(waggleEnable ? speed : 0, t, g_cfg.swingSpeed) && waggleEnable) {
+			s_swingUntil[h] = t + 100;
+			s_swings[h]++;
+			if (s_swings[0] + s_swings[1] == 1) Log("motion controls: first swing (%s hand, %.1f m/s)", h ? "right" : "left", (double)speed);
 			LogV("motion controls: %s swing %.1f m/s", h ? "right" : "left", (double)speed);
 			Tick(h);
-			AcquireSRWLockExclusive(&g_lock);  // into the pad at once (VrInputSync adds it from then on)
-			g_pad.wButtons |= h ? XINPUT_GAMEPAD_X : XINPUT_GAMEPAD_Y;
-			g_padTick = t;
-			ReleaseSRWLockExclusive(&g_lock);
+			AcquireSRWLockExclusive(&s_lock);  // into the pad at once (VrInputSync adds it from then on)
+			s_pad.wButtons |= h ? XINPUT_GAMEPAD_X : XINPUT_GAMEPAD_Y;
+			s_padTick = t;
+			ReleaseSRWLockExclusive(&s_lock);
 		}
 	}
-	for (int h = 0; h < 2; h++) g_lastPos[h] = pos[h];
-	g_lastHead = head;
-	g_lastTime = time;
-	g_lastValid = have[0] && have[1];
+	for (int h = 0; h < 2; h++) s_lastPos[h] = pos[h];
+	s_lastHead = head;
+	s_lastTime = time;
+	s_lastValid = have[0] && have[1];
 	// the Info page: swings so far and the fastest hand speeds of the last second
-	if (t - g_peakTick >= 1000) {
-		g_peakTick = t;
+	if (t - s_peakTick >= 1000) {
+		s_peakTick = t;
 		char info[160];
 		snprintf(info, sizeof(info), "Motion controls %s: swings left %u, right %u; fastest last second %.1f / %.1f m/s (needs %.1f)",
-				 g_cfg.motionControls ? "on" : "off", g_swings[0], g_swings[1], (double)g_peak[0], (double)g_peak[1],
+				 g_cfg.motionControls ? "on" : "off", s_swings[0], s_swings[1], (double)s_peak[0], (double)s_peak[1],
 				 (double)g_cfg.swingSpeed);
 		MenuSetInfo(15, info);
-		g_peak[0] = g_peak[1] = 0;
+		s_peak[0] = s_peak[1] = 0;
 	}
 }

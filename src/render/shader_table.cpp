@@ -23,9 +23,9 @@ struct ShaderEntry {
 	uint32_t sampled;  // texture registers it samples (bit mask)
 };
 const uint32_t kSlots = 1 << 16;
-ShaderEntry* g_shaders;
-SRWLOCK g_lock = SRWLOCK_INIT;
-uint32_t g_count;
+ShaderEntry* s_shaders;
+SRWLOCK s_lock = SRWLOCK_INIT;
+uint32_t s_count;
 
 uint32_t SlotOf(void* p) {
 	uint64_t h = (uint64_t)(uintptr_t)p * 0x9E3779B97F4A7C15ull;
@@ -46,32 +46,32 @@ bool Contains(const uint8_t* blob, uint32_t len, const char* name) {
 }
 
 ShaderEntry* Find(void* shader) {
-	if (!g_shaders || !shader) return nullptr;
+	if (!s_shaders || !shader) return nullptr;
 	uint32_t i = SlotOf(shader);
 	for (uint32_t probe = 0; probe < kSlots; probe++, i = (i + 1) & (kSlots - 1)) {
-		if (g_shaders[i].ptr == shader) return &g_shaders[i];
-		if (!g_shaders[i].ptr) return nullptr;
+		if (s_shaders[i].ptr == shader) return &s_shaders[i];
+		if (!s_shaders[i].ptr) return nullptr;
 	}
 	return nullptr;
 }
 }  // namespace
 
 void ShaderTableInit() {
-	if (!g_shaders) g_shaders = (ShaderEntry*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(ShaderEntry) * kSlots);
+	if (!s_shaders) s_shaders = (ShaderEntry*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(ShaderEntry) * kSlots);
 }
 
 void ShaderTableRemember(void* shader, const void* bytecode, SIZE_T len, ShaderStage stage) {
-	if (!g_shaders || !shader || !bytecode || len == 0 || len > (1u << 24)) return;
+	if (!s_shaders || !shader || !bytecode || len == 0 || len > (1u << 24)) return;
 	uint8_t* copy = (uint8_t*)HeapAlloc(GetProcessHeap(), 0, len);
 	if (!copy) return;
 	memcpy(copy, bytecode, len);
-	AcquireSRWLockExclusive(&g_lock);
+	AcquireSRWLockExclusive(&s_lock);
 	uint32_t i = SlotOf(shader);
 	for (uint32_t probe = 0; probe < kSlots; probe++, i = (i + 1) & (kSlots - 1)) {
-		ShaderEntry& e = g_shaders[i];
+		ShaderEntry& e = s_shaders[i];
 		if (e.ptr != shader && e.ptr != nullptr) continue;
 		if (e.blob) HeapFree(GetProcessHeap(), 0, e.blob);  // pointer reused by a new shader
-		if (!e.ptr) g_count++;
+		if (!e.ptr) s_count++;
 		e = {};
 		e.ptr = shader;
 		e.hash = Fnv1a(copy, len);
@@ -95,23 +95,23 @@ void ShaderTableRemember(void* shader, const void* bytecode, SIZE_T len, ShaderS
 			e.vignette = Contains(copy, n, "g_VignettoParam");
 			e.effect = Contains(copy, n, "EffectParameterIndex");
 		}
-		ReleaseSRWLockExclusive(&g_lock);
+		ReleaseSRWLockExclusive(&s_lock);
 		return;
 	}
-	ReleaseSRWLockExclusive(&g_lock);
+	ReleaseSRWLockExclusive(&s_lock);
 	HeapFree(GetProcessHeap(), 0, copy);  // table full
 }
 
 bool ShaderTableIsUi(void* vertexShader) {
-	AcquireSRWLockShared(&g_lock);
+	AcquireSRWLockShared(&s_lock);
 	ShaderEntry* e = Find(vertexShader);
 	bool ui = e && e->ui;
-	ReleaseSRWLockShared(&g_lock);
+	ReleaseSRWLockShared(&s_lock);
 	return ui;
 }
 
 PixelShaderClass ShaderTableClassifyPixel(void* pixelShader, uint32_t* sampled, uint64_t* hash) {
-	AcquireSRWLockShared(&g_lock);
+	AcquireSRWLockShared(&s_lock);
 	ShaderEntry* e = Find(pixelShader);
 	PixelShaderClass k = PS_OTHER;
 	if (e) {
@@ -123,38 +123,38 @@ PixelShaderClass ShaderTableClassifyPixel(void* pixelShader, uint32_t* sampled, 
 	}
 	*sampled = e ? e->sampled : 0;
 	*hash = e ? e->hash : 0;
-	ReleaseSRWLockShared(&g_lock);
+	ReleaseSRWLockShared(&s_lock);
 	return k;
 }
 
 ComputeShaderClass ShaderTableClassifyCompute(void* computeShader) {
-	AcquireSRWLockShared(&g_lock);
+	AcquireSRWLockShared(&s_lock);
 	ShaderEntry* e = Find(computeShader);
 	ComputeShaderClass k = e ? e->computeClass : CS_OTHER;
-	ReleaseSRWLockShared(&g_lock);
+	ReleaseSRWLockShared(&s_lock);
 	return k;
 }
 
 void ShaderTableMarkUsed(void* shader) {
-	AcquireSRWLockShared(&g_lock);
+	AcquireSRWLockShared(&s_lock);
 	ShaderEntry* e = Find(shader);
 	if (e) e->usedInCapture = true;
-	ReleaseSRWLockShared(&g_lock);
+	ReleaseSRWLockShared(&s_lock);
 }
 
 int ShaderTableTakeUsed(ShaderBlobVisitor visit) {
-	if (!g_shaders) return 0;
+	if (!s_shaders) return 0;
 	int count = 0;
-	AcquireSRWLockExclusive(&g_lock);
+	AcquireSRWLockExclusive(&s_lock);
 	for (uint32_t i = 0; i < kSlots; i++) {
-		ShaderEntry& e = g_shaders[i];
+		ShaderEntry& e = s_shaders[i];
 		if (!e.ptr || !e.usedInCapture) continue;
 		e.usedInCapture = false;
 		visit(e.stage, e.ptr, e.hash, e.blob, e.len);
 		count++;
 	}
-	ReleaseSRWLockExclusive(&g_lock);
+	ReleaseSRWLockExclusive(&s_lock);
 	return count;
 }
 
-uint32_t ShaderTableCount() { return g_count; }
+uint32_t ShaderTableCount() { return s_count; }

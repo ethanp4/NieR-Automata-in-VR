@@ -2,7 +2,6 @@
 #include <d3d11.h>
 
 struct ImGuiContext;
-struct ImFont;
 
 namespace ui {
 struct Colors {
