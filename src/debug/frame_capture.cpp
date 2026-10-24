@@ -34,28 +34,28 @@ struct RecordHeader {
 	uint32_t size;
 };
 
-ID3D11Device* s_dev;
-ID3D11DeviceContext* s_ctx;
+ID3D11Device* s_device;
+ID3D11DeviceContext* s_context;
 volatile bool s_capturing;
 bool s_armed;
 bool s_keyWasDown;
 unsigned s_captureIndex;
 SRWLOCK s_recordLock = SRWLOCK_INIT;
-uint8_t* s_buf;
-size_t s_len, s_cap;
+uint8_t* s_records;
+size_t s_recordsUsed, s_recordsCap;
 bool s_overflow;
 
-void Emit(uint16_t type, const void* a, uint32_t alen, const void* b = nullptr, uint32_t blen = 0) {
+void EmitRecord(uint16_t type, const void* head, uint32_t headLen, const void* body = nullptr, uint32_t bodyLen = 0) {
 	AcquireSRWLockExclusive(&s_recordLock);
-	size_t need = sizeof(RecordHeader) + alen + blen;
-	if (!s_buf || s_len + need > s_cap) {
+	size_t total = sizeof(RecordHeader) + headLen + bodyLen;
+	if (!s_records || s_recordsUsed + total > s_recordsCap) {
 		s_overflow = true;
 	} else {
-		RecordHeader h = {type, 0, alen + blen};
-		memcpy(s_buf + s_len, &h, sizeof(h));
-		memcpy(s_buf + s_len + sizeof(h), a, alen);
-		if (blen) memcpy(s_buf + s_len + sizeof(h) + alen, b, blen);
-		s_len += need;
+		RecordHeader header = {type, 0, headLen + bodyLen};
+		memcpy(s_records + s_recordsUsed, &header, sizeof(header));
+		memcpy(s_records + s_recordsUsed + sizeof(header), head, headLen);
+		if (bodyLen) memcpy(s_records + s_recordsUsed + sizeof(header) + headLen, body, bodyLen);
+		s_recordsUsed += total;
 	}
 	ReleaseSRWLockExclusive(&s_recordLock);
 }
@@ -69,22 +69,22 @@ const int kMaxSeen = 8192;
 SeenBuffer s_seen[kMaxSeen];
 int s_seenCount;
 
-SeenBuffer* SeenFind(ID3D11Buffer* b) {
+SeenBuffer* FindSeen(ID3D11Buffer* buffer) {
 	for (int i = 0; i < s_seenCount; i++)
-		if (s_seen[i].buf == b) return &s_seen[i];
+		if (s_seen[i].buf == buffer) return &s_seen[i];
 	return nullptr;
 }
-void SeenAdd(ID3D11Buffer* b, bool data) {
-	if (!b) return;
+void AddSeen(ID3D11Buffer* buffer, bool withData) {
+	if (!buffer) return;
 	AcquireSRWLockExclusive(&s_recordLock);
-	SeenBuffer* s = SeenFind(b);
-	if (!s && s_seenCount < kMaxSeen) {
-		s = &s_seen[s_seenCount++];
-		s->buf = b;
-		s->hasData = false;
-		b->AddRef();
+	SeenBuffer* seen = FindSeen(buffer);
+	if (!seen && s_seenCount < kMaxSeen) {
+		seen = &s_seen[s_seenCount++];
+		seen->buf = buffer;
+		seen->hasData = false;
+		buffer->AddRef();
 	}
-	if (s && data) s->hasData = true;
+	if (seen && withData) seen->hasData = true;
 	ReleaseSRWLockExclusive(&s_recordLock);
 }
 
@@ -101,10 +101,10 @@ void EmitCbData(ID3D11Buffer* buf, UINT byteWidth, uint8_t via, const void* data
 		uint64_t buf;
 		uint32_t byteWidth;
 		uint8_t via, pad[3];
-	} h = {(uint64_t)(uintptr_t)buf, byteWidth, via, {0, 0, 0}};
-	static_assert(sizeof(h) == 16, "R_CB_DATA layout");
-	Emit(R_CB_DATA, &h, sizeof(h), data, len);
-	SeenAdd(buf, true);
+	} header = {(uint64_t)(uintptr_t)buf, byteWidth, via, {0, 0, 0}};
+	static_assert(sizeof(header) == 16, "R_CB_DATA layout");
+	EmitRecord(R_CB_DATA, &header, sizeof(header), data, len);
+	AddSeen(buf, true);
 }
 
 // Shader-resource / UAV bindings: which textures and buffers each pass reads and writes, so data
@@ -115,76 +115,70 @@ struct ViewRecord {
 };
 static_assert(sizeof(ViewRecord) == 24, "ViewRecord layout");
 template <typename View>
-void DescribeView(View* v, ViewRecord* r) {
-	*r = {};
-	if (!v) return;
+void DescribeView(View* view, ViewRecord* record) {
+	*record = {};
+	if (!view) return;
 	ID3D11Resource* res = nullptr;
-	v->GetResource(&res);
+	view->GetResource(&res);
 	if (!res) return;
-	r->res = (uint64_t)(uintptr_t)res;
+	record->res = (uint64_t)(uintptr_t)res;
 	D3D11_RESOURCE_DIMENSION dim;
 	res->GetType(&dim);
-	r->dim = (uint32_t)dim;
+	record->dim = (uint32_t)dim;
 	if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
-		D3D11_TEXTURE2D_DESC d;
-		((ID3D11Texture2D*)res)->GetDesc(&d);
-		r->w = d.Width;
-		r->h = d.Height;
-		r->fmt = d.Format;
+		D3D11_TEXTURE2D_DESC desc;
+		((ID3D11Texture2D*)res)->GetDesc(&desc);
+		record->w = desc.Width;
+		record->h = desc.Height;
+		record->fmt = desc.Format;
 	} else if (dim == D3D11_RESOURCE_DIMENSION_BUFFER) {
-		D3D11_BUFFER_DESC d;
-		((ID3D11Buffer*)res)->GetDesc(&d);
-		r->w = d.ByteWidth;
-		r->h = d.StructureByteStride;
+		D3D11_BUFFER_DESC desc;
+		((ID3D11Buffer*)res)->GetDesc(&desc);
+		record->w = desc.ByteWidth;
+		record->h = desc.StructureByteStride;
 	}
 	res->Release();
 }
 // NieR binds pixel shader resources many slots at a time (more than 16), so long calls go out in
 // chunks of 16, without the trailing empty slots.
 template <typename View>
-void EmitViews(uint16_t type, uint8_t stage, UINT start, UINT n, View* const* views) {
+void EmitViews(uint16_t type, uint8_t stage, UINT start, UINT count, View* const* views) {
 	if (!views) return;
-	if (n > 128) n = 128;
-	while (n > 0 && !views[n - 1]) n--;
-	for (UINT base = 0; base < n; base += 16) {
-		UINT k = n - base < 16 ? n - base : 16;
+	if (count > 128) count = 128;
+	while (count > 0 && !views[count - 1]) count--;
+	for (UINT base = 0; base < count; base += 16) {
+		UINT chunk = count - base < 16 ? count - base : 16;
 		struct {
 			uint8_t stage, pad[3];
 			uint32_t start, count;
-		} h = {stage, {0, 0, 0}, start + base, k};
-		static_assert(sizeof(h) == 12, "R_SET_SRV layout");
+		} header = {stage, {0, 0, 0}, start + base, chunk};
+		static_assert(sizeof(header) == 12, "R_SET_SRV layout");
 		ViewRecord records[16];
-		for (UINT i = 0; i < k; i++) DescribeView(views[base + i], &records[i]);
-		Emit(type, &h, sizeof(h), records, k * sizeof(ViewRecord));
+		for (UINT i = 0; i < chunk; i++) DescribeView(views[base + i], &records[i]);
+		EmitRecord(type, &header, sizeof(header), records, chunk * sizeof(ViewRecord));
 	}
 }
 
 // --- frame end: readback, shader blobs, file, summary ---------------------------------------
 void ReadbackUnseenBuffers(int* readbacks) {
 	for (int i = 0; i < s_seenCount; i++) {
-		SeenBuffer& s = s_seen[i];
-		if (s.hasData) continue;
-		D3D11_BUFFER_DESC d;
-		s.buf->GetDesc(&d);
-		if (d.ByteWidth > 65536) continue;
-		d.Usage = D3D11_USAGE_STAGING;
-		d.BindFlags = 0;
-		d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-		d.MiscFlags = 0;
-		d.StructureByteStride = 0;
+		SeenBuffer& seen = s_seen[i];
+		if (seen.hasData) continue;
+		D3D11_BUFFER_DESC desc;
+		seen.buf->GetDesc(&desc);
+		if (desc.ByteWidth > 65536) continue;
+		desc.Usage = D3D11_USAGE_STAGING;
+		desc.BindFlags = 0;
+		desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		desc.MiscFlags = 0;
+		desc.StructureByteStride = 0;
 		ID3D11Buffer* staging = nullptr;
-		if (FAILED(s_dev->CreateBuffer(&d, nullptr, &staging))) continue;
-		s_ctx->CopyResource(staging, s.buf);
-		D3D11_MAPPED_SUBRESOURCE m;
-		if (SUCCEEDED(s_ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
-			struct {
-				uint64_t buf;
-				uint32_t byteWidth;
-				uint8_t via, pad[3];
-			} h = {(uint64_t)(uintptr_t)s.buf, d.ByteWidth, 2, {0, 0, 0}};
-			static_assert(sizeof(h) == 16, "R_CB_DATA layout");
-			Emit(R_CB_DATA, &h, sizeof(h), m.pData, d.ByteWidth);
-			s_ctx->Unmap(staging, 0);
+		if (FAILED(s_device->CreateBuffer(&desc, nullptr, &staging))) continue;
+		s_context->CopyResource(staging, seen.buf);
+		D3D11_MAPPED_SUBRESOURCE mapped;
+		if (SUCCEEDED(s_context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+			EmitCbData(seen.buf, desc.ByteWidth, 2, mapped.pData, desc.ByteWidth);
+			s_context->Unmap(staging, 0);
 			(*readbacks)++;
 		}
 		staging->Release();
@@ -195,9 +189,9 @@ void EmitShaderBlob(ShaderStage stage, void* shader, uint64_t hash, const uint8_
 	struct {
 		uint8_t stage, pad[7];
 		uint64_t sh, hash;
-	} h = {stage, {0}, (uint64_t)(uintptr_t)shader, hash};
-	static_assert(sizeof(h) == 24, "R_SHADER_BLOB layout");
-	Emit(R_SHADER_BLOB, &h, sizeof(h), blob, len);
+	} header = {stage, {0}, (uint64_t)(uintptr_t)shader, hash};
+	static_assert(sizeof(header) == 24, "R_SHADER_BLOB layout");
+	EmitRecord(R_SHADER_BLOB, &header, sizeof(header), blob, len);
 }
 
 // Logs the projection matrices found in this frame's constant buffers.
@@ -207,66 +201,66 @@ void Summarise() {
 		uint32_t offset;
 		pure::ProjInfo p;
 		unsigned draws;
-	} cands[24];
-	int nc = 0;
-	unsigned draws = 0, cbData = 0, rts = 0, dispatches = 0;
-	for (size_t off = 0; off + sizeof(RecordHeader) <= s_len;) {
-		RecordHeader h;
-		memcpy(&h, s_buf + off, sizeof(h));
-		const uint8_t* p = s_buf + off + sizeof(h);
-		if (h.type == R_DRAW) draws++;
-		if (h.type == R_SET_RT) rts++;
-		if (h.type == R_DISPATCH) dispatches++;
-		if (h.type == R_CB_DATA && h.size >= 16) {
+	} candidates[24];
+	int candidateCount = 0;
+	unsigned draws = 0, cbData = 0, targetChanges = 0, dispatches = 0;
+	for (size_t pos = 0; pos + sizeof(RecordHeader) <= s_recordsUsed;) {
+		RecordHeader header;
+		memcpy(&header, s_records + pos, sizeof(header));
+		const uint8_t* p = s_records + pos + sizeof(header);
+		if (header.type == R_DRAW) draws++;
+		if (header.type == R_SET_RT) targetChanges++;
+		if (header.type == R_DISPATCH) dispatches++;
+		if (header.type == R_CB_DATA && header.size >= 16) {
 			cbData++;
 			uint64_t buf;
 			memcpy(&buf, p, 8);
 			const uint8_t* data = p + 16;
-			uint32_t len = h.size - 16;
-			for (uint32_t o = 0; o + 64 <= len && nc < 24; o += 16) {
-				float m[16];
-				memcpy(m, data + o, 64);
-				pure::ProjInfo pi;
-				if (!pure::classify_projection(m, &pi)) continue;
+			uint32_t len = header.size - 16;
+			for (uint32_t offset = 0; offset + 64 <= len && candidateCount < 24; offset += 16) {
+				float matrix[16];
+				memcpy(matrix, data + offset, 64);
+				pure::ProjInfo proj;
+				if (!pure::classify_projection(matrix, &proj)) continue;
 				bool dup = false;
-				for (int i = 0; i < nc; i++)
-					if (cands[i].buf == buf && cands[i].offset == o) dup = true;
-				if (!dup) cands[nc++] = {buf, o, pi, 0};
+				for (int i = 0; i < candidateCount; i++)
+					if (candidates[i].buf == buf && candidates[i].offset == offset) dup = true;
+				if (!dup) candidates[candidateCount++] = {buf, offset, proj, 0};
 			}
 		}
-		off += sizeof(h) + h.size;
+		pos += sizeof(header) + header.size;
 	}
 	// how many draws had each candidate buffer bound (any stage)
 	uint64_t bound[4][14] = {};
-	for (size_t off = 0; off + sizeof(RecordHeader) <= s_len;) {
-		RecordHeader h;
-		memcpy(&h, s_buf + off, sizeof(h));
-		const uint8_t* p = s_buf + off + sizeof(h);
-		if (h.type == R_SET_CB) {
-			uint8_t st = p[0];
+	for (size_t pos = 0; pos + sizeof(RecordHeader) <= s_recordsUsed;) {
+		RecordHeader header;
+		memcpy(&header, s_records + pos, sizeof(header));
+		const uint8_t* p = s_records + pos + sizeof(header);
+		if (header.type == R_SET_CB) {
+			uint8_t stage = p[0];
 			uint32_t start, count;
 			memcpy(&start, p + 4, 4);
 			memcpy(&count, p + 8, 4);
-			for (uint32_t i = 0; i < count && st < 4 && start + i < 14; i++) memcpy(&bound[st][start + i], p + 12 + i * 8, 8);
-		} else if (h.type == R_DRAW) {
-			for (int i = 0; i < nc; i++) {
+			for (uint32_t i = 0; i < count && stage < 4 && start + i < 14; i++) memcpy(&bound[stage][start + i], p + 12 + i * 8, 8);
+		} else if (header.type == R_DRAW) {
+			for (int i = 0; i < candidateCount; i++) {
 				bool used = false;
 				for (int s = 0; s < 4 && !used; s++)
-					for (int k = 0; k < 14 && !used; k++) used = bound[s][k] == cands[i].buf;
-				if (used) cands[i].draws++;
+					for (int k = 0; k < 14 && !used; k++) used = bound[s][k] == candidates[i].buf;
+				if (used) candidates[i].draws++;
 			}
 		}
-		off += sizeof(h) + h.size;
+		pos += sizeof(header) + header.size;
 	}
 	Log("capture: frame had %u draws, %u dispatches, %u render-target changes, %u constant-buffer uploads%s", draws,
-		dispatches, rts, cbData, s_overflow ? " (CAPTURE TRUNCATED: buffer full)" : "");
-	if (!nc) Log("capture: no perspective projection matrix found in constant buffers this frame");
-	for (int i = 0; i < nc; i++) {
-		const pure::ProjInfo& p = cands[i].p;
+		dispatches, targetChanges, cbData, s_overflow ? " (CAPTURE TRUNCATED: buffer full)" : "");
+	if (!candidateCount) Log("capture: no perspective projection matrix found in constant buffers this frame");
+	for (int i = 0; i < candidateCount; i++) {
+		const pure::ProjInfo& p = candidates[i].p;
 		Log("capture: projection in cbuffer %p +%u: %s-major, vfov %.2f deg, aspect %.4f, off-centre (%.4f, %.4f), "
 			"z = %.6f + %.6f/z, w sign %.0f, used by %u draws",
-			(void*)(uintptr_t)cands[i].buf, cands[i].offset, p.rowMajor ? "row" : "column", (double)p.vfovDeg,
-			(double)p.aspect, (double)p.cx, (double)p.cy, (double)p.A, (double)p.B, (double)p.wSign, cands[i].draws);
+			(void*)(uintptr_t)candidates[i].buf, candidates[i].offset, p.rowMajor ? "row" : "column", (double)p.vfovDeg,
+			(double)p.aspect, (double)p.cx, (double)p.cy, (double)p.A, (double)p.B, (double)p.wSign, candidates[i].draws);
 	}
 }
 
@@ -275,24 +269,24 @@ void WriteCapture() {
 	lstrcpynW(path, g_modDir, MAX_PATH - 40);
 	char name[48];
 	snprintf(name, sizeof(name), "NieRVR_capture_%u.bin", s_captureIndex);
-	int n = lstrlenW(path);
-	for (int i = 0; name[i] && n < MAX_PATH - 1; i++) path[n++] = (wchar_t)name[i];
-	path[n] = 0;
-	HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (f == INVALID_HANDLE_VALUE) {
+	int length = lstrlenW(path);
+	for (int i = 0; name[i] && length < MAX_PATH - 1; i++) path[length++] = (wchar_t)name[i];
+	path[length] = 0;
+	HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (file == INVALID_HANDLE_VALUE) {
 		Log("ERROR: capture: cannot write %s (error %u)", name, (unsigned)GetLastError());
 		return;
 	}
 	const char magic[8] = {'N', 'V', 'R', 'C', 'A', 'P', '0', '1'};
-	DWORD w;
-	WriteFile(f, magic, 8, &w, nullptr);
-	for (size_t off = 0; off < s_len;) {
-		DWORD chunk = (DWORD)(s_len - off > (16u << 20) ? (16u << 20) : s_len - off);
-		if (!WriteFile(f, s_buf + off, chunk, &w, nullptr)) break;
-		off += chunk;
+	DWORD written;
+	WriteFile(file, magic, 8, &written, nullptr);
+	for (size_t pos = 0; pos < s_recordsUsed;) {
+		DWORD chunk = (DWORD)(s_recordsUsed - pos > (16u << 20) ? (16u << 20) : s_recordsUsed - pos);
+		if (!WriteFile(file, s_records + pos, chunk, &written, nullptr)) break;
+		pos += chunk;
 	}
-	CloseHandle(f);
-	Log("capture: wrote %s (%u KB)", name, (unsigned)((s_len + 8) >> 10));
+	CloseHandle(file);
+	Log("capture: wrote %s (%u KB)", name, (unsigned)((s_recordsUsed + 8) >> 10));
 }
 
 void FinishCapture() {
@@ -300,33 +294,33 @@ void FinishCapture() {
 	int readbacks = 0;
 	ReadbackUnseenBuffers(&readbacks);
 	int blobs = ShaderTableTakeUsed(EmitShaderBlob);
-	uint32_t z[3] = {s_captureIndex, 0, 0};
-	Emit(R_FRAME_END, z, 12);
+	uint32_t frameEnd[3] = {s_captureIndex, 0, 0};
+	EmitRecord(R_FRAME_END, frameEnd, 12);
 	Summarise();
 	Log("capture: %d constant buffers read back, %d shaders included, %u shaders known", readbacks, blobs,
 		ShaderTableCount());
 	WriteCapture();
 	AcquireSRWLockExclusive(&s_recordLock);  // a late hook call on another thread must see s_buf == null
-	uint8_t* buf = s_buf;
-	s_buf = nullptr;
-	s_len = s_cap = 0;
+	uint8_t* records = s_records;
+	s_records = nullptr;
+	s_recordsUsed = s_recordsCap = 0;
 	for (int i = 0; i < s_seenCount; i++) s_seen[i].buf->Release();
 	s_seenCount = 0;
 	for (auto& e : s_mapped) e.res = nullptr;
 	ReleaseSRWLockExclusive(&s_recordLock);
-	VirtualFree(buf, 0, MEM_RELEASE);
+	VirtualFree(records, 0, MEM_RELEASE);
 }
 }  // namespace
 
 void CaptureSetDevice(ID3D11Device* device, ID3D11DeviceContext* context) {
-	s_dev = device;
-	s_ctx = context;
+	s_device = device;
+	s_context = context;
 }
 
-bool CaptureRecording(ID3D11DeviceContext* c) { return s_capturing && c == s_ctx; }
+bool CaptureRecording(ID3D11DeviceContext* c) { return s_capturing && c == s_context; }
 
 void CaptureBeforePresent() {
-	if (!s_ctx) return;
+	if (!s_context) return;
 	if (s_capturing) FinishCapture();
 	// hotkey (edge-triggered, only while the game window has focus)
 	int vk = g_cfg.probe ? g_cfg.keyCapture : 0;
@@ -334,9 +328,9 @@ void CaptureBeforePresent() {
 		bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
 		bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;  // Ctrl+key is another hotkey
 		if (down && !s_keyWasDown && !ctrl) {
-			HWND fg = GetForegroundWindow();
+			HWND window = GetForegroundWindow();
 			DWORD pid = 0;
-			if (fg) GetWindowThreadProcessId(fg, &pid);
+			if (window) GetWindowThreadProcessId(window, &pid);
 			if (pid == GetCurrentProcessId()) s_armed = true;
 		}
 		s_keyWasDown = down;
@@ -346,54 +340,54 @@ void CaptureBeforePresent() {
 void CaptureAfterPresent() {
 	if (!s_armed || s_capturing) return;
 	s_armed = false;
-	s_cap = 256u << 20;  // reserved+committed lazily by the OS as it is touched
-	s_buf = (uint8_t*)VirtualAlloc(nullptr, s_cap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-	if (!s_buf) {
+	s_recordsCap = 256u << 20;  // reserved+committed lazily by the OS as it is touched
+	s_records = (uint8_t*)VirtualAlloc(nullptr, s_recordsCap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	if (!s_records) {
 		Log("ERROR: capture: could not allocate capture memory");
-		s_cap = 0;
+		s_recordsCap = 0;
 		return;
 	}
-	s_len = 0;
+	s_recordsUsed = 0;
 	s_overflow = false;
 	s_captureIndex++;
-	uint32_t h[3] = {s_captureIndex, 0, 0};
-	Emit(R_FRAME_BEGIN, h, 12);
+	uint32_t frameBegin[3] = {s_captureIndex, 0, 0};
+	EmitRecord(R_FRAME_BEGIN, frameBegin, 12);
 	Log("capture: capturing frame (capture %u)", s_captureIndex);
 	s_capturing = true;
 }
 
-void CaptureSetConstantBuffers(ShaderStage stage, UINT start, UINT n, ID3D11Buffer* const* buffers) {
-	if (!buffers || n > 14) return;
+void CaptureSetConstantBuffers(ShaderStage stage, UINT start, UINT count, ID3D11Buffer* const* buffers) {
+	if (!buffers || count > 14) return;
 	struct {
 		uint8_t stage, pad[3];
 		uint32_t start, count;
-	} h = {(uint8_t)stage, {0, 0, 0}, start, n};
-	static_assert(sizeof(h) == 12, "R_SET_CB layout");
+	} header = {(uint8_t)stage, {0, 0, 0}, start, count};
+	static_assert(sizeof(header) == 12, "R_SET_CB layout");
 	uint64_t ptrs[14];
-	for (UINT i = 0; i < n; i++) {
+	for (UINT i = 0; i < count; i++) {
 		ptrs[i] = (uint64_t)(uintptr_t)buffers[i];
-		SeenAdd(buffers[i], false);
+		AddSeen(buffers[i], false);
 	}
-	Emit(R_SET_CB, &h, sizeof(h), ptrs, n * 8);
+	EmitRecord(R_SET_CB, &header, sizeof(header), ptrs, count * 8);
 }
 
 void CaptureSetShader(ShaderStage stage, void* shader) {
 	struct {
 		uint8_t stage, pad[7];
 		uint64_t sh;
-	} h = {(uint8_t)stage, {0}, (uint64_t)(uintptr_t)shader};
-	static_assert(sizeof(h) == 16, "R_SET_SHADER layout");
-	Emit(R_SET_SHADER, &h, sizeof(h));
+	} header = {(uint8_t)stage, {0}, (uint64_t)(uintptr_t)shader};
+	static_assert(sizeof(header) == 16, "R_SET_SHADER layout");
+	EmitRecord(R_SET_SHADER, &header, sizeof(header));
 	ShaderTableMarkUsed(shader);
 }
 
-void CaptureDraw(uint8_t kind, UINT a, UINT b, UINT c) {
+void CaptureDraw(uint8_t kind, UINT arg0, UINT arg1, UINT arg2) {
 	struct {
 		uint8_t kind, pad[3];
-		uint32_t a, b, c;
-	} h = {kind, {0, 0, 0}, a, b, c};
-	static_assert(sizeof(h) == 16, "R_DRAW layout");
-	Emit(R_DRAW, &h, sizeof(h));
+		uint32_t arg0, arg1, arg2;
+	} header = {kind, {0, 0, 0}, arg0, arg1, arg2};
+	static_assert(sizeof(header) == 16, "R_DRAW layout");
+	EmitRecord(R_DRAW, &header, sizeof(header));
 }
 
 void CaptureMap(ID3D11Resource* buffer, void* data, UINT size) {
@@ -423,14 +417,14 @@ void CaptureUpdate(ID3D11Resource* buffer, const void* data, UINT size) {
 	EmitCbData((ID3D11Buffer*)buffer, size, 1, data, size);
 }
 
-void CaptureSetRenderTargets(UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {
+void CaptureSetRenderTargets(UINT count, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {
 	struct {
-		uint32_t n, w, h, fmt;
+		uint32_t count, w, h, fmt;
 		uint64_t dsv, rtv0;
-	} rec = {n, 0, 0, 0, (uint64_t)(uintptr_t)dsv, 0};
-	static_assert(sizeof(rec) == 32, "R_SET_RT layout");
-	ID3D11View* view = (n && rtvs && rtvs[0]) ? (ID3D11View*)rtvs[0] : (ID3D11View*)dsv;
-	if (n && rtvs) rec.rtv0 = (uint64_t)(uintptr_t)rtvs[0];
+	} record = {count, 0, 0, 0, (uint64_t)(uintptr_t)dsv, 0};
+	static_assert(sizeof(record) == 32, "R_SET_RT layout");
+	ID3D11View* view = (count && rtvs && rtvs[0]) ? (ID3D11View*)rtvs[0] : (ID3D11View*)dsv;
+	if (count && rtvs) record.rtv0 = (uint64_t)(uintptr_t)rtvs[0];
 	if (view) {
 		ID3D11Resource* res = nullptr;
 		view->GetResource(&res);
@@ -438,48 +432,48 @@ void CaptureSetRenderTargets(UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11
 		if (res) {
 			res->GetType(&dim);
 			if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
-				D3D11_TEXTURE2D_DESC td;
-				((ID3D11Texture2D*)res)->GetDesc(&td);
-				rec.w = td.Width;
-				rec.h = td.Height;
-				rec.fmt = td.Format;
+				D3D11_TEXTURE2D_DESC desc;
+				((ID3D11Texture2D*)res)->GetDesc(&desc);
+				record.w = desc.Width;
+				record.h = desc.Height;
+				record.fmt = desc.Format;
 			}
 			// record resources (not views), so render targets can be matched with later SRV reads
-			if (n && rtvs && rtvs[0]) rec.rtv0 = (uint64_t)(uintptr_t)res;
+			if (count && rtvs && rtvs[0]) record.rtv0 = (uint64_t)(uintptr_t)res;
 			res->Release();
 		}
 	}
 	if (dsv) {
-		ID3D11Resource* dres = nullptr;
-		dsv->GetResource(&dres);
-		if (dres) {
-			rec.dsv = (uint64_t)(uintptr_t)dres;
-			dres->Release();
+		ID3D11Resource* depthRes = nullptr;
+		dsv->GetResource(&depthRes);
+		if (depthRes) {
+			record.dsv = (uint64_t)(uintptr_t)depthRes;
+			depthRes->Release();
 		}
 	}
-	Emit(R_SET_RT, &rec, sizeof(rec));
+	EmitRecord(R_SET_RT, &record, sizeof(record));
 }
 
-void CaptureViewports(UINT n, const D3D11_VIEWPORT* viewports) {
-	if (!viewports || n > 16) return;
-	uint32_t count = n;
-	Emit(R_VIEWPORT, &count, 4, viewports, n * sizeof(D3D11_VIEWPORT));
+void CaptureViewports(UINT count, const D3D11_VIEWPORT* viewports) {
+	if (!viewports || count > 16) return;
+	uint32_t count32 = count;
+	EmitRecord(R_VIEWPORT, &count32, 4, viewports, count * sizeof(D3D11_VIEWPORT));
 }
 
 void CaptureExecuteCommandList() {
 	uint32_t zero = 0;
-	Emit(R_EXEC_CMDLIST, &zero, 4);
+	EmitRecord(R_EXEC_CMDLIST, &zero, 4);
 }
 
-void CaptureShaderResources(ShaderStage stage, UINT start, UINT n, ID3D11ShaderResourceView* const* views) {
-	EmitViews(R_SET_SRV, stage, start, n, views);
+void CaptureShaderResources(ShaderStage stage, UINT start, UINT count, ID3D11ShaderResourceView* const* views) {
+	EmitViews(R_SET_SRV, stage, start, count, views);
 }
 
-void CaptureUnorderedAccessViews(UINT start, UINT n, ID3D11UnorderedAccessView* const* views) {
-	EmitViews(R_SET_UAV, ST_CS, start, n, views);
+void CaptureUnorderedAccessViews(UINT start, UINT count, ID3D11UnorderedAccessView* const* views) {
+	EmitViews(R_SET_UAV, ST_CS, start, count, views);
 }
 
 void CaptureDispatch(UINT x, UINT y, UINT z) {
 	uint32_t groups[3] = {x, y, z};
-	Emit(R_DISPATCH, groups, 12);
+	EmitRecord(R_DISPATCH, groups, 12);
 }

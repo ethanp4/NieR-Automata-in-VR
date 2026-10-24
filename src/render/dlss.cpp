@@ -24,30 +24,30 @@
 #include <string.h>
 
 namespace {
-typedef int Res;  // NVSDK_NGX_Result
-bool Ok(Res r) { return (r & 0xFFF00000) != 0xBAD00000; }
-struct Param;
-struct Handle;
+typedef int NgxResult;  // NVSDK_NGX_Result
+bool NgxOk(NgxResult result) { return (result & 0xFFF00000) != 0xBAD00000; }
+struct NgxParams;
+struct NgxFeature;
 
-typedef Res (*PFN_Init_Ext)(unsigned long long appId, const wchar_t* dataPath, ID3D11Device*, int sdkVersion,
-							const Param*);
-typedef Res (*PFN_Params)(Param**);
-typedef Res (*PFN_DestroyParams)(Param*);
-typedef Res (*PFN_Create)(ID3D11DeviceContext*, int feature, Param*, Handle**);
-typedef Res (*PFN_Eval)(ID3D11DeviceContext*, const Handle*, const Param*, void* progress);
-typedef Res (*PFN_Release)(Handle*);
-typedef Res (*PFN_Optimal)(Param*);
+typedef NgxResult (*PFN_Init_Ext)(unsigned long long appId, const wchar_t* dataPath, ID3D11Device*, int sdkVersion,
+								  const NgxParams*);
+typedef NgxResult (*PFN_Params)(NgxParams**);
+typedef NgxResult (*PFN_DestroyParams)(NgxParams*);
+typedef NgxResult (*PFN_Create)(ID3D11DeviceContext*, int feature, NgxParams*, NgxFeature**);
+typedef NgxResult (*PFN_Eval)(ID3D11DeviceContext*, const NgxFeature*, const NgxParams*, void* progress);
+typedef NgxResult (*PFN_Release)(NgxFeature*);
+typedef NgxResult (*PFN_Optimal)(NgxParams*);
 
-const int kSdkVersion = 0x15;           // NVSDK_NGX_Version_API (1.5)
+const int kSdkVersion = 0x15;  // NVSDK_NGX_Version_API (1.5)
 const int kFeatureSuperSampling = 1;
 const unsigned long long kAppId = 0x4E69657252ull;  // any id: the driver accepts custom ones
 
-PFN_Init_Ext s_init;
-PFN_Params s_getCaps, s_alloc;
-PFN_DestroyParams s_destroy;
-PFN_Create s_create;
-PFN_Eval s_eval;
-PFN_Release s_release;
+PFN_Init_Ext s_ngxInit;
+PFN_Params s_ngxGetCapabilities, s_ngxAllocParams;
+PFN_DestroyParams s_ngxDestroyParams;
+PFN_Create s_ngxCreateFeature;
+PFN_Eval s_ngxEvaluate;
+PFN_Release s_ngxReleaseFeature;
 
 // The DLSS file: pinned to a commit of github.com/NVIDIA/DLSS, checked by SHA256 (DLSS 310.9.16).
 #define DLSS_COMMIT L"9981c6350dc58c0ce21f024fd65e31e851c31689"
@@ -56,63 +56,63 @@ const char kDllSha[] = "d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a186230
 const wchar_t kLicUrl[] = L"https://raw.githubusercontent.com/NVIDIA/DLSS/" DLSS_COMMIT L"/LICENSE.txt";
 const char kLicSha[] = "d4216e39ebef5f9b50a6712ebb37beeb5379862a67733a9999c651f21592aaf0";
 const long long kDllSize = 58956912;
-volatile LONG s_fileGen;       // bumps when a new nvngx_dlss.dll arrives
-LONG s_triedGen = -1;          // s_fileGen when DLSS last tried to start
-volatile LONG s_dlRunning, s_dlCancel;
-volatile LONG64 s_dlGot, s_dlTotal;
+volatile LONG s_fileGen;  // bumps when a new nvngx_dlss.dll arrives
+LONG s_triedGen = -1;     // s_fileGen when DLSS last tried to start
+volatile LONG s_downloadRunning, s_downloadCancel;
+volatile LONG64 s_downloadGot, s_downloadTotal;
 SRWLOCK s_fileLock = SRWLOCK_INIT;
-char s_fileMsg[96];            // why the last download failed
-char s_fileVer[32];            // version of the file in the game's folder (VR thread)
-LONG s_fileVerGen = -1;
+char s_downloadError[96];  // why the last download failed
+char s_fileVersion[32];    // version of the file in the game's folder (VR thread)
+LONG s_fileVersionGen = -1;
 volatile LONG s_hashRunning;
 volatile LONG s_hashedGen = -1;  // s_fileGen that s_fileMatchesSha is for
 volatile LONG s_fileMatchesSha;  // the file in the game's folder is the one kDllSha names
 
 // vtable slots (see the top of the file)
-enum { S_PTR = 0,
-	   S_R11 = 2,
-	   S_I = 3,
-	   S_UI = 4,
-	   S_F = 6,
-	   GET = 8 };
+enum { SLOT_PTR = 0,
+	   SLOT_D3D11_RESOURCE = 2,
+	   SLOT_INT = 3,
+	   SLOT_UINT = 4,
+	   SLOT_FLOAT = 6,
+	   SLOT_GET = 8 };
 template <class F>
-F V(Param* p, int slot) { return (F)(*(void***)p)[slot]; }
-void SetUI(Param* p, const char* n, unsigned v) { V<void (*)(Param*, const char*, unsigned)>(p, S_UI)(p, n, v); }
-void SetI(Param* p, const char* n, int v) { V<void (*)(Param*, const char*, int)>(p, S_I)(p, n, v); }
-void SetF(Param* p, const char* n, float v) { V<void (*)(Param*, const char*, float)>(p, S_F)(p, n, v); }
-void SetR(Param* p, const char* n, ID3D11Resource* v) { V<void (*)(Param*, const char*, ID3D11Resource*)>(p, S_R11)(p, n, v); }
-Res GetI(Param* p, const char* n, int* v) { return V<Res (*)(Param*, const char*, int*)>(p, GET + S_I)(p, n, v); }
+F Method(NgxParams* params, int slot) { return (F)(*(void***)params)[slot]; }
+void SetUint(NgxParams* params, const char* name, unsigned value) { Method<void (*)(NgxParams*, const char*, unsigned)>(params, SLOT_UINT)(params, name, value); }
+void SetInt(NgxParams* params, const char* name, int value) { Method<void (*)(NgxParams*, const char*, int)>(params, SLOT_INT)(params, name, value); }
+void SetFloat(NgxParams* params, const char* name, float value) { Method<void (*)(NgxParams*, const char*, float)>(params, SLOT_FLOAT)(params, name, value); }
+void SetResource(NgxParams* params, const char* name, ID3D11Resource* value) { Method<void (*)(NgxParams*, const char*, ID3D11Resource*)>(params, SLOT_D3D11_RESOURCE)(params, name, value); }
+NgxResult GetInt(NgxParams* params, const char* name, int* value) { return Method<NgxResult (*)(NgxParams*, const char*, int*)>(params, SLOT_GET + SLOT_INT)(params, name, value); }
 
 bool s_tried, s_ready;
 char s_status[128] = "DLSS: not started";
 
 struct Feature {
-	Handle* h;
-	Param* p;
-	UINT rw, rh, ow, oh;
+	NgxFeature* handle;
+	NgxParams* params;
+	UINT renderW, renderH, outputW, outputH;
 	int quality, model;
 	bool inverted;
-} s_feat[2];
+} s_features[2];
 
 void SetStatus(const char* fmt, ...) __attribute__((format(gnu_printf, 1, 2)));
 void SetStatus(const char* fmt, ...) {
-	va_list a;
-	va_start(a, fmt);
-	vsnprintf(s_status, sizeof(s_status), fmt, a);
-	va_end(a);
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(s_status, sizeof(s_status), fmt, args);
+	va_end(args);
 	Log("%s", s_status);
 }
 
-void Release(Feature& f) {
-	if (f.h) s_release(f.h);
-	if (f.p) s_destroy(f.p);
-	f = {};
+void ReleaseFeature(Feature& feature) {
+	if (feature.handle) s_ngxReleaseFeature(feature.handle);
+	if (feature.params) s_ngxDestroyParams(feature.params);
+	feature = {};
 }
 
 // Our quality index -> NVSDK_NGX_PerfQuality_Value
-int PerfQuality(int q) {
-	static const int v[] = {5 /*DLAA*/, 2 /*MaxQuality*/, 1 /*Balanced*/, 0 /*MaxPerf*/, 3 /*UltraPerformance*/};
-	return v[q < 0 ? 0 : (q > 4 ? 4 : q)];
+int PerfQuality(int quality) {
+	static const int values[] = {5 /*DLAA*/, 2 /*MaxQuality*/, 1 /*Balanced*/, 0 /*MaxPerf*/, 3 /*UltraPerformance*/};
+	return values[quality < 0 ? 0 : (quality > 4 ? 4 : quality)];
 }
 
 // A file in the game's folder (next to its exe: where NGX looks for nvngx_dlss.dll).
@@ -123,14 +123,14 @@ void GamePath(const wchar_t* name, wchar_t out[MAX_PATH]) {
 }
 
 bool DllPresent() {
-	wchar_t p[MAX_PATH];
-	GamePath(L"nvngx_dlss.dll", p);
-	return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES;
+	wchar_t path[MAX_PATH];
+	GamePath(L"nvngx_dlss.dll", path);
+	return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
 }
 
-void SetFileMsg(const char* m) {
+void SetDownloadError(const char* text) {
 	AcquireSRWLockExclusive(&s_fileLock);
-	snprintf(s_fileMsg, sizeof(s_fileMsg), "%s", m);
+	snprintf(s_downloadError, sizeof(s_downloadError), "%s", text);
 	ReleaseSRWLockExclusive(&s_fileLock);
 }
 
@@ -146,9 +146,9 @@ DWORD WINAPI DownloadThread(void*) {
 	Log("DLSS: downloading nvngx_dlss.dll from github.com/NVIDIA/DLSS");
 	char err[96] = "";
 	volatile LONG64 licGot = 0, licTotal = 0;
-	bool ok = HttpDownload(kLicUrl, lic, kLicSha, &licGot, &licTotal, &s_dlCancel, err, sizeof(err)) &&
-			  HttpDownload(kDllUrl, dll, kDllSha, &s_dlGot, &s_dlTotal, &s_dlCancel, err, sizeof(err));
-	SetFileMsg(ok || s_dlCancel ? "" : err);  // a cancel isn't an error
+	bool ok = HttpDownload(kLicUrl, lic, kLicSha, &licGot, &licTotal, &s_downloadCancel, err, sizeof(err)) &&
+			  HttpDownload(kDllUrl, dll, kDllSha, &s_downloadGot, &s_downloadTotal, &s_downloadCancel, err, sizeof(err));
+	SetDownloadError(ok || s_downloadCancel ? "" : err);  // a cancel isn't an error
 	Log("DLSS: download %s%s", ok ? "finished (checksum OK)" : "failed: ", ok ? "" : err);
 	if (ok) {
 		s_fileMatchesSha = 1;  // HttpDownload checked it
@@ -158,7 +158,7 @@ DWORD WINAPI DownloadThread(void*) {
 	} else if (!DllPresent()) {
 		DeleteFileW(lic);
 	}
-	s_dlRunning = 0;
+	s_downloadRunning = 0;
 	return 0;
 }
 
@@ -176,23 +176,23 @@ DWORD WINAPI HashThread(void* fileGen) {
 }
 
 // File version of a loaded DLL from its version resource ("310.9.16"), without version.dll.
-void ModuleVersion(HMODULE m, char* out, size_t cap) {
+void ModuleVersion(HMODULE module, char* out, size_t cap) {
 	snprintf(out, cap, "?");
-	HRSRC r = m ? FindResourceW(m, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16) /*RT_VERSION*/) : nullptr;
-	HGLOBAL g = r ? LoadResource(m, r) : nullptr;
-	const uint8_t* p = g ? (const uint8_t*)LockResource(g) : nullptr;
-	DWORD n = r ? SizeofResource(m, r) : 0;
-	for (DWORD i = 0; p && i + sizeof(VS_FIXEDFILEINFO) <= n; i += 4) {
-		const VS_FIXEDFILEINFO* fi = (const VS_FIXEDFILEINFO*)(p + i);
-		if (fi->dwSignature != 0xFEEF04BD) continue;
-		snprintf(out, cap, "%u.%u.%u", (unsigned)HIWORD(fi->dwFileVersionMS), (unsigned)LOWORD(fi->dwFileVersionMS),
-				 (unsigned)HIWORD(fi->dwFileVersionLS));
+	HRSRC resource = module ? FindResourceW(module, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16) /*RT_VERSION*/) : nullptr;
+	HGLOBAL loaded = resource ? LoadResource(module, resource) : nullptr;
+	const uint8_t* data = loaded ? (const uint8_t*)LockResource(loaded) : nullptr;
+	DWORD size = resource ? SizeofResource(module, resource) : 0;
+	for (DWORD i = 0; data && i + sizeof(VS_FIXEDFILEINFO) <= size; i += 4) {
+		const VS_FIXEDFILEINFO* info = (const VS_FIXEDFILEINFO*)(data + i);
+		if (info->dwSignature != 0xFEEF04BD) continue;
+		snprintf(out, cap, "%u.%u.%u", (unsigned)HIWORD(info->dwFileVersionMS), (unsigned)LOWORD(info->dwFileVersionMS),
+				 (unsigned)HIWORD(info->dwFileVersionLS));
 		return;
 	}
 }
 }  // namespace
 
-bool DlssInit(ID3D11Device* dev) {
+bool DlssInit(ID3D11Device* device) {
 	if (s_tried && !s_ready && s_triedGen != s_fileGen) s_tried = false;  // the file arrived: try again
 	if (s_tried) return s_ready;
 	s_tried = true;
@@ -210,37 +210,37 @@ bool DlssInit(ID3D11Device* dev) {
 	}
 	wchar_t path[MAX_PATH];
 	snwprintf(path, MAX_PATH, L"%ls\\_nvngx.dll", dir);
-	HMODULE m = LoadLibraryW(path);
-	if (!m) {
+	HMODULE ngxLoader = LoadLibraryW(path);
+	if (!ngxLoader) {
 		SetStatus("DLSS: could not load the driver's _nvngx.dll (error %u)", (unsigned)GetLastError());
 		return false;
 	}
-#define LOAD(var, name) var = (decltype(var))(void*)GetProcAddress(m, "NVSDK_NGX_D3D11_" name)
-	LOAD(s_init, "Init_Ext");
-	LOAD(s_getCaps, "GetCapabilityParameters");
-	LOAD(s_alloc, "AllocateParameters");
-	LOAD(s_destroy, "DestroyParameters");
-	LOAD(s_create, "CreateFeature");
-	LOAD(s_eval, "EvaluateFeature");
-	LOAD(s_release, "ReleaseFeature");
+#define LOAD(var, name) var = (decltype(var))(void*)GetProcAddress(ngxLoader, "NVSDK_NGX_D3D11_" name)
+	LOAD(s_ngxInit, "Init_Ext");
+	LOAD(s_ngxGetCapabilities, "GetCapabilityParameters");
+	LOAD(s_ngxAllocParams, "AllocateParameters");
+	LOAD(s_ngxDestroyParams, "DestroyParameters");
+	LOAD(s_ngxCreateFeature, "CreateFeature");
+	LOAD(s_ngxEvaluate, "EvaluateFeature");
+	LOAD(s_ngxReleaseFeature, "ReleaseFeature");
 #undef LOAD
-	if (!s_init || !s_getCaps || !s_alloc || !s_destroy || !s_create || !s_eval || !s_release) {
+	if (!s_ngxInit || !s_ngxGetCapabilities || !s_ngxAllocParams || !s_ngxDestroyParams || !s_ngxCreateFeature || !s_ngxEvaluate || !s_ngxReleaseFeature) {
 		SetStatus("DLSS: the driver's NGX loader lacks D3D11 functions (old driver?)");
 		return false;
 	}
-	Res r = s_init(kAppId, g_modDir, dev, kSdkVersion, nullptr);
-	if (!Ok(r)) {
-		SetStatus("DLSS: NGX did not start (0x%08x)", (unsigned)r);
+	NgxResult result = s_ngxInit(kAppId, g_modDir, device, kSdkVersion, nullptr);
+	if (!NgxOk(result)) {
+		SetStatus("DLSS: NGX did not start (0x%08x)", (unsigned)result);
 		return false;
 	}
-	Param* caps = nullptr;
+	NgxParams* caps = nullptr;
 	int avail = 0, needDriver = 0;
-	if (Ok(s_getCaps(&caps)) && caps) {
-		GetI(caps, "SuperSampling.Available", &avail);
-		GetI(caps, "SuperSampling.NeedsUpdatedDriver", &needDriver);
-		s_destroy(caps);
+	if (NgxOk(s_ngxGetCapabilities(&caps)) && caps) {
+		GetInt(caps, "SuperSampling.Available", &avail);
+		GetInt(caps, "SuperSampling.NeedsUpdatedDriver", &needDriver);
+		s_ngxDestroyParams(caps);
 	}
-	if (avail != 1) { // TODO this is busted
+	if (avail != 1) {  // TODO this is busted
 		SetStatus("%s", needDriver ? "DLSS: needs a newer NVIDIA driver" : "DLSS: not supported by this graphics card");
 		return false;
 	}
@@ -252,66 +252,66 @@ bool DlssInit(ID3D11Device* dev) {
 	return true;
 }
 
-bool DlssPrepare(ID3D11DeviceContext* c, int eye, UINT rw, UINT rh, UINT ow, UINT oh, int quality, int model,
+bool DlssPrepare(ID3D11DeviceContext* c, int eye, UINT renderW, UINT renderH, UINT outputW, UINT outputH, int quality, int model,
 				 bool inverted) {
 	if (!s_ready || eye < 0 || eye > 1) return false;
-	Feature& f = s_feat[eye];
-	if (f.h && f.rw == rw && f.rh == rh && f.ow == ow && f.oh == oh && f.quality == quality && f.model == model &&
-		f.inverted == inverted)
+	Feature& feature = s_features[eye];
+	if (feature.handle && feature.renderW == renderW && feature.renderH == renderH && feature.outputW == outputW && feature.outputH == outputH && feature.quality == quality && feature.model == model &&
+		feature.inverted == inverted)
 		return true;
-	Release(f);
-	if (!Ok(s_alloc(&f.p)) || !f.p) return false;
+	ReleaseFeature(feature);
+	if (!NgxOk(s_ngxAllocParams(&feature.params)) || !feature.params) return false;
 	const unsigned preset = model ? 11 /*K, transformer*/ : 5 /*E, CNN*/;
 	static const char* const hints[] = {"DLSS.Hint.Render.Preset.DLAA", "DLSS.Hint.Render.Preset.Quality",
 										"DLSS.Hint.Render.Preset.Balanced", "DLSS.Hint.Render.Preset.Performance",
 										"DLSS.Hint.Render.Preset.UltraPerformance", "DLSS.Hint.Render.Preset.UltraQuality"};
-	for (const char* h : hints) SetUI(f.p, h, preset);
-	SetUI(f.p, "CreationNodeMask", 1);
-	SetUI(f.p, "VisibilityNodeMask", 1);
-	SetUI(f.p, "Width", rw);
-	SetUI(f.p, "Height", rh);
-	SetUI(f.p, "OutWidth", ow);
-	SetUI(f.p, "OutHeight", oh);
-	SetI(f.p, "PerfQualityValue", PerfQuality(quality));
-	SetI(f.p, "RTXValue", 0);
+	for (const char* hint : hints) SetUint(feature.params, hint, preset);
+	SetUint(feature.params, "CreationNodeMask", 1);
+	SetUint(feature.params, "VisibilityNodeMask", 1);
+	SetUint(feature.params, "Width", renderW);
+	SetUint(feature.params, "Height", renderH);
+	SetUint(feature.params, "OutWidth", outputW);
+	SetUint(feature.params, "OutHeight", outputH);
+	SetInt(feature.params, "PerfQualityValue", PerfQuality(quality));
+	SetInt(feature.params, "RTXValue", 0);
 	// motion vectors at render size; the game's depth convention
-	SetI(f.p, "DLSS.Feature.Create.Flags", (1 << 1) /*MVLowRes*/ | (inverted ? 1 << 3 /*DepthInverted*/ : 0));
-	SetI(f.p, "DLSS.Enable.Output.Subrects", 0);
-	Res r = s_create(c, kFeatureSuperSampling, f.p, &f.h);
-	if (!Ok(r) || !f.h) {
-		Log("DLSS: could not create the %s eye's upscaler %ux%u -> %ux%u (0x%08x)", eye ? "right" : "left", rw, rh, ow,
-			oh, (unsigned)r);
-		Release(f);
+	SetInt(feature.params, "DLSS.Feature.Create.Flags", (1 << 1) /*MVLowRes*/ | (inverted ? 1 << 3 /*DepthInverted*/ : 0));
+	SetInt(feature.params, "DLSS.Enable.Output.Subrects", 0);
+	NgxResult result = s_ngxCreateFeature(c, kFeatureSuperSampling, feature.params, &feature.handle);
+	if (!NgxOk(result) || !feature.handle) {
+		Log("DLSS: could not create the %s eye's upscaler %ux%u -> %ux%u (0x%08x)", eye ? "right" : "left", renderW, renderH, outputW,
+			outputH, (unsigned)result);
+		ReleaseFeature(feature);
 		return false;
 	}
-	f.rw = rw, f.rh = rh, f.ow = ow, f.oh = oh, f.quality = quality, f.model = model, f.inverted = inverted;
-	Log("DLSS: %s eye %ux%u -> %ux%u, quality %d, preset %s", eye ? "right" : "left", rw, rh, ow, oh, quality,
+	feature.renderW = renderW, feature.renderH = renderH, feature.outputW = outputW, feature.outputH = outputH, feature.quality = quality, feature.model = model, feature.inverted = inverted;
+	Log("DLSS: %s eye %ux%u -> %ux%u, quality %d, preset %s", eye ? "right" : "left", renderW, renderH, outputW, outputH, quality,
 		model ? "K (transformer)" : "E (CNN)");
 	return true;
 }
 
-bool DlssEvaluate(ID3D11DeviceContext* c, int eye, const DlssInputs& in) {
-	if (!s_ready || eye < 0 || eye > 1 || !s_feat[eye].h) return false;
-	Feature& f = s_feat[eye];
-	Param* p = f.p;
-	SetR(p, "Color", in.color);
-	SetR(p, "Output", in.output);
-	SetR(p, "Depth", in.depth);
-	SetR(p, "MotionVectors", in.motion);
-	SetF(p, "Jitter.Offset.X", in.jitterX);
-	SetF(p, "Jitter.Offset.Y", in.jitterY);
-	SetF(p, "Sharpness", 0);
-	SetI(p, "Reset", in.reset ? 1 : 0);
-	SetF(p, "MV.Scale.X", 1);
-	SetF(p, "MV.Scale.Y", 1);
-	SetUI(p, "DLSS.Render.Subrect.Dimensions.Width", f.rw);
-	SetUI(p, "DLSS.Render.Subrect.Dimensions.Height", f.rh);
-	SetF(p, "DLSS.Pre.Exposure", 1);
-	SetF(p, "DLSS.Exposure.Scale", 1);
-	Res r = s_eval(c, f.h, p, nullptr);
-	if (!Ok(r)) {
+bool DlssEvaluate(ID3D11DeviceContext* c, int eye, const DlssInputs& inputs) {
+	if (!s_ready || eye < 0 || eye > 1 || !s_features[eye].handle) return false;
+	Feature& feature = s_features[eye];
+	NgxParams* params = feature.params;
+	SetResource(params, "Color", inputs.color);
+	SetResource(params, "Output", inputs.output);
+	SetResource(params, "Depth", inputs.depth);
+	SetResource(params, "MotionVectors", inputs.motion);
+	SetFloat(params, "Jitter.Offset.X", inputs.jitterX);
+	SetFloat(params, "Jitter.Offset.Y", inputs.jitterY);
+	SetFloat(params, "Sharpness", 0);
+	SetInt(params, "Reset", inputs.reset ? 1 : 0);
+	SetFloat(params, "MV.Scale.X", 1);
+	SetFloat(params, "MV.Scale.Y", 1);
+	SetUint(params, "DLSS.Render.Subrect.Dimensions.Width", feature.renderW);
+	SetUint(params, "DLSS.Render.Subrect.Dimensions.Height", feature.renderH);
+	SetFloat(params, "DLSS.Pre.Exposure", 1);
+	SetFloat(params, "DLSS.Exposure.Scale", 1);
+	NgxResult result = s_ngxEvaluate(c, feature.handle, params, nullptr);
+	if (!NgxOk(result)) {
 		static volatile LONG budget;
-		if (LogBudget(&budget, 5)) Log("DLSS: evaluate failed for the %s eye (0x%08x)", eye ? "right" : "left", (unsigned)r);
+		if (LogBudget(&budget, 5)) Log("DLSS: evaluate failed for the %s eye (0x%08x)", eye ? "right" : "left", (unsigned)result);
 		return false;
 	}
 	return true;
@@ -319,18 +319,18 @@ bool DlssEvaluate(ID3D11DeviceContext* c, int eye, const DlssInputs& in) {
 
 void DlssReleaseFeatures() {
 	if (!s_ready) return;
-	for (auto& f : s_feat) Release(f);
+	for (auto& feature : s_features) ReleaseFeature(feature);
 }
 
 const char* DlssStatus() { return s_status; }
 
 // ---- the menu's DLSS file row (VR thread) ----
-void DlssFileGet(DlssFileState* s) {
-	s->got = s_dlGot;
-	s->total = s_dlTotal > 0 ? s_dlTotal : kDllSize;
-	s->text[0] = 0;
-	if (s_dlRunning) {
-		s->state = DF_DOWNLOADING;
+void DlssFileGet(DlssFileState* out) {
+	out->got = s_downloadGot;
+	out->total = s_downloadTotal > 0 ? s_downloadTotal : kDllSize;
+	out->text[0] = 0;
+	if (s_downloadRunning) {
+		out->state = DF_DOWNLOADING;
 		return;
 	}
 	static bool removedOldFile;
@@ -343,40 +343,40 @@ void DlssFileGet(DlssFileState* s) {
 	if (DllPresent()) {
 		LONG fileGen = s_fileGen;
 		if (s_hashedGen != fileGen && InterlockedCompareExchange(&s_hashRunning, 1, 0) == 0) {
-			HANDLE t = CreateThread(nullptr, 0, HashThread, (void*)(INT_PTR)fileGen, 0, nullptr);
-			if (t)
-				CloseHandle(t);
+			HANDLE thread = CreateThread(nullptr, 0, HashThread, (void*)(INT_PTR)fileGen, 0, nullptr);
+			if (thread)
+				CloseHandle(thread);
 			else
 				s_hashRunning = 0;
 		}
 		bool outdated = s_hashedGen == fileGen && !s_fileMatchesSha;
-		s->state = outdated ? DF_UPDATE_AVAILABLE : DF_INSTALLED;
-		if (s_fileVerGen != s_fileGen) {  // read the version without running the DLL
-			s_fileVerGen = s_fileGen;
-			wchar_t p[MAX_PATH];
-			GamePath(L"nvngx_dlss.dll", p);
-			HMODULE m = LoadLibraryExW(p, nullptr, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
-			ModuleVersion(m, s_fileVer, sizeof(s_fileVer));
-			if (m) FreeLibrary(m);
+		out->state = outdated ? DF_UPDATE_AVAILABLE : DF_INSTALLED;
+		if (s_fileVersionGen != s_fileGen) {  // read the version without running the DLL
+			s_fileVersionGen = s_fileGen;
+			wchar_t path[MAX_PATH];
+			GamePath(L"nvngx_dlss.dll", path);
+			HMODULE module = LoadLibraryExW(path, nullptr, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+			ModuleVersion(module, s_fileVersion, sizeof(s_fileVersion));
+			if (module) FreeLibrary(module);
 		}
-		snprintf(s->text, sizeof(s->text), "%s", s_fileVer);
+		snprintf(out->text, sizeof(out->text), "%s", s_fileVersion);
 		return;
 	}
-	s->state = DF_MISSING;
+	out->state = DF_MISSING;
 	AcquireSRWLockShared(&s_fileLock);
-	snprintf(s->text, sizeof(s->text), "%s", s_fileMsg);  // why the last try failed
+	snprintf(out->text, sizeof(out->text), "%s", s_downloadError);  // why the last try failed
 	ReleaseSRWLockShared(&s_fileLock);
 }
 
 void DlssFileDownload() {
-	if (InterlockedCompareExchange(&s_dlRunning, 1, 0) != 0) return;
-	s_dlCancel = 0;
-	s_dlGot = 0;
-	s_dlTotal = 0;
-	SetFileMsg("");
-	HANDLE t = CreateThread(nullptr, 0, DownloadThread, nullptr, 0, nullptr);
-	if (t) CloseHandle(t);
-	else s_dlRunning = 0;
+	if (InterlockedCompareExchange(&s_downloadRunning, 1, 0) != 0) return;
+	s_downloadCancel = 0;
+	s_downloadGot = 0;
+	s_downloadTotal = 0;
+	SetDownloadError("");
+	HANDLE thread = CreateThread(nullptr, 0, DownloadThread, nullptr, 0, nullptr);
+	if (thread) CloseHandle(thread);
+	else s_downloadRunning = 0;
 }
 
-void DlssFileCancel() { s_dlCancel = 1; }
+void DlssFileCancel() { s_downloadCancel = 1; }

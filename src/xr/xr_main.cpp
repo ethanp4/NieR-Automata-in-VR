@@ -2,9 +2,9 @@
 // thread's loop. Each headset frame is in xr_frame.cpp, the thread's D3D11 device in xr_device.cpp.
 //
 // The VR thread runs at the headset's refresh rate, independent of the game's frame rate.
-// Stereo: the game renders left and right eyes on alternate frames (camera.cpp); each headset
-// frame submits the newest left and right images in a projection layer, each with the eye pose it
-// was rendered from, and the runtime reprojects them to the current head pose.
+// Stereo: the game renders the left and right eyes (camera.cpp); each headset frame submits the
+// newest left and right images in a projection layer, re-aimed to this frame's head pose (late warp,
+// xr_frame.cpp) or with the eye poses they were rendered from.
 // Flat: the newest game frame on a quad layer floating in front of the user (menus, F12, startup).
 #include "xr/xr_main.h"
 #include "xr/xr_thread.h"
@@ -22,51 +22,51 @@ volatile DWORD g_xrThreadId;
 // ---------------------------------------------------------------------------------------------
 // Error helpers
 // ---------------------------------------------------------------------------------------------
-static const char* XrStr(XrResult r) {
+static const char* XrStr(XrResult result) {
 	static char buf[XR_MAX_RESULT_STRING_SIZE + 16];
-	if (g_vr.instance && g_vr.xrResultToString && XR_SUCCEEDED(g_vr.xrResultToString(g_vr.instance, r, buf))) return buf;
-	snprintf(buf, sizeof(buf), "XrResult(%d)", (int)r);
+	if (g_vr.instance && g_vr.xrResultToString && XR_SUCCEEDED(g_vr.xrResultToString(g_vr.instance, result, buf))) return buf;
+	snprintf(buf, sizeof(buf), "XrResult(%d)", (int)result);
 	return buf;
 }
 
-bool XrCheck(XrResult r, const char* what, bool perFrame) {
-	if (XR_SUCCEEDED(r)) return true;
+bool XrCheck(XrResult result, const char* what, bool perFrame) {
+	if (XR_SUCCEEDED(result)) return true;
 	if (!perFrame || g_vr.errorCount < 20 || (g_vr.errorCount % 1000) == 0)
-		Log("OpenXR error: %s -> %s%s", what, XrStr(r), perFrame && g_vr.errorCount == 19 ? " (further per-frame errors throttled)" : "");
+		Log("OpenXR error: %s -> %s%s", what, XrStr(result), perFrame && g_vr.errorCount == 19 ? " (further per-frame errors throttled)" : "");
 	if (perFrame) g_vr.errorCount++;
-	if (r == XR_ERROR_SESSION_LOST) g_vr.sessionLost = true;
-	if (r == XR_ERROR_INSTANCE_LOST || r == XR_ERROR_RUNTIME_FAILURE) g_vr.instanceLost = true;
+	if (result == XR_ERROR_SESSION_LOST) g_vr.sessionLost = true;
+	if (result == XR_ERROR_INSTANCE_LOST || result == XR_ERROR_RUNTIME_FAILURE) g_vr.instanceLost = true;
 	return false;
 }
 // ---------------------------------------------------------------------------------------------
 // Instance & system
 // ---------------------------------------------------------------------------------------------
 static bool InitInstance() {
-	g_vr.gipa = XrLoadEntry();
-	if (!g_vr.gipa) return false;
+	g_vr.getProcAddr = XrLoadEntry();
+	if (!g_vr.getProcAddr) return false;
 
-	PFN_xrEnumerateInstanceExtensionProperties enumExt = nullptr;
+	PFN_xrEnumerateInstanceExtensionProperties enumExtensions = nullptr;
 	PFN_xrCreateInstance createInstance = nullptr;
-	g_vr.gipa(XR_NULL_HANDLE, "xrEnumerateInstanceExtensionProperties", (PFN_xrVoidFunction*)&enumExt);
-	g_vr.gipa(XR_NULL_HANDLE, "xrCreateInstance", (PFN_xrVoidFunction*)&createInstance);
-	if (!enumExt || !createInstance) {
+	g_vr.getProcAddr(XR_NULL_HANDLE, "xrEnumerateInstanceExtensionProperties", (PFN_xrVoidFunction*)&enumExtensions);
+	g_vr.getProcAddr(XR_NULL_HANDLE, "xrCreateInstance", (PFN_xrVoidFunction*)&createInstance);
+	if (!enumExtensions || !createInstance) {
 		Log("ERROR: OpenXR: runtime is missing core functions");
 		return false;
 	}
-	uint32_t n = 0;
-	if (!XR_CHECK(enumExt(nullptr, 0, &n, nullptr))) return false;
-	static XrExtensionProperties exts[256];
-	if (n > 256) n = 256;
-	for (uint32_t i = 0; i < n; i++) {
-		exts[i] = {};
-		exts[i].type = XR_TYPE_EXTENSION_PROPERTIES;
+	uint32_t extensionCount = 0;
+	if (!XR_CHECK(enumExtensions(nullptr, 0, &extensionCount, nullptr))) return false;
+	static XrExtensionProperties extensions[256];
+	if (extensionCount > 256) extensionCount = 256;
+	for (uint32_t i = 0; i < extensionCount; i++) {
+		extensions[i] = {};
+		extensions[i].type = XR_TYPE_EXTENSION_PROPERTIES;
 	}
-	if (!XR_CHECK(enumExt(nullptr, n, &n, exts))) return false;
+	if (!XR_CHECK(enumExtensions(nullptr, extensionCount, &extensionCount, extensions))) return false;
 	bool hasD3D11 = false, hasPico = false;
-	for (uint32_t i = 0; i < n; i++) {
-		LogV("OpenXR extension: %s v%u", exts[i].extensionName, exts[i].extensionVersion);
-		if (!lstrcmpA(exts[i].extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME)) hasD3D11 = true;
-		if (!lstrcmpA(exts[i].extensionName, "XR_BD_controller_interaction")) hasPico = true;  // Pico 4 / Neo3 controllers
+	for (uint32_t i = 0; i < extensionCount; i++) {
+		LogV("OpenXR extension: %s v%u", extensions[i].extensionName, extensions[i].extensionVersion);
+		if (!lstrcmpA(extensions[i].extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME)) hasD3D11 = true;
+		if (!lstrcmpA(extensions[i].extensionName, "XR_BD_controller_interaction")) hasPico = true;  // Pico 4 / Neo3 controllers
 	}
 	if (!hasD3D11) {
 		Log("ERROR: OpenXR runtime does not support Direct3D 11 (XR_KHR_D3D11_enable)");
@@ -74,116 +74,116 @@ static bool InitInstance() {
 	}
 
 	const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME, "XR_BD_controller_interaction"};
-	XrInstanceCreateInfo ci = {};
-	ci.type = XR_TYPE_INSTANCE_CREATE_INFO;
-	lstrcpynA(ci.applicationInfo.applicationName, "NieRVR", XR_MAX_APPLICATION_NAME_SIZE);
-	ci.applicationInfo.applicationVersion = 1;
-	lstrcpynA(ci.applicationInfo.engineName, "NieRVR", XR_MAX_ENGINE_NAME_SIZE);
-	ci.applicationInfo.engineVersion = 1;
-	ci.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-	ci.enabledExtensionCount = hasPico ? 2 : 1;
-	ci.enabledExtensionNames = enabled;
-	XrResult r = createInstance(&ci, &g_vr.instance);
-	if (r == XR_ERROR_API_VERSION_UNSUPPORTED) {
+	XrInstanceCreateInfo createInfo = {};
+	createInfo.type = XR_TYPE_INSTANCE_CREATE_INFO;
+	lstrcpynA(createInfo.applicationInfo.applicationName, "NieRVR", XR_MAX_APPLICATION_NAME_SIZE);
+	createInfo.applicationInfo.applicationVersion = 1;
+	lstrcpynA(createInfo.applicationInfo.engineName, "NieRVR", XR_MAX_ENGINE_NAME_SIZE);
+	createInfo.applicationInfo.engineVersion = 1;
+	createInfo.applicationInfo.apiVersion = XR_API_VERSION_1_0;
+	createInfo.enabledExtensionCount = hasPico ? 2 : 1;
+	createInfo.enabledExtensionNames = enabled;
+	XrResult result = createInstance(&createInfo, &g_vr.instance);
+	if (result == XR_ERROR_API_VERSION_UNSUPPORTED) {
 		Log("OpenXR: runtime rejected API 1.0, retrying with 1.1");
-		ci.applicationInfo.apiVersion = XR_API_VERSION_1_1;
-		r = createInstance(&ci, &g_vr.instance);
+		createInfo.applicationInfo.apiVersion = XR_API_VERSION_1_1;
+		result = createInstance(&createInfo, &g_vr.instance);
 	}
-	if (!XrCheck(r, "xrCreateInstance")) {
+	if (!XrCheck(result, "xrCreateInstance")) {
 		g_vr.instance = XR_NULL_HANDLE;
 		return false;
 	}
 
 	bool ok = true;
-#define LOAD_FN(n)                                                                          \
-	if (XR_FAILED(g_vr.gipa(g_vr.instance, #n, (PFN_xrVoidFunction*)&g_vr.n)) || !g_vr.n) { \
-		Log("ERROR: OpenXR: missing function " #n);                                         \
-		ok = false;                                                                         \
+#define LOAD_FN(n)                                                                                 \
+	if (XR_FAILED(g_vr.getProcAddr(g_vr.instance, #n, (PFN_xrVoidFunction*)&g_vr.n)) || !g_vr.n) { \
+		Log("ERROR: OpenXR: missing function " #n);                                                \
+		ok = false;                                                                                \
 	}
 	XR_INSTANCE_FUNCS(LOAD_FN)
 #undef LOAD_FN
 	if (!ok) return false;
-	VrInputInit(g_vr.gipa, g_vr.instance, hasPico);
+	VrInputInit(g_vr.getProcAddr, g_vr.instance, hasPico);
 
-	XrInstanceProperties ip = {};
-	ip.type = XR_TYPE_INSTANCE_PROPERTIES;
-	if (XR_SUCCEEDED(g_vr.xrGetInstanceProperties(g_vr.instance, &ip)))
-		Log("OpenXR runtime: %s %u.%u.%u", ip.runtimeName, (unsigned)XR_VERSION_MAJOR(ip.runtimeVersion),
-			(unsigned)XR_VERSION_MINOR(ip.runtimeVersion), (unsigned)XR_VERSION_PATCH(ip.runtimeVersion));
+	XrInstanceProperties props = {};
+	props.type = XR_TYPE_INSTANCE_PROPERTIES;
+	if (XR_SUCCEEDED(g_vr.xrGetInstanceProperties(g_vr.instance, &props)))
+		Log("OpenXR runtime: %s %u.%u.%u", props.runtimeName, (unsigned)XR_VERSION_MAJOR(props.runtimeVersion),
+			(unsigned)XR_VERSION_MINOR(props.runtimeVersion), (unsigned)XR_VERSION_PATCH(props.runtimeVersion));
 	return true;
 }
 
 static bool InitSystem() {
 	static bool loggedWaiting = false;
-	XrSystemGetInfo gi = {};
-	gi.type = XR_TYPE_SYSTEM_GET_INFO;
-	gi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
-	XrResult r = g_vr.xrGetSystem(g_vr.instance, &gi, &g_vr.system);
-	if (r == XR_ERROR_FORM_FACTOR_UNAVAILABLE) {
+	XrSystemGetInfo getInfo = {};
+	getInfo.type = XR_TYPE_SYSTEM_GET_INFO;
+	getInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+	XrResult result = g_vr.xrGetSystem(g_vr.instance, &getInfo, &g_vr.system);
+	if (result == XR_ERROR_FORM_FACTOR_UNAVAILABLE) {
 		if (!loggedWaiting) Log("OpenXR: headset not available yet (is it connected and awake?) - waiting");
 		loggedWaiting = true;
 		return false;
 	}
-	if (!XR_CHECK(r)) return false;
+	if (!XR_CHECK(result)) return false;
 	loggedWaiting = false;
 
-	XrSystemProperties sp = {};
-	sp.type = XR_TYPE_SYSTEM_PROPERTIES;
-	if (XR_SUCCEEDED(g_vr.xrGetSystemProperties(g_vr.instance, g_vr.system, &sp))) {
-		Log("headset: %s (vendor 0x%x), max swapchain %ux%u, max layers %u, position tracking %d", sp.systemName,
-			sp.vendorId, sp.graphicsProperties.maxSwapchainImageWidth, sp.graphicsProperties.maxSwapchainImageHeight,
-			sp.graphicsProperties.maxLayerCount, (int)sp.trackingProperties.positionTracking);
-		g_vr.maxSwapW = sp.graphicsProperties.maxSwapchainImageWidth;
-		g_vr.maxSwapH = sp.graphicsProperties.maxSwapchainImageHeight;
+	XrSystemProperties props = {};
+	props.type = XR_TYPE_SYSTEM_PROPERTIES;
+	if (XR_SUCCEEDED(g_vr.xrGetSystemProperties(g_vr.instance, g_vr.system, &props))) {
+		Log("headset: %s (vendor 0x%x), max swapchain %ux%u, max layers %u, position tracking %d", props.systemName,
+			props.vendorId, props.graphicsProperties.maxSwapchainImageWidth, props.graphicsProperties.maxSwapchainImageHeight,
+			props.graphicsProperties.maxLayerCount, (int)props.trackingProperties.positionTracking);
+		g_vr.maxSwapchainW = props.graphicsProperties.maxSwapchainImageWidth;
+		g_vr.maxSwapchainH = props.graphicsProperties.maxSwapchainImageHeight;
 	}
 
 	// the mod renders a stereo pair: the system must offer the primary stereo view configuration
 	{
 		XrViewConfigurationType types[16];
-		uint32_t nt = 0;
+		uint32_t typeCount = 0;
 		bool stereo = false;
-		if (XR_SUCCEEDED(g_vr.xrEnumerateViewConfigurations(g_vr.instance, g_vr.system, 16, &nt, types)))
-			for (uint32_t i = 0; i < nt; i++) stereo |= types[i] == XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+		if (XR_SUCCEEDED(g_vr.xrEnumerateViewConfigurations(g_vr.instance, g_vr.system, 16, &typeCount, types)))
+			for (uint32_t i = 0; i < typeCount; i++) stereo |= types[i] == XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
 		if (!stereo) {
-			Log("ERROR: this OpenXR system has no stereo view configuration (%u others)", nt);
+			Log("ERROR: this OpenXR system has no stereo view configuration (%u others)", typeCount);
 			return false;
 		}
 	}
 
 	// the per-eye image size the runtime recommends (for the resolution hint)
 	{
-		XrViewConfigurationView vv[2] = {};
-		vv[0].type = vv[1].type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
-		uint32_t nv = 0;
+		XrViewConfigurationView configViews[2] = {};
+		configViews[0].type = configViews[1].type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
+		uint32_t viewCount = 0;
 		if (XR_SUCCEEDED(g_vr.xrEnumerateViewConfigurationViews(g_vr.instance, g_vr.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2,
-																&nv, vv)) &&
-			nv == 2) {
-			g_vr.recW = vv[0].recommendedImageRectWidth;
-			g_vr.recH = vv[0].recommendedImageRectHeight;
-			Log("headset recommends %ux%u per eye (max %ux%u)", g_vr.recW, g_vr.recH, vv[0].maxImageRectWidth,
-				vv[0].maxImageRectHeight);
+																&viewCount, configViews)) &&
+			viewCount == 2) {
+			g_vr.recommendedW = configViews[0].recommendedImageRectWidth;
+			g_vr.recommendedH = configViews[0].recommendedImageRectHeight;
+			Log("headset recommends %ux%u per eye (max %ux%u)", g_vr.recommendedW, g_vr.recommendedH, configViews[0].maxImageRectWidth,
+				configViews[0].maxImageRectHeight);
 		}
 	}
 
-	XrGraphicsRequirementsD3D11KHR req = {};
-	req.type = XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR;
-	if (!XR_CHECK(g_vr.xrGetD3D11GraphicsRequirementsKHR(g_vr.instance, g_vr.system, &req))) return false;
-	g_vr.xrLuid = req.adapterLuid;
-	g_vr.minFeatureLevel = req.minFeatureLevel;
-	Log("headset GPU LUID %08x:%08x, min feature level 0x%x", (unsigned)req.adapterLuid.HighPart,
-		(unsigned)req.adapterLuid.LowPart, (unsigned)req.minFeatureLevel);
+	XrGraphicsRequirementsD3D11KHR requirements = {};
+	requirements.type = XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR;
+	if (!XR_CHECK(g_vr.xrGetD3D11GraphicsRequirementsKHR(g_vr.instance, g_vr.system, &requirements))) return false;
+	g_vr.headsetGpuLuid = requirements.adapterLuid;
+	g_vr.minFeatureLevel = requirements.minFeatureLevel;
+	Log("headset GPU LUID %08x:%08x, min feature level 0x%x", (unsigned)requirements.adapterLuid.HighPart,
+		(unsigned)requirements.adapterLuid.LowPart, (unsigned)requirements.minFeatureLevel);
 	return true;
 }
 
 // After OpenXR tells us which GPU drives the headset: it must be the game's GPU.
 static bool CheckHeadsetGpu() {
-	if (g_vr.xrLuid.LowPart != g_vr.devLuid.LowPart || g_vr.xrLuid.HighPart != g_vr.devLuid.HighPart) {
+	if (g_vr.headsetGpuLuid.LowPart != g_vr.deviceLuid.LowPart || g_vr.headsetGpuLuid.HighPart != g_vr.deviceLuid.HighPart) {
 		Log("ERROR: the headset is driven by a different GPU than the game. On laptops/multi-GPU systems, set "
 			"NieRAutomata.exe to the high-performance GPU in Windows Settings > Display > Graphics.");
 		return false;
 	}
-	if (g_vr.devLevel < g_vr.minFeatureLevel) {
-		Log("ERROR: GPU feature level 0x%x is below the runtime's minimum 0x%x", (unsigned)g_vr.devLevel,
+	if (g_vr.deviceFeatureLevel < g_vr.minFeatureLevel) {
+		Log("ERROR: GPU feature level 0x%x is below the runtime's minimum 0x%x", (unsigned)g_vr.deviceFeatureLevel,
 			(unsigned)g_vr.minFeatureLevel);
 		return false;
 	}
@@ -193,27 +193,27 @@ static bool CheckHeadsetGpu() {
 // ---------------------------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------------------------
-static void DestroySwap(Swapchain& s) {
-	for (uint32_t i = 0; i < kMaxImages; i++) SafeRelease(s.rtv[i]);
-	if (s.sc) g_vr.xrDestroySwapchain(s.sc);
-	s.sc = XR_NULL_HANDLE;
-	s.count = s.w = s.h = 0;
+static void DestroySwap(Swapchain& swap) {
+	for (uint32_t i = 0; i < kMaxImages; i++) SafeRelease(swap.rtv[i]);
+	if (swap.handle) g_vr.xrDestroySwapchain(swap.handle);
+	swap.handle = XR_NULL_HANDLE;
+	swap.count = swap.w = swap.h = 0;
 }
 
-static void DestroyPanel(Panel& p) {
-	DestroySwap(p.swap);
-	SafeRelease(p.rtv);
-	SafeRelease(p.tex);
-	p.shown = false;
+static void DestroyPanel(Panel& panel) {
+	DestroySwap(panel.swap);
+	SafeRelease(panel.rtv);
+	SafeRelease(panel.tex);
+	panel.shown = false;
 }
 
 static void DestroyAllSwaps() {
-	DestroySwap(g_vr.quadSwap);
+	DestroySwap(g_vr.screenSwap);
 	DestroySwap(g_vr.eyeSwap[0]);
 	DestroySwap(g_vr.eyeSwap[1]);
 	DestroySwap(g_vr.hudSwap);
-	DestroyPanel(g_vr.menu);
-	DestroyPanel(g_vr.overlay);
+	DestroyPanel(g_vr.menuPanel);
+	DestroyPanel(g_vr.overlayPanel);
 }
 
 static void DestroySession() {
@@ -222,14 +222,14 @@ static void DestroySession() {
 	AcquireSRWLockExclusive(&g_stereo.lock);
 	g_stereo.valid = false;
 	ReleaseSRWLockExclusive(&g_stereo.lock);
-	if (g_vr.local) g_vr.xrDestroySpace(g_vr.local);
-	if (g_vr.view) g_vr.xrDestroySpace(g_vr.view);
+	if (g_vr.localSpace) g_vr.xrDestroySpace(g_vr.localSpace);
+	if (g_vr.viewSpace) g_vr.xrDestroySpace(g_vr.viewSpace);
 	if (g_vr.session) g_vr.xrDestroySession(g_vr.session);
-	g_vr.local = g_vr.view = XR_NULL_HANDLE;
+	g_vr.localSpace = g_vr.viewSpace = XR_NULL_HANDLE;
 	g_vr.session = XR_NULL_HANDLE;
 	g_vr.running = false;
 	g_vr.sessionLost = false;
-	g_vr.placed = false;
+	g_vr.screenPlaced = false;
 	g_vr.state = XR_SESSION_STATE_UNKNOWN;
 }
 
@@ -245,82 +245,82 @@ static void DestroyInstance() {
 static bool InitSession() {
 	XrGraphicsBindingD3D11KHR binding = {};
 	binding.type = XR_TYPE_GRAPHICS_BINDING_D3D11_KHR;
-	binding.device = g_vr.dev;
-	XrSessionCreateInfo ci = {};
-	ci.type = XR_TYPE_SESSION_CREATE_INFO;
-	ci.next = &binding;
-	ci.systemId = g_vr.system;
-	if (!XR_CHECK(g_vr.xrCreateSession(g_vr.instance, &ci, &g_vr.session))) {
+	binding.device = g_vr.device;
+	XrSessionCreateInfo createInfo = {};
+	createInfo.type = XR_TYPE_SESSION_CREATE_INFO;
+	createInfo.next = &binding;
+	createInfo.systemId = g_vr.system;
+	if (!XR_CHECK(g_vr.xrCreateSession(g_vr.instance, &createInfo, &g_vr.session))) {
 		g_vr.session = XR_NULL_HANDLE;
 		return false;
 	}
-	XrReferenceSpaceCreateInfo rs = {};
-	rs.type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO;
-	rs.poseInReferenceSpace.orientation.w = 1;
-	rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
-	if (!XR_CHECK(g_vr.xrCreateReferenceSpace(g_vr.session, &rs, &g_vr.local))) return false;
-	rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
-	if (!XR_CHECK(g_vr.xrCreateReferenceSpace(g_vr.session, &rs, &g_vr.view))) return false;
+	XrReferenceSpaceCreateInfo spaceInfo = {};
+	spaceInfo.type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO;
+	spaceInfo.poseInReferenceSpace.orientation.w = 1;
+	spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+	if (!XR_CHECK(g_vr.xrCreateReferenceSpace(g_vr.session, &spaceInfo, &g_vr.localSpace))) return false;
+	spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+	if (!XR_CHECK(g_vr.xrCreateReferenceSpace(g_vr.session, &spaceInfo, &g_vr.viewSpace))) return false;
 	VrInputAttach(g_vr.session);
 
-	uint32_t n = 0;
+	uint32_t count = 0;
 	XrEnvironmentBlendMode modes[8];
-	g_vr.blend = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+	g_vr.blendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 	if (XR_SUCCEEDED(g_vr.xrEnumerateEnvironmentBlendModes(g_vr.instance, g_vr.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
-														   8, &n, modes)) &&
-		n > 0)
-		g_vr.blend = modes[0];
+														   8, &count, modes)) &&
+		count > 0)
+		g_vr.blendMode = modes[0];
 
 	// Pick a swapchain format: prefer sRGB so the runtime displays the game's colours exactly.
 	int64_t formats[64];
-	n = 0;
-	if (!XR_CHECK(g_vr.xrEnumerateSwapchainFormats(g_vr.session, 64, &n, formats))) return false;
+	count = 0;
+	if (!XR_CHECK(g_vr.xrEnumerateSwapchainFormats(g_vr.session, 64, &count, formats))) return false;
 	const int64_t preferred[] = {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
 								 DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM};
 	g_vr.swapFormat = 0;
-	for (int64_t p : preferred) {
-		for (uint32_t i = 0; i < n && !g_vr.swapFormat; i++)
-			if (formats[i] == p) g_vr.swapFormat = p;
+	for (int64_t format : preferred) {
+		for (uint32_t i = 0; i < count && !g_vr.swapFormat; i++)
+			if (formats[i] == format) g_vr.swapFormat = format;
 		if (g_vr.swapFormat) break;
 	}
 	if (!g_vr.swapFormat) {
-		Log("ERROR: runtime offers no usable 8-bit swapchain format (%u formats)", n);
+		Log("ERROR: runtime offers no usable 8-bit swapchain format (%u formats)", count);
 		return false;
 	}
-	Log("OpenXR session created (blend mode %d, swapchain format %d)", (int)g_vr.blend, (int)g_vr.swapFormat);
+	Log("OpenXR session created (blend mode %d, swapchain format %d)", (int)g_vr.blendMode, (int)g_vr.swapFormat);
 	g_vr.errorCount = 0;
 	return true;
 }
 
-bool EnsureSwap(Swapchain& s, uint32_t w, uint32_t h, const char* what, bool copyTarget) {
+bool EnsureSwap(Swapchain& swap, uint32_t width, uint32_t height, const char* what, bool copyTarget) {
 	// Respect runtime limits, keep aspect ratio
-	uint32_t maxW = g_vr.maxSwapW ? g_vr.maxSwapW : 4096, maxH = g_vr.maxSwapH ? g_vr.maxSwapH : 4096;
-	if (w > maxW) {
-		h = (uint32_t)((uint64_t)h * maxW / w);
-		w = maxW;
+	uint32_t maxW = g_vr.maxSwapchainW ? g_vr.maxSwapchainW : 4096, maxH = g_vr.maxSwapchainH ? g_vr.maxSwapchainH : 4096;
+	if (width > maxW) {
+		height = (uint32_t)((uint64_t)height * maxW / width);
+		width = maxW;
 	}
-	if (h > maxH) {
-		w = (uint32_t)((uint64_t)w * maxH / h);
-		h = maxH;
+	if (height > maxH) {
+		width = (uint32_t)((uint64_t)width * maxH / height);
+		height = maxH;
 	}
-	if (s.sc && s.w == w && s.h == h) return true;
-	if ((LONG)(GetTickCount() - s.retryAt) < 0) return false;
-	s.retryAt = GetTickCount() + 2000;  // after a failure, retry at most every 2 s
-	DestroySwap(s);
+	if (swap.handle && swap.w == width && swap.h == height) return true;
+	if ((LONG)(GetTickCount() - swap.retryAt) < 0) return false;
+	swap.retryAt = GetTickCount() + 2000;  // after a failure, retry at most every 2 s
+	DestroySwap(swap);
 
-	XrSwapchainCreateInfo ci = {};
-	ci.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
-	ci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT |
-					(copyTarget ? XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT : 0);
-	ci.format = g_vr.swapFormat;
-	ci.sampleCount = 1;
-	ci.width = w;
-	ci.height = h;
-	ci.faceCount = 1;
-	ci.arraySize = 1;
-	ci.mipCount = 1;
-	if (!XR_CHECK(g_vr.xrCreateSwapchain(g_vr.session, &ci, &s.sc))) {
-		s.sc = XR_NULL_HANDLE;
+	XrSwapchainCreateInfo createInfo = {};
+	createInfo.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
+	createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT |
+							(copyTarget ? XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT : 0);
+	createInfo.format = g_vr.swapFormat;
+	createInfo.sampleCount = 1;
+	createInfo.width = width;
+	createInfo.height = height;
+	createInfo.faceCount = 1;
+	createInfo.arraySize = 1;
+	createInfo.mipCount = 1;
+	if (!XR_CHECK(g_vr.xrCreateSwapchain(g_vr.session, &createInfo, &swap.handle))) {
+		swap.handle = XR_NULL_HANDLE;
 		return false;
 	}
 	XrSwapchainImageD3D11KHR images[kMaxImages];
@@ -328,51 +328,51 @@ bool EnsureSwap(Swapchain& s, uint32_t w, uint32_t h, const char* what, bool cop
 		images[i] = {};
 		images[i].type = XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR;
 	}
-	uint32_t n = 0;
-	if (!XR_CHECK(g_vr.xrEnumerateSwapchainImages(s.sc, kMaxImages, &n, (XrSwapchainImageBaseHeader*)images))) {
-		DestroySwap(s);
+	uint32_t imageCount = 0;
+	if (!XR_CHECK(g_vr.xrEnumerateSwapchainImages(swap.handle, kMaxImages, &imageCount, (XrSwapchainImageBaseHeader*)images))) {
+		DestroySwap(swap);
 		return false;
 	}
-	for (uint32_t i = 0; i < n; i++) {
-		D3D11_RENDER_TARGET_VIEW_DESC rd = {};
-		rd.Format = (DXGI_FORMAT)g_vr.swapFormat;
-		rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-		HRESULT hr = g_vr.dev->CreateRenderTargetView(images[i].texture, &rd, &s.rtv[i]);
+	for (uint32_t i = 0; i < imageCount; i++) {
+		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+		rtvDesc.Format = (DXGI_FORMAT)g_vr.swapFormat;
+		rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+		HRESULT hr = g_vr.device->CreateRenderTargetView(images[i].texture, &rtvDesc, &swap.rtv[i]);
 		if (FAILED(hr)) {
 			Log("ERROR: CreateRenderTargetView on swapchain image %u failed 0x%08x", i, (unsigned)hr);
-			DestroySwap(s);
+			DestroySwap(swap);
 			return false;
 		}
 	}
-	s.count = n;
-	s.w = w;
-	s.h = h;
-	Log("%s swapchain %ux%u, %u images", what, w, h, n);
+	swap.count = imageCount;
+	swap.w = width;
+	swap.h = height;
+	Log("%s swapchain %ux%u, %u images", what, width, height, imageCount);
 	return true;
 }
 
-bool RenderInto(Swapchain& s, ID3D11ShaderResourceView* srv, ID3D11ShaderResourceView* scene, const WarpParams* warp) {
-	uint32_t idx = 0;
-	XrSwapchainImageAcquireInfo ai = {};
-	ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
-	if (!XR_CHECK_FRAME(g_vr.xrAcquireSwapchainImage(s.sc, &ai, &idx))) return false;
-	XrSwapchainImageWaitInfo wi = {};
-	wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
-	wi.timeout = XR_INFINITE_DURATION;
-	bool waited = XR_CHECK_FRAME(g_vr.xrWaitSwapchainImage(s.sc, &wi));
+bool RenderInto(Swapchain& swap, ID3D11ShaderResourceView* srv, ID3D11ShaderResourceView* scene, const WarpParams* warp) {
+	uint32_t imageIndex = 0;
+	XrSwapchainImageAcquireInfo acquireInfo = {};
+	acquireInfo.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
+	if (!XR_CHECK_FRAME(g_vr.xrAcquireSwapchainImage(swap.handle, &acquireInfo, &imageIndex))) return false;
+	XrSwapchainImageWaitInfo waitInfo = {};
+	waitInfo.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
+	waitInfo.timeout = XR_INFINITE_DURATION;
+	bool waited = XR_CHECK_FRAME(g_vr.xrWaitSwapchainImage(swap.handle, &waitInfo));
 	if (!waited) return false;  // spec: an image may only be released after a successful wait
-	if (idx < s.count) Blit(s.rtv[idx], s.w, s.h, srv, scene, IsSrgb(g_vr.swapFormat), warp);
-	XrSwapchainImageReleaseInfo ri = {};
-	ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
-	XR_CHECK_FRAME(g_vr.xrReleaseSwapchainImage(s.sc, &ri));
+	if (imageIndex < swap.count) Blit(swap.rtv[imageIndex], swap.w, swap.h, srv, scene, IsSrgb(g_vr.swapFormat), warp);
+	XrSwapchainImageReleaseInfo releaseInfo = {};
+	releaseInfo.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
+	XR_CHECK_FRAME(g_vr.xrReleaseSwapchainImage(swap.handle, &releaseInfo));
 	return true;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Events & frame loop
 // ---------------------------------------------------------------------------------------------
-static const char* StateName(XrSessionState s) {
-	switch (s) {
+static const char* StateName(XrSessionState state) {
+	switch (state) {
 		case XR_SESSION_STATE_IDLE: return "IDLE";
 		case XR_SESSION_STATE_READY: return "READY";
 		case XR_SESSION_STATE_SYNCHRONIZED: return "SYNCHRONIZED";
@@ -386,31 +386,30 @@ static const char* StateName(XrSessionState s) {
 }
 
 static void PollEvents() {
-	XrEventDataBuffer ev;
+	XrEventDataBuffer event;
 	while (true) {
 		// the runtime overwrites the type with the event's own: it must be reset before every call
-		// (0.5.0; earlier versions passed the previous event's type back in)
-		ev = {};
-		ev.type = XR_TYPE_EVENT_DATA_BUFFER;
-		if (g_vr.xrPollEvent(g_vr.instance, &ev) != XR_SUCCESS) break;
-		switch (ev.type) {
+		event = {};
+		event.type = XR_TYPE_EVENT_DATA_BUFFER;
+		if (g_vr.xrPollEvent(g_vr.instance, &event) != XR_SUCCESS) break;
+		switch (event.type) {
 			case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
-				const XrEventDataSessionStateChanged* e = (const XrEventDataSessionStateChanged*)&ev;
-				g_vr.state = e->state;
-				Log("session state -> %s", StateName(e->state));
-				if (e->state == XR_SESSION_STATE_READY) {
-					XrSessionBeginInfo bi = {};
-					bi.type = XR_TYPE_SESSION_BEGIN_INFO;
-					bi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-					if (XR_CHECK(g_vr.xrBeginSession(g_vr.session, &bi))) g_vr.running = true;
-				} else if (e->state == XR_SESSION_STATE_STOPPING) {
+				const XrEventDataSessionStateChanged* changed = (const XrEventDataSessionStateChanged*)&event;
+				g_vr.state = changed->state;
+				Log("session state -> %s", StateName(changed->state));
+				if (changed->state == XR_SESSION_STATE_READY) {
+					XrSessionBeginInfo beginInfo = {};
+					beginInfo.type = XR_TYPE_SESSION_BEGIN_INFO;
+					beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+					if (XR_CHECK(g_vr.xrBeginSession(g_vr.session, &beginInfo))) g_vr.running = true;
+				} else if (changed->state == XR_SESSION_STATE_STOPPING) {
 					XR_CHECK(g_vr.xrEndSession(g_vr.session));
 					g_vr.running = false;
-				} else if (e->state == XR_SESSION_STATE_EXITING) {
+				} else if (changed->state == XR_SESSION_STATE_EXITING) {
 					Log("the VR runtime closed our session; restart the game to re-enter VR");
 					g_vr.exitRequested = true;
 					g_vr.sessionLost = true;
-				} else if (e->state == XR_SESSION_STATE_LOSS_PENDING) {
+				} else if (changed->state == XR_SESSION_STATE_LOSS_PENDING) {
 					g_vr.sessionLost = true;
 				}
 				break;
@@ -420,8 +419,8 @@ static void PollEvents() {
 				g_vr.instanceLost = true;
 				break;
 			case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING: {
-				const XrEventDataReferenceSpaceChangePending* e = (const XrEventDataReferenceSpaceChangePending*)&ev;
-				if (e->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
+				const XrEventDataReferenceSpaceChangePending* pending = (const XrEventDataReferenceSpaceChangePending*)&event;
+				if (pending->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
 					Log("runtime recentered the view; re-placing the screen");
 					g_vr.recenterRequested = true;
 				}
@@ -437,8 +436,6 @@ static void PollEvents() {
 			default:
 				break;
 		}
-		ev = {};
-		ev.type = XR_TYPE_EVENT_DATA_BUFFER;
 	}
 }
 
@@ -448,7 +445,7 @@ static DWORD WINAPI XrThreadMain(void*) {
 	g_xrThreadId = GetCurrentThreadId();
 	InstallCrashHandler();  // in case the game replaced it during startup
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
-	QueryPerformanceFrequency(&g_vr.qpcFreq);
+	QueryPerformanceFrequency(&g_vr.qpcFrequency);
 	QueryPerformanceCounter(&g_vr.statStart);
 	Log("VR thread started");
 	g_stereo.enabled = g_cfg.stereo != 0;
@@ -545,7 +542,7 @@ static DWORD WINAPI XrThreadMain(void*) {
 void XrStartThread() {
 	static volatile LONG started = 0;
 	if (InterlockedCompareExchange(&started, 1, 0) != 0) return;
-	HANDLE t = CreateThread(nullptr, 0, XrThreadMain, nullptr, 0, nullptr);
-	if (t) CloseHandle(t);
+	HANDLE thread = CreateThread(nullptr, 0, XrThreadMain, nullptr, 0, nullptr);
+	if (thread) CloseHandle(thread);
 	else Log("ERROR: could not create VR thread (%u)", (unsigned)GetLastError());
 }

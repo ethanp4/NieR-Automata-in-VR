@@ -21,17 +21,17 @@ volatile bool g_initDone;
 // Small helpers
 // ---------------------------------------------------------------------------------------------
 void DescribeAddress(void* addr, char* out, size_t cap) {
-	HMODULE mod = nullptr;
+	HMODULE module = nullptr;
 	wchar_t name[MAX_PATH] = L"?";
 	if (addr &&
 		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-						   (LPCWSTR)addr, &mod) &&
-		mod) {
-		GetModuleFileNameW(mod, name, MAX_PATH);
+						   (LPCWSTR)addr, &module) &&
+		module) {
+		GetModuleFileNameW(module, name, MAX_PATH);
 		const wchar_t* base = name;
-		for (const wchar_t* p = name; *p; p++)
-			if (*p == L'\\' || *p == L'/') base = p + 1;
-		snprintf(out, cap, "%s+0x%llx", Utf8(base).s, (unsigned long long)((char*)addr - (char*)mod));
+		for (const wchar_t* c = name; *c; c++)
+			if (*c == L'\\' || *c == L'/') base = c + 1;
+		snprintf(out, cap, "%s+0x%llx", Utf8(base).s, (unsigned long long)((char*)addr - (char*)module));
 	} else {
 		snprintf(out, cap, "%p (no module)", addr);
 	}
@@ -47,39 +47,39 @@ typedef BOOL(WINAPI* PFN_MiniDumpWriteDump)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE
 
 static LPTOP_LEVEL_EXCEPTION_FILTER s_prevFilter;
 static HANDLE s_crashRequest, s_crashDone;
-static EXCEPTION_POINTERS* volatile s_crashEp;
+static EXCEPTION_POINTERS* volatile s_crashPointers;
 static volatile DWORD s_crashThread;
 static volatile LONG s_crashReported;
 static PFN_MiniDumpWriteDump s_writeDump;
-static DWORD s_reporterTid;
+static DWORD s_reporterThreadId;
 
-static void WriteCrashReport(EXCEPTION_POINTERS* ep, DWORD threadId) {
-	EXCEPTION_RECORD* er = ep->ExceptionRecord;
+static void WriteCrashReport(EXCEPTION_POINTERS* pointers, DWORD threadId) {
+	EXCEPTION_RECORD* record = pointers->ExceptionRecord;
 	char where[512];
-	DescribeAddress(er->ExceptionAddress, where, sizeof(where));
-	Log("!!! CRASH: exception 0x%08x at %s, thread %u%s", (unsigned)er->ExceptionCode, where, (unsigned)threadId,
+	DescribeAddress(record->ExceptionAddress, where, sizeof(where));
+	Log("!!! CRASH: exception 0x%08x at %s, thread %u%s", (unsigned)record->ExceptionCode, where, (unsigned)threadId,
 		threadId == g_xrThreadId ? " (VR thread)" : "");
-	if (er->ExceptionCode == EXCEPTION_STACK_OVERFLOW) Log("!!! (stack overflow: usually endless recursion)");
-	if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
+	if (record->ExceptionCode == EXCEPTION_STACK_OVERFLOW) Log("!!! (stack overflow: usually endless recursion)");
+	if (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && record->NumberParameters >= 2)
 		Log("!!! access violation: %s address %p",
-			er->ExceptionInformation[0] == 0 ? "reading" : (er->ExceptionInformation[0] == 1 ? "writing" : "executing"),
-			(void*)er->ExceptionInformation[1]);
-	if (ep->ContextRecord) {
-		CONTEXT* c = ep->ContextRecord;
-		Log("!!! rip=%p rsp=%p rax=%p rcx=%p rdx=%p r8=%p r9=%p", (void*)c->Rip, (void*)c->Rsp, (void*)c->Rax,
-			(void*)c->Rcx, (void*)c->Rdx, (void*)c->R8, (void*)c->R9);
+			record->ExceptionInformation[0] == 0 ? "reading" : (record->ExceptionInformation[0] == 1 ? "writing" : "executing"),
+			(void*)record->ExceptionInformation[1]);
+	if (pointers->ContextRecord) {
+		CONTEXT* context = pointers->ContextRecord;
+		Log("!!! rip=%p rsp=%p rax=%p rcx=%p rdx=%p r8=%p r9=%p", (void*)context->Rip, (void*)context->Rsp, (void*)context->Rax,
+			(void*)context->Rcx, (void*)context->Rdx, (void*)context->R8, (void*)context->R9);
 		// Code addresses found on the stack: a rough call path without needing symbols.
-		void** sp = (void**)c->Rsp;
+		void** stack = (void**)context->Rsp;
 		int shown = 0;
 		for (int i = 0; i < 512 && shown < 16; i++) {
-			void* v = nullptr;
-			if (!ReadProcessMemory(GetCurrentProcess(), sp + i, &v, sizeof(v), nullptr)) break;
-			HMODULE m = nullptr;
-			if (v && (uintptr_t)v > 0x10000 &&
+			void* value = nullptr;
+			if (!ReadProcessMemory(GetCurrentProcess(), stack + i, &value, sizeof(value), nullptr)) break;
+			HMODULE module = nullptr;
+			if (value && (uintptr_t)value > 0x10000 &&
 				GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-								   (LPCWSTR)v, &m) &&
-				m) {
-				DescribeAddress(v, where, sizeof(where));
+								   (LPCWSTR)value, &module) &&
+				module) {
+				DescribeAddress(value, where, sizeof(where));
 				Log("!!!   stack[%d] %s", i, where);
 				shown++;
 			}
@@ -88,55 +88,55 @@ static void WriteCrashReport(EXCEPTION_POINTERS* ep, DWORD threadId) {
 	wchar_t dumpPath[MAX_PATH];
 	lstrcpynW(dumpPath, g_modDir, MAX_PATH - 32);
 	lstrcatW(dumpPath, L"NieRVR_crash.dmp");
-	HANDLE f = CreateFileW(dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (f == INVALID_HANDLE_VALUE) {
+	HANDLE file = CreateFileW(dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (file == INVALID_HANDLE_VALUE) {
 		Log("!!! cannot create NieRVR_crash.dmp (error %u)", (unsigned)GetLastError());
 		return;
 	}
 	if (s_writeDump) {
-		MINIDUMP_EXCEPTION_INFORMATION mei;
-		mei.ThreadId = threadId;
-		mei.ExceptionPointers = ep;
-		mei.ClientPointers = FALSE;
-		BOOL ok = s_writeDump(GetCurrentProcess(), GetCurrentProcessId(), f,
+		MINIDUMP_EXCEPTION_INFORMATION exceptionInfo;
+		exceptionInfo.ThreadId = threadId;
+		exceptionInfo.ExceptionPointers = pointers;
+		exceptionInfo.ClientPointers = FALSE;
+		BOOL ok = s_writeDump(GetCurrentProcess(), GetCurrentProcessId(), file,
 							  (MINIDUMP_TYPE)(MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithUnloadedModules |
 											  MiniDumpWithThreadInfo),
-							  &mei, nullptr, nullptr);
+							  &exceptionInfo, nullptr, nullptr);
 		Log("!!! minidump %s: NieRVR_crash.dmp", ok ? "written" : "FAILED");
 	} else {
 		Log("!!! dbghelp.dll unavailable, no minidump");
 	}
-	CloseHandle(f);
+	CloseHandle(file);
 }
 
 static DWORD WINAPI CrashReporterThread(void*) {
 	while (true) {
 		WaitForSingleObject(s_crashRequest, INFINITE);
-		if (s_crashEp) WriteCrashReport(s_crashEp, s_crashThread);
+		if (s_crashPointers) WriteCrashReport(s_crashPointers, s_crashThread);
 		SetEvent(s_crashDone);
 	}
 }
 
 // Uses almost no stack: hands the work to the reporter thread and waits.
-static void ReportCrash(EXCEPTION_POINTERS* ep) {
-	if (!ep || !ep->ExceptionRecord || InterlockedExchange(&s_crashReported, 1) != 0) return;
-	s_crashEp = ep;
+static void ReportCrash(EXCEPTION_POINTERS* pointers) {
+	if (!pointers || !pointers->ExceptionRecord || InterlockedExchange(&s_crashReported, 1) != 0) return;
+	s_crashPointers = pointers;
 	s_crashThread = GetCurrentThreadId();
-	if (s_crashRequest && s_crashThread != s_reporterTid) {  // the reporter can't wait on itself
+	if (s_crashRequest && s_crashThread != s_reporterThreadId) {  // the reporter can't wait on itself
 		SetEvent(s_crashRequest);
 		WaitForSingleObject(s_crashDone, 20000);
 	}
 }
 
-static LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
-	ReportCrash(ep);
-	return s_prevFilter ? s_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
+static LONG WINAPI CrashFilter(EXCEPTION_POINTERS* pointers) {
+	ReportCrash(pointers);
+	return s_prevFilter ? s_prevFilter(pointers) : EXCEPTION_CONTINUE_SEARCH;
 }
 
 // Stack overflows are never meant to be survived; catch them first-chance in case the game's
 // own handler swallows them before our unhandled-exception filter sees them.
-static LONG WINAPI StackOverflowWatcher(EXCEPTION_POINTERS* ep) {
-	if (ep && ep->ExceptionRecord && ep->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) ReportCrash(ep);
+static LONG WINAPI StackOverflowWatcher(EXCEPTION_POINTERS* pointers) {
+	if (pointers && pointers->ExceptionRecord && pointers->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) ReportCrash(pointers);
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -146,8 +146,8 @@ void InstallCrashHandler() {
 		s_writeDump = dbghelp ? (PFN_MiniDumpWriteDump)(void*)GetProcAddress(dbghelp, "MiniDumpWriteDump") : nullptr;
 		s_crashRequest = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 		s_crashDone = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-		HANDLE t = CreateThread(nullptr, 256 * 1024, CrashReporterThread, nullptr, 0, &s_reporterTid);
-		if (t) CloseHandle(t);
+		HANDLE thread = CreateThread(nullptr, 256 * 1024, CrashReporterThread, nullptr, 0, &s_reporterThreadId);
+		if (thread) CloseHandle(thread);
 		else s_crashRequest = nullptr;
 		AddVectoredExceptionHandler(1, StackOverflowWatcher);
 	}
@@ -166,33 +166,33 @@ static void LogEnvironment() {
 	Log("NieRVR %s (built %s %s)", NIERVR_VERSION, __DATE__, __TIME__);
 	Log("game exe: %s", Utf8(exe).s);
 	Log("mod dir:  %s", Utf8(g_modDir).s);
-	OSVERSIONINFOW vi = {};
-	vi.dwOSVersionInfoSize = sizeof(vi);
+	OSVERSIONINFOW version = {};
+	version.dwOSVersionInfoSize = sizeof(version);
 	PFN_RtlGetVersion rtlGetVersion = (PFN_RtlGetVersion)(void*)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
-	if (rtlGetVersion && rtlGetVersion(&vi) == 0)
-		Log("windows %u.%u build %u", (unsigned)vi.dwMajorVersion, (unsigned)vi.dwMinorVersion, (unsigned)vi.dwBuildNumber);
+	if (rtlGetVersion && rtlGetVersion(&version) == 0)
+		Log("windows %u.%u build %u", (unsigned)version.dwMajorVersion, (unsigned)version.dwMinorVersion, (unsigned)version.dwBuildNumber);
 
 	// List the DLLs sitting next to the game: the usual source of mod conflicts.
 	wchar_t pattern[MAX_PATH];
 	lstrcpynW(pattern, g_modDir, MAX_PATH - 8);
 	lstrcatW(pattern, L"*.dll");
-	WIN32_FIND_DATAW fd;
-	HANDLE h = FindFirstFileW(pattern, &fd);
-	if (h != INVALID_HANDLE_VALUE) {
+	WIN32_FIND_DATAW found;
+	HANDLE search = FindFirstFileW(pattern, &found);
+	if (search != INVALID_HANDLE_VALUE) {
 		do {
-			Log("game-dir dll: %s (%u KB)", Utf8(fd.cFileName).s, (unsigned)(fd.nFileSizeLow / 1024));
-		} while (FindNextFileW(h, &fd));
-		FindClose(h);
+			Log("game-dir dll: %s (%u KB)", Utf8(found.cFileName).s, (unsigned)(found.nFileSizeLow / 1024));
+		} while (FindNextFileW(search, &found));
+		FindClose(search);
 	}
 	// Overlays / injected modules already present
 	const wchar_t* known[] = {L"GameOverlayRenderer64.dll", L"RTSSHooks64.dll", L"SpecialK64.dll", L"ReShade64.dll",
 							  L"dxgi.dll", L"nvspcap64.dll", L"DiscordHook64.dll", L"obs-vulkan64.dll"};
-	for (const wchar_t* k : known) {
-		HMODULE m = GetModuleHandleW(k);
-		if (m) {
-			wchar_t p[MAX_PATH];
-			GetModuleFileNameW(m, p, MAX_PATH);
-			Log("loaded module: %s", Utf8(p).s);
+	for (const wchar_t* name : known) {
+		HMODULE module = GetModuleHandleW(name);
+		if (module) {
+			wchar_t path[MAX_PATH];
+			GetModuleFileNameW(module, path, MAX_PATH);
+			Log("loaded module: %s", Utf8(path).s);
 		}
 	}
 	Log("config: Enabled=%d Distance=%.2f Width=%.2f HeightOffset=%.2f ChainLoad='%s' LoaderPath='%s' Verbose=%d "
@@ -212,13 +212,13 @@ static void LogEnvironment() {
 			(double)g_cfg.cullFovAsked);
 	{
 		char list[120];
-		size_t at = 0;
+		size_t used = 0;
 		list[0] = 0;
-		for (int i = 0; i < g_cfg.fovRealCount && at + 16 < sizeof(list); i++)
-			at += snprintf(list + at, sizeof(list) - at, "%s0x%x", i ? "," : "", g_cfg.fovRealCallers[i]);
+		for (int i = 0; i < g_cfg.fovRealCount && used + 16 < sizeof(list); i++)
+			used += snprintf(list + used, sizeof(list) - used, "%s0x%x", i ? "," : "", g_cfg.fovRealCallers[i]);
 		Log("config: HeadCullingMargin=%.0f Synchronized=%d", (double)g_cfg.headCullMargin,
 			g_cfg.synchronized);
-		Log("config: HeadCulling=%d FovRealCallers=%s FovEasingCaller=0x%x", g_cfg.headCulling, at ? list : "(none)",
+		Log("config: HeadCulling=%d FovRealCallers=%s FovEasingCaller=0x%x", g_cfg.headCulling, used ? list : "(none)",
 			g_cfg.fovEasingCaller);
 	}
 }
@@ -226,8 +226,8 @@ static void LogEnvironment() {
 static BOOL CALLBACK InitOnceCallback(PINIT_ONCE, PVOID, PVOID*) {
 	GetModuleFileNameW(g_hSelf, g_modDir, MAX_PATH);
 	wchar_t* slash = g_modDir;
-	for (wchar_t* p = g_modDir; *p; p++)
-		if (*p == L'\\' || *p == L'/') slash = p;
+	for (wchar_t* c = g_modDir; *c; c++)
+		if (*c == L'\\' || *c == L'/') slash = c;
 	slash[1] = 0;
 
 	lstrcpynW(g_iniPath, g_modDir, MAX_PATH - 16);
@@ -240,7 +240,7 @@ static BOOL CALLBACK InitOnceCallback(PINIT_ONCE, PVOID, PVOID*) {
 	LogOpen(logPath);
 	LogEnvironment();
 
-	InitializeCriticalSection(&g_share.cs);
+	InitializeCriticalSection(&g_share.lock);
 	InstallCrashHandler();
 	if (!ProxyLoadReal()) Log("FATAL: could not load the real d3d11.dll - the game will not start");
 	ExtraResolutionsInstallHooks();

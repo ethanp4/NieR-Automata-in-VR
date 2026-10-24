@@ -4,19 +4,19 @@
 #include <stdio.h>
 
 static HANDLE s_logFile = INVALID_HANDLE_VALUE;
-static CRITICAL_SECTION s_logCs;
-static LARGE_INTEGER s_qpcFreq, s_qpcStart;
+static CRITICAL_SECTION s_logLock;
+static LARGE_INTEGER s_qpcFrequency, s_qpcStart;
 
 void LogOpen(const wchar_t* path) {
-	InitializeCriticalSection(&s_logCs);
-	QueryPerformanceFrequency(&s_qpcFreq);
+	InitializeCriticalSection(&s_logLock);
+	QueryPerformanceFrequency(&s_qpcFrequency);
 	QueryPerformanceCounter(&s_qpcStart);
 	// Keep the previous session's log as NieRVR.prev.log for comparison
 	wchar_t prev[MAX_PATH];
 	lstrcpynW(prev, path, MAX_PATH - 16);
-	int n = lstrlenW(prev);
-	if (n > 4) {
-		prev[n - 4] = 0;  // strip ".log"
+	int length = lstrlenW(prev);
+	if (length > 4) {
+		prev[length - 4] = 0;  // strip ".log"
 		lstrcatW(prev, L".prev.log");
 		MoveFileExW(path, prev, MOVEFILE_REPLACE_EXISTING);
 	}
@@ -25,32 +25,32 @@ void LogOpen(const wchar_t* path) {
 							FILE_ATTRIBUTE_NORMAL, nullptr);
 }
 
-Utf8::Utf8(const wchar_t* w) {
+Utf8::Utf8(const wchar_t* text) {
 	s[0] = 0;
-	if (w && !WideCharToMultiByte(CP_UTF8, 0, w, -1, s, sizeof(s), nullptr, nullptr)) s[sizeof(s) - 1] = 0;
+	if (text && !WideCharToMultiByte(CP_UTF8, 0, text, -1, s, sizeof(s), nullptr, nullptr)) s[sizeof(s) - 1] = 0;
 }
 
-static void LogWrite(const char* fmt, va_list ap) {
+static void LogWrite(const char* fmt, va_list args) {
 	if (s_logFile == INVALID_HANDLE_VALUE) return;
 	char line[2048];
-	SYSTEMTIME st;
-	GetLocalTime(&st);
+	SYSTEMTIME time;
+	GetLocalTime(&time);
 	LARGE_INTEGER now;
 	QueryPerformanceCounter(&now);
-	double secs = (double)(now.QuadPart - s_qpcStart.QuadPart) / (double)s_qpcFreq.QuadPart;
-	int n = snprintf(line, sizeof(line), "%02d:%02d:%02d.%03d [%9.3f] [t%5u] ", st.wHour, st.wMinute, st.wSecond,
-					 st.wMilliseconds, secs, (unsigned)GetCurrentThreadId());
-	if (n > (int)sizeof(line) - 3) n = (int)sizeof(line) - 3;
-	int m = vsnprintf(line + n, sizeof(line) - n - 2, fmt, ap);
-	if (m < 0) m = 0;  // a bad format string: keep the time stamp
-	int total = n + m;
+	double secs = (double)(now.QuadPart - s_qpcStart.QuadPart) / (double)s_qpcFrequency.QuadPart;
+	int stampLen = snprintf(line, sizeof(line), "%02d:%02d:%02d.%03d [%9.3f] [t%5u] ", time.wHour, time.wMinute, time.wSecond,
+							time.wMilliseconds, secs, (unsigned)GetCurrentThreadId());
+	if (stampLen > (int)sizeof(line) - 3) stampLen = (int)sizeof(line) - 3;
+	int textLen = vsnprintf(line + stampLen, sizeof(line) - stampLen - 2, fmt, args);
+	if (textLen < 0) textLen = 0;  // a bad format string: keep the time stamp
+	int total = stampLen + textLen;
 	if (total > (int)sizeof(line) - 3) total = (int)sizeof(line) - 3;
 	line[total++] = '\r';
 	line[total++] = '\n';
-	EnterCriticalSection(&s_logCs);
+	EnterCriticalSection(&s_logLock);
 	DWORD written;
 	WriteFile(s_logFile, line, (DWORD)total, &written, nullptr);
-	LeaveCriticalSection(&s_logCs);
+	LeaveCriticalSection(&s_logLock);
 }
 
 void Log(const char* fmt, ...) {
@@ -69,7 +69,7 @@ void LogV(const char* fmt, ...) {
 }
 
 bool LogBudget(volatile LONG* counter, LONG max) {
-	LONG n = InterlockedIncrement(counter);
-	if (n == max) Log("(the next message repeats; further repeats are suppressed)");
-	return n <= max;
+	LONG count = InterlockedIncrement(counter);
+	if (count == max) Log("(the next message repeats; further repeats are suppressed)");
+	return count <= max;
 }

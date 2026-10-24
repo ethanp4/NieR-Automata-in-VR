@@ -97,12 +97,12 @@ ID3D11Buffer* s_composeConstants;
 ID3D11SamplerState* s_linearSampler;
 
 // this frame (from UpscaleBeginPresent)
-bool s_upscaling;  // scene images are enlarged
+bool s_upscaling;           // scene images are enlarged
 UINT s_renderW, s_renderH;  // render size
 UINT s_outputW, s_outputH;  // output size
-int s_dlssMode;  // DLSS mode for that enlargement (pure::upscale_mode)
+int s_dlssMode;             // DLSS mode for that enlargement (pure::upscale_mode)
 UINT s_targetW, s_targetH;  // the output the headset wants (native x Output), 0 = not known yet
-unsigned s_presentCount;  // Presents so far (the depth copies are tagged with it)
+unsigned s_presentCount;    // Presents so far (the depth copies are tagged with it)
 
 // per eye
 struct EyeState {
@@ -393,9 +393,9 @@ bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UIN
 	// The output follows the headset (its recommended detail x Output), as in other games the
 	// display resolution does; the game's resolution is the input and decides the mode. Small changes
 	// of the target (a few %) keep the current size: every change rebuilds DLSS and the hand-off.
-	EnterCriticalSection(&g_share.cs);
+	EnterCriticalSection(&g_share.lock);
 	UINT nativeW = g_share.nativeW, nativeH = g_share.nativeH;
-	LeaveCriticalSection(&g_share.cs);
+	LeaveCriticalSection(&g_share.lock);
 	UINT wantW = (UINT)(nativeW * g_cfg.upscaleOutput / 100), wantH = (UINT)(nativeH * g_cfg.upscaleOutput / 100);
 	if (!s_targetW || wantW > s_targetW * 1.03f || wantW * 1.03f < s_targetW || wantH > s_targetH * 1.03f || wantH * 1.03f < s_targetH)
 		s_targetW = wantW, s_targetH = wantH;
@@ -432,7 +432,7 @@ bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UIN
 		// the game resolutions that give each mode for this output (same shape as the game's image)
 		uint32_t qualityW = w, qualityH = h, balancedW, balancedH, performanceW, performanceH;
 		pure::upscale_output(w, h, s_targetW, s_targetH, &qualityW, &qualityH);  // the target in the game's shape
-		if (qualityW == w) {  // the game is at or above the target: show the target itself
+		if (qualityW == w) {                                                     // the game is at or above the target: show the target itself
 			float r = (float)s_targetW / w > (float)s_targetH / h ? (float)s_targetW / w : (float)s_targetH / h;
 			qualityW = (uint32_t)(w * r) & ~1u, qualityH = (uint32_t)(h * r) & ~1u;
 		}
@@ -447,7 +447,7 @@ bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UIN
 	static char lastAdvice[160];
 	if (strcmp(lastAdvice, advice)) {
 		snprintf(lastAdvice, sizeof(lastAdvice), "%s", advice);
-		MenuSetInfo(17, advice);
+		MenuSetInfo(INFO_UPSCALE_ADVICE, advice);
 	}
 	if (GetTickCount() - s_lastReportTick > 30000) {
 		s_lastReportTick = GetTickCount();
@@ -458,11 +458,11 @@ bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UIN
 			snprintf(info, sizeof(info), "Upscaler: %s; %u of %u eye images upscaled (30 s)", status,
 					 s_eyes[0].upscaled + s_eyes[1].upscaled,
 					 s_eyes[0].upscaled + s_eyes[1].upscaled + s_eyes[0].stretched + s_eyes[1].stretched);
-			MenuSetInfo(16, info);
+			MenuSetInfo(INFO_UPSCALER, info);
 		} else if (g_cfg.upscaler) {
 			char info[160];
 			snprintf(info, sizeof(info), "Upscaler: %s", status);
-			MenuSetInfo(16, info);
+			MenuSetInfo(INFO_UPSCALER, info);
 		}
 		for (auto& e : s_eyes) e.upscaled = e.stretched = 0;
 	}

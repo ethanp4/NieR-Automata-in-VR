@@ -12,33 +12,33 @@
 #include "core/main.h"
 #include "core/pure.h"
 
-static bool IsAbsolute(const wchar_t* p) { return p[0] && (p[1] == L':' || (p[0] == L'\\' && p[1] == L'\\')); }
+static bool IsAbsolute(const wchar_t* path) { return path[0] && (path[1] == L':' || (path[0] == L'\\' && path[1] == L'\\')); }
 
 static PFN_xrGetInstanceProcAddr FromLoaderDll(const wchar_t* path) {
-	HMODULE m = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
-	if (!m) {
+	HMODULE module = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+	if (!module) {
 		Log("OpenXR: could not load loader '%s' (error %u)", Utf8(path).s, (unsigned)GetLastError());
 		return nullptr;
 	}
-	PFN_xrGetInstanceProcAddr gipa = (PFN_xrGetInstanceProcAddr)(void*)GetProcAddress(m, "xrGetInstanceProcAddr");
-	if (gipa) Log("OpenXR: using loader %s (API layers enabled)", Utf8(path).s);
+	PFN_xrGetInstanceProcAddr getProcAddr = (PFN_xrGetInstanceProcAddr)(void*)GetProcAddress(module, "xrGetInstanceProcAddr");
+	if (getProcAddr) Log("OpenXR: using loader %s (API layers enabled)", Utf8(path).s);
 	else Log("OpenXR: '%s' has no xrGetInstanceProcAddr export", Utf8(path).s);
-	return gipa;
+	return getProcAddr;
 }
 
 static bool ReadManifestPath(wchar_t* out, DWORD cap) {
-	DWORD n = GetEnvironmentVariableW(L"XR_RUNTIME_JSON", out, cap);
-	if (n > 0 && n < cap) {
+	DWORD length = GetEnvironmentVariableW(L"XR_RUNTIME_JSON", out, cap);
+	if (length > 0 && length < cap) {
 		Log("OpenXR: XR_RUNTIME_JSON overrides the active runtime: %s", Utf8(out).s);
 		return true;
 	}
 	DWORD bytes = cap * sizeof(wchar_t);
-	LSTATUS st = RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Khronos\\OpenXR\\1", L"ActiveRuntime",
-							  RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, nullptr, out, &bytes);
-	if (st != ERROR_SUCCESS) {
+	LSTATUS status = RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Khronos\\OpenXR\\1", L"ActiveRuntime",
+								  RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, nullptr, out, &bytes);
+	if (status != ERROR_SUCCESS) {
 		Log("ERROR: OpenXR: no active OpenXR runtime is set (HKLM\\SOFTWARE\\Khronos\\OpenXR\\1\\ActiveRuntime, "
 			"status %d). Set one in your VR software (SteamVR, Meta Link, Virtual Desktop, Pimax Play...)",
-			(int)st);
+			(int)status);
 		return false;
 	}
 	return true;
@@ -49,15 +49,15 @@ static PFN_xrGetInstanceProcAddr FromActiveRuntime() {
 	if (!ReadManifestPath(manifest, MAX_PATH * 2)) return nullptr;
 	Log("OpenXR: active runtime manifest: %s", Utf8(manifest).s);
 
-	HANDLE f = CreateFileW(manifest, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-	if (f == INVALID_HANDLE_VALUE) {
+	HANDLE file = CreateFileW(manifest, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+	if (file == INVALID_HANDLE_VALUE) {
 		Log("ERROR: OpenXR: cannot open runtime manifest (error %u)", (unsigned)GetLastError());
 		return nullptr;
 	}
 	static char json[65536];
 	DWORD len = 0;
-	ReadFile(f, json, sizeof(json) - 1, &len, nullptr);
-	CloseHandle(f);
+	ReadFile(file, json, sizeof(json) - 1, &len, nullptr);
+	CloseHandle(file);
 	json[len] = 0;
 
 	char name[256] = "?";
@@ -69,8 +69,8 @@ static PFN_xrGetInstanceProcAddr FromActiveRuntime() {
 	}
 	wchar_t libW[MAX_PATH * 2];
 	if (!MultiByteToWideChar(CP_UTF8, 0, lib, -1, libW, MAX_PATH * 2)) return nullptr;
-	for (wchar_t* p = libW; *p; p++)
-		if (*p == L'/') *p = L'\\';
+	for (wchar_t* c = libW; *c; c++)
+		if (*c == L'/') *c = L'\\';
 
 	wchar_t full[MAX_PATH * 2];
 	if (IsAbsolute(libW)) {
@@ -79,16 +79,16 @@ static PFN_xrGetInstanceProcAddr FromActiveRuntime() {
 		// relative to the manifest's folder
 		lstrcpynW(full, manifest, MAX_PATH * 2);
 		wchar_t* slash = nullptr;
-		for (wchar_t* p = full; *p; p++)
-			if (*p == L'\\' || *p == L'/') slash = p;
+		for (wchar_t* c = full; *c; c++)
+			if (*c == L'\\' || *c == L'/') slash = c;
 		if (slash) slash[1] = 0;
 		else full[0] = 0;
 		lstrcpynW(full + lstrlenW(full), libW, MAX_PATH * 2 - lstrlenW(full));
 	}
 	Log("OpenXR: runtime '%s' -> %s", name, Utf8(full).s);
 
-	HMODULE m = LoadLibraryExW(full, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
-	if (!m) {
+	HMODULE module = LoadLibraryExW(full, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+	if (!module) {
 		Log("ERROR: OpenXR: runtime DLL failed to load (error %u)", (unsigned)GetLastError());
 		return nullptr;
 	}
@@ -96,31 +96,31 @@ static PFN_xrGetInstanceProcAddr FromActiveRuntime() {
 	char negName[128] = "xrNegotiateLoaderRuntimeInterface";
 	pure::json_find_string(json, len, "xrNegotiateLoaderRuntimeInterface", negName, sizeof(negName));
 	PFN_xrNegotiateLoaderRuntimeInterface negotiate =
-		(PFN_xrNegotiateLoaderRuntimeInterface)(void*)GetProcAddress(m, negName);
+		(PFN_xrNegotiateLoaderRuntimeInterface)(void*)GetProcAddress(module, negName);
 	if (negotiate) {
-		XrNegotiateLoaderInfo li = {};
-		li.structType = XR_LOADER_INTERFACE_STRUCT_LOADER_INFO;
-		li.structVersion = XR_LOADER_INFO_STRUCT_VERSION;
-		li.structSize = sizeof(li);
-		li.minInterfaceVersion = 1;
-		li.maxInterfaceVersion = XR_CURRENT_LOADER_RUNTIME_VERSION;
-		li.minApiVersion = XR_MAKE_VERSION(1, 0, 0);
-		li.maxApiVersion = XR_MAKE_VERSION(1, 0x3ff, 0xfff);
-		XrNegotiateRuntimeRequest rr = {};
-		rr.structType = XR_LOADER_INTERFACE_STRUCT_RUNTIME_REQUEST;
-		rr.structVersion = XR_RUNTIME_INFO_STRUCT_VERSION;
-		rr.structSize = sizeof(rr);
-		XrResult r = negotiate(&li, &rr);
-		if (XR_SUCCEEDED(r) && rr.getInstanceProcAddr) {
-			Log("OpenXR: negotiated with runtime (interface %u, API %u.%u)", rr.runtimeInterfaceVersion,
-				(unsigned)XR_VERSION_MAJOR(rr.runtimeApiVersion), (unsigned)XR_VERSION_MINOR(rr.runtimeApiVersion));
-			return rr.getInstanceProcAddr;
+		XrNegotiateLoaderInfo loaderInfo = {};
+		loaderInfo.structType = XR_LOADER_INTERFACE_STRUCT_LOADER_INFO;
+		loaderInfo.structVersion = XR_LOADER_INFO_STRUCT_VERSION;
+		loaderInfo.structSize = sizeof(loaderInfo);
+		loaderInfo.minInterfaceVersion = 1;
+		loaderInfo.maxInterfaceVersion = XR_CURRENT_LOADER_RUNTIME_VERSION;
+		loaderInfo.minApiVersion = XR_MAKE_VERSION(1, 0, 0);
+		loaderInfo.maxApiVersion = XR_MAKE_VERSION(1, 0x3ff, 0xfff);
+		XrNegotiateRuntimeRequest runtimeRequest = {};
+		runtimeRequest.structType = XR_LOADER_INTERFACE_STRUCT_RUNTIME_REQUEST;
+		runtimeRequest.structVersion = XR_RUNTIME_INFO_STRUCT_VERSION;
+		runtimeRequest.structSize = sizeof(runtimeRequest);
+		XrResult result = negotiate(&loaderInfo, &runtimeRequest);
+		if (XR_SUCCEEDED(result) && runtimeRequest.getInstanceProcAddr) {
+			Log("OpenXR: negotiated with runtime (interface %u, API %u.%u)", runtimeRequest.runtimeInterfaceVersion,
+				(unsigned)XR_VERSION_MAJOR(runtimeRequest.runtimeApiVersion), (unsigned)XR_VERSION_MINOR(runtimeRequest.runtimeApiVersion));
+			return runtimeRequest.getInstanceProcAddr;
 		}
-		Log("OpenXR: runtime negotiation failed (%d), trying plain export", (int)r);
+		Log("OpenXR: runtime negotiation failed (%d), trying plain export", (int)result);
 	}
-	PFN_xrGetInstanceProcAddr gipa = (PFN_xrGetInstanceProcAddr)(void*)GetProcAddress(m, "xrGetInstanceProcAddr");
-	if (!gipa) Log("ERROR: OpenXR: runtime exports neither %s nor xrGetInstanceProcAddr", negName);
-	return gipa;
+	PFN_xrGetInstanceProcAddr getProcAddr = (PFN_xrGetInstanceProcAddr)(void*)GetProcAddress(module, "xrGetInstanceProcAddr");
+	if (!getProcAddr) Log("ERROR: OpenXR: runtime exports neither %s nor xrGetInstanceProcAddr", negName);
+	return getProcAddr;
 }
 
 PFN_xrGetInstanceProcAddr XrLoadEntry() {

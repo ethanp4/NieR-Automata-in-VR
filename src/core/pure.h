@@ -55,7 +55,7 @@ inline bool json_find_string(const char* json, size_t jsonLen, const char* key, 
 	return false;
 }
 
-// Head-direction culling (0.3.22): a LookAt(eye, target, up) turned the way the headset looks.
+// Head-direction culling: a LookAt(eye, target, up) turned the way the headset looks.
 // `rel` is the eye's pose relative to the game camera (only its rotation is used, columns = the
 // eye's right/up/back in the camera's frame). The camera frame is rebuilt from eye/target/up, so
 // the result follows this frame's camera even when `rel` is a frame old. Returns false (and leaves
@@ -172,7 +172,7 @@ inline bool classify_projection(const float* m, ProjInfo* out) {
 	return true;
 }
 
-// VR controllers as a gamepad (vr_controllers.cpp, 0.4.0): the left menu button. A tap (released within
+// VR controllers as a gamepad (vr_controllers.cpp): the left menu button. A tap (released within
 // 0.5 s, stick not used) gives Start for 120 ms; holding it gives Back after 0.5 s; while it is held
 // the left stick is the D-pad (and the stick itself reads neutral). Bits as XInput's.
 struct MenuButton {
@@ -250,7 +250,7 @@ inline bool mostly_up(V3 v, float upY, float minSin = 0.65f) {
 // 	}
 // };
 
-// GI volumes (viewfix.cpp, 0.4.3). The game's probe-selection pass loops over g_CubeInput (96-byte
+// GI volumes (viewfix.cpp). The game's probe-selection pass loops over g_CubeInput (96-byte
 // entries = 24 floats: a = position (a.w != 0: slot in use), b/c/d = rows of view -> box space,
 // f.xyz = half extents) and writes the chosen *slot numbers* per pixel; later shaders sample
 // g_CubeTexArray at those slots, so slots must never move. This picks, from a CPU copy of the
@@ -307,7 +307,7 @@ inline GiPick gi_pick(const float* e, int count, int keep, int margin) {
 	return r;
 }
 
-// Level reference for recentering (0.5.2): heading-only orientation whose forward is the horizontal
+// Level reference for recentering: heading-only orientation whose forward is the horizontal
 // part of the head's forward and whose up is the space's up. OpenXR's LOCAL space has +Y up, but
 // Virtual Desktop through SteamVR gave one rolled 180 degrees (head 1.5 m *below* the origin, the
 // game picture upside down). When the head's up points down -Y (*flipped stays as it was while the

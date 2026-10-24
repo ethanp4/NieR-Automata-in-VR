@@ -1,3 +1,4 @@
+// download.cpp - HTTPS download to a file with a SHA256 check (WinHTTP, BCrypt), and a file's SHA256.
 #include "core/download.h"
 #include <stdio.h>
 #include <stdint.h>
@@ -42,44 +43,44 @@ bool HttpDownload(const wchar_t* url, const wchar_t* path, const char* sha256, v
 	*got = 0;
 	*total = 0;
 	err[0] = 0;
-	URL_COMPONENTS u = {};
-	u.dwStructSize = sizeof(u);
+	URL_COMPONENTS parts = {};
+	parts.dwStructSize = sizeof(parts);
 	wchar_t host[256], pathPart[1024];
-	u.lpszHostName = host;
-	u.dwHostNameLength = 256;
-	u.lpszUrlPath = pathPart;
-	u.dwUrlPathLength = 1024;
-	if (!WinHttpCrackUrl(url, 0, 0, &u)) {
+	parts.lpszHostName = host;
+	parts.dwHostNameLength = 256;
+	parts.lpszUrlPath = pathPart;
+	parts.dwUrlPathLength = 1024;
+	if (!WinHttpCrackUrl(url, 0, 0, &parts)) {
 		snprintf(err, errCap, "bad address");
 		return false;
 	}
 	// automatic proxy needs Windows 8.1; older systems fall back to the default proxy settings
-	Inet s, c, r;
-	s.h = WinHttpOpen(L"NieRVR", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0);
-	if (!s.h) s.h = WinHttpOpen(L"NieRVR", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0);
-	if (s.h) c.h = WinHttpConnect(s.h, host, u.nPort, 0);
-	if (c.h)
-		r.h = WinHttpOpenRequest(c.h, L"GET", pathPart, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-								 u.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
-	if (!r.h || !WinHttpSendRequest(r.h, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-		!WinHttpReceiveResponse(r.h, nullptr)) {
+	Inet session, connection, request;
+	session.h = WinHttpOpen(L"NieRVR", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0);
+	if (!session.h) session.h = WinHttpOpen(L"NieRVR", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0);
+	if (session.h) connection.h = WinHttpConnect(session.h, host, parts.nPort, 0);
+	if (connection.h)
+		request.h = WinHttpOpenRequest(connection.h, L"GET", pathPart, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+									   parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
+	if (!request.h || !WinHttpSendRequest(request.h, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+		!WinHttpReceiveResponse(request.h, nullptr)) {
 		snprintf(err, errCap, "no connection (error %u)", (unsigned)GetLastError());
 		return false;
 	}
-	DWORD status = 0, sz = sizeof(status);
-	WinHttpQueryHeaders(r.h, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr, &status, &sz, nullptr);
+	DWORD status = 0, size = sizeof(status);
+	WinHttpQueryHeaders(request.h, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr, &status, &size, nullptr);
 	if (status != 200) {
 		snprintf(err, errCap, "the server answered %u", (unsigned)status);
 		return false;
 	}
-	wchar_t len[32];
-	sz = sizeof(len);
-	if (WinHttpQueryHeaders(r.h, WINHTTP_QUERY_CONTENT_LENGTH, nullptr, len, &sz, nullptr)) *total = _wtoi64(len);
+	wchar_t lengthText[32];
+	size = sizeof(lengthText);
+	if (WinHttpQueryHeaders(request.h, WINHTTP_QUERY_CONTENT_LENGTH, nullptr, lengthText, &size, nullptr)) *total = _wtoi64(lengthText);
 
-	wchar_t part[MAX_PATH];
-	snwprintf(part, MAX_PATH, L"%ls.part", path);
-	HANDLE f = CreateFileW(part, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (f == INVALID_HANDLE_VALUE) {
+	wchar_t partPath[MAX_PATH];
+	snwprintf(partPath, MAX_PATH, L"%ls.part", path);
+	HANDLE file = CreateFileW(partPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (file == INVALID_HANDLE_VALUE) {
 		snprintf(err, errCap, "can't write to the game's folder (error %u)", (unsigned)GetLastError());
 		return false;
 	}
@@ -92,48 +93,48 @@ bool HttpDownload(const wchar_t* url, const wchar_t* path, const char* sha256, v
 			ok = false;
 			break;
 		}
-		DWORD n = 0, wrote = 0;
-		if (!WinHttpReadData(r.h, buf, sizeof(buf), &n)) {
+		DWORD read = 0, wrote = 0;
+		if (!WinHttpReadData(request.h, buf, sizeof(buf), &read)) {
 			snprintf(err, errCap, "the connection broke (error %u)", (unsigned)GetLastError());
 			ok = false;
 			break;
 		}
-		if (n == 0) break;  // done
-		hash.Add(buf, n);
-		if (!WriteFile(f, buf, n, &wrote, nullptr) || wrote != n) {
+		if (read == 0) break;  // done
+		hash.Add(buf, read);
+		if (!WriteFile(file, buf, read, &wrote, nullptr) || wrote != read) {
 			snprintf(err, errCap, "can't write (disk full?)");
 			ok = false;
 			break;
 		}
-		InterlockedAdd64(got, n);
+		InterlockedAdd64(got, read);
 	}
-	CloseHandle(f);
+	CloseHandle(file);
 	char hex[65];
 	if (ok && (!hash.Hex(hex) || _stricmp(hex, sha256) != 0)) {
 		snprintf(err, errCap, "the file isn't the expected one (checksum)");
 		ok = false;
 	}
-	if (ok && !MoveFileExW(part, path, MOVEFILE_REPLACE_EXISTING)) {
+	if (ok && !MoveFileExW(partPath, path, MOVEFILE_REPLACE_EXISTING)) {
 		snprintf(err, errCap, "can't put the file in place (error %u)", (unsigned)GetLastError());
 		ok = false;
 	}
-	if (!ok) DeleteFileW(part);
+	if (!ok) DeleteFileW(partPath);
 	return ok;
 }
 
 bool FileSha256(const wchar_t* path, char hex[65]) {
-	HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-						   FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-	if (f == INVALID_HANDLE_VALUE) return false;
+	HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+							  FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+	if (file == INVALID_HANDLE_VALUE) return false;
 	Sha256 hash;
 	static char buf[1 << 16];
-	DWORD n = 0;
+	DWORD read = 0;
 	bool ok = true;
 	while (true) {
-		ok = ReadFile(f, buf, sizeof(buf), &n, nullptr);
-		if (!ok || n == 0) break;
-		hash.Add(buf, n);
+		ok = ReadFile(file, buf, sizeof(buf), &read, nullptr);
+		if (!ok || read == 0) break;
+		hash.Add(buf, read);
 	}
-	CloseHandle(f);
+	CloseHandle(file);
 	return ok && hash.Hex(hex);
 }

@@ -1,3 +1,4 @@
+// download.h - file download and SHA256 (download.cpp), used for the DLSS file.
 #pragma once
 #include <windows.h>
 

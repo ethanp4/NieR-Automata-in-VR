@@ -1,3 +1,4 @@
+// imgui_panel.cpp - Dear ImGui panels (the menu, the stats overlay) drawn on the VR thread's device.
 #include "ui/imgui_panel.h"
 #include "core/log.h"
 #include <stdio.h>
@@ -6,14 +7,14 @@
 #include "imgui.h"
 
 // ImGui's DX11 backend calls D3DCompile for its two small shaders. Defined here so the DLL doesn't
-// import d3dcompiler_47.dll at load time: it's loaded on first use, like xr_main.cpp does.
+// import d3dcompiler_47.dll at load time: it's loaded on first use, like xr_device.cpp does.
 HRESULT WINAPI D3DCompile(const void* data, SIZE_T size, const char* name, const D3D_SHADER_MACRO* defines,
 						  ID3DInclude* include, const char* entry, const char* target, UINT flags1, UINT flags2,
 						  ID3DBlob** code, ID3DBlob** errors) {
 	static pD3DCompile real;
 	if (!real) {
-		HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
-		real = m ? (pD3DCompile)(void*)GetProcAddress(m, "D3DCompile") : nullptr;
+		HMODULE compilerDll = LoadLibraryW(L"d3dcompiler_47.dll");
+		real = compilerDll ? (pD3DCompile)(void*)GetProcAddress(compilerDll, "D3DCompile") : nullptr;
 		if (!real) {
 			Log("ui: d3dcompiler_47.dll not available (error %u)", (unsigned)GetLastError());
 			return E_FAIL;
@@ -23,104 +24,104 @@ HRESULT WINAPI D3DCompile(const void* data, SIZE_T size, const char* name, const
 }
 
 namespace {
-ImVec4 C(const float* c) { return ImVec4(c[0], c[1], c[2], c[3]); }
-ImVec4 C(const float* c, float a) { return ImVec4(c[0], c[1], c[2], a); }
+ImVec4 ToImVec4(const float* color) { return ImVec4(color[0], color[1], color[2], color[3]); }
+ImVec4 ToImVec4(const float* color, float alpha) { return ImVec4(color[0], color[1], color[2], alpha); }
 
 void LoadFont(ImGuiIO& io, float size) {
 	char path[MAX_PATH];
-	UINT n = GetWindowsDirectoryA(path, MAX_PATH - 32);
-	if (n && n < MAX_PATH - 32) {
-		snprintf(path + n, MAX_PATH - n, "\\Fonts\\segoeui.ttf");
+	UINT length = GetWindowsDirectoryA(path, MAX_PATH - 32);
+	if (length && length < MAX_PATH - 32) {
+		snprintf(path + length, MAX_PATH - length, "\\Fonts\\segoeui.ttf");
 		if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES && io.Fonts->AddFontFromFileTTF(path, size)) return;
 	}
 	io.Fonts->AddFontDefault();
 }
 
-void Style(float fontSize) {
+void ApplyStyle(float fontSize) {
 	using ui::Colors;
-	ImGuiStyle& s = ImGui::GetStyle();
-	s.FontSizeBase = fontSize;
-	s.WindowRounding = 6;
-	s.WindowBorderSize = 0;
-	s.FrameRounding = 4;
-	s.GrabRounding = 4;
-	s.GrabMinSize = fontSize * 0.2f;
-	s.FramePadding = ImVec2(fontSize * 0.4f, fontSize * 0.2f);
-	s.ItemSpacing = ImVec2(fontSize * 0.4f, fontSize * 0.3f);
-	s.CellPadding = ImVec2(fontSize * 0.3f, fontSize * 0.25f);
-	s.ScrollbarSize = fontSize * 0.5f;
-	ImVec4* c = s.Colors;
-	c[ImGuiCol_Text] = C(Colors::text);
-	c[ImGuiCol_TextDisabled] = C(Colors::dim);
-	c[ImGuiCol_WindowBg] = C(Colors::bg);
-	c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
-	c[ImGuiCol_Separator] = C(Colors::bar);
-	c[ImGuiCol_FrameBg] = C(Colors::bar);
-	c[ImGuiCol_FrameBgHovered] = C(Colors::bar);
-	c[ImGuiCol_FrameBgActive] = C(Colors::accent, 0.35f);
-	c[ImGuiCol_SliderGrab] = C(Colors::accent, 0.55f);
-	c[ImGuiCol_SliderGrabActive] = C(Colors::text);
-	c[ImGuiCol_CheckMark] = C(Colors::accent);
-	c[ImGuiCol_CheckboxSelectedBg] = C(Colors::bar);
-	c[ImGuiCol_Button] = C(Colors::bar);
-	c[ImGuiCol_ButtonHovered] = C(Colors::bar);
-	c[ImGuiCol_ButtonActive] = C(Colors::accent, 0.5f);
-	c[ImGuiCol_Header] = C(Colors::bar);
-	c[ImGuiCol_HeaderHovered] = C(Colors::bar);
-	c[ImGuiCol_HeaderActive] = C(Colors::bar);
-	c[ImGuiCol_Tab] = ImVec4(0, 0, 0, 0);
-	c[ImGuiCol_TabHovered] = C(Colors::bar);
-	c[ImGuiCol_TabSelected] = C(Colors::accent, 0.85f);
-	c[ImGuiCol_TabSelectedOverline] = C(Colors::accent);
-	c[ImGuiCol_TabDimmed] = ImVec4(0, 0, 0, 0);
-	c[ImGuiCol_TabDimmedSelected] = C(Colors::accent, 0.85f);
-	c[ImGuiCol_PlotLines] = C(Colors::accent);
-	c[ImGuiCol_NavCursor] = C(Colors::accent);
-	c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
-	c[ImGuiCol_ScrollbarGrab] = C(Colors::bar);
-	c[ImGuiCol_TableRowBg] = ImVec4(0, 0, 0, 0);
-	c[ImGuiCol_TableRowBgAlt] = ImVec4(0, 0, 0, 0);
+	ImGuiStyle& style = ImGui::GetStyle();
+	style.FontSizeBase = fontSize;
+	style.WindowRounding = 6;
+	style.WindowBorderSize = 0;
+	style.FrameRounding = 4;
+	style.GrabRounding = 4;
+	style.GrabMinSize = fontSize * 0.2f;
+	style.FramePadding = ImVec2(fontSize * 0.4f, fontSize * 0.2f);
+	style.ItemSpacing = ImVec2(fontSize * 0.4f, fontSize * 0.3f);
+	style.CellPadding = ImVec2(fontSize * 0.3f, fontSize * 0.25f);
+	style.ScrollbarSize = fontSize * 0.5f;
+	ImVec4* colors = style.Colors;
+	colors[ImGuiCol_Text] = ToImVec4(Colors::text);
+	colors[ImGuiCol_TextDisabled] = ToImVec4(Colors::dim);
+	colors[ImGuiCol_WindowBg] = ToImVec4(Colors::bg);
+	colors[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
+	colors[ImGuiCol_Separator] = ToImVec4(Colors::bar);
+	colors[ImGuiCol_FrameBg] = ToImVec4(Colors::bar);
+	colors[ImGuiCol_FrameBgHovered] = ToImVec4(Colors::bar);
+	colors[ImGuiCol_FrameBgActive] = ToImVec4(Colors::accent, 0.35f);
+	colors[ImGuiCol_SliderGrab] = ToImVec4(Colors::accent, 0.55f);
+	colors[ImGuiCol_SliderGrabActive] = ToImVec4(Colors::text);
+	colors[ImGuiCol_CheckMark] = ToImVec4(Colors::accent);
+	colors[ImGuiCol_CheckboxSelectedBg] = ToImVec4(Colors::bar);
+	colors[ImGuiCol_Button] = ToImVec4(Colors::bar);
+	colors[ImGuiCol_ButtonHovered] = ToImVec4(Colors::bar);
+	colors[ImGuiCol_ButtonActive] = ToImVec4(Colors::accent, 0.5f);
+	colors[ImGuiCol_Header] = ToImVec4(Colors::bar);
+	colors[ImGuiCol_HeaderHovered] = ToImVec4(Colors::bar);
+	colors[ImGuiCol_HeaderActive] = ToImVec4(Colors::bar);
+	colors[ImGuiCol_Tab] = ImVec4(0, 0, 0, 0);
+	colors[ImGuiCol_TabHovered] = ToImVec4(Colors::bar);
+	colors[ImGuiCol_TabSelected] = ToImVec4(Colors::accent, 0.85f);
+	colors[ImGuiCol_TabSelectedOverline] = ToImVec4(Colors::accent);
+	colors[ImGuiCol_TabDimmed] = ImVec4(0, 0, 0, 0);
+	colors[ImGuiCol_TabDimmedSelected] = ToImVec4(Colors::accent, 0.85f);
+	colors[ImGuiCol_PlotLines] = ToImVec4(Colors::accent);
+	colors[ImGuiCol_NavCursor] = ToImVec4(Colors::accent);
+	colors[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+	colors[ImGuiCol_ScrollbarGrab] = ToImVec4(Colors::bar);
+	colors[ImGuiCol_TableRowBg] = ImVec4(0, 0, 0, 0);
+	colors[ImGuiCol_TableRowBgAlt] = ImVec4(0, 0, 0, 0);
 }
 
-bool Create(UiPanel& p, ID3D11Device* dev, ID3D11DeviceContext* dc) {
-	p.ctx = ImGui::CreateContext();
-	ImGui::SetCurrentContext(p.ctx);
+bool CreatePanel(UiPanel& panel, ID3D11Device* device, ID3D11DeviceContext* context) {
+	panel.ctx = ImGui::CreateContext();
+	ImGui::SetCurrentContext(panel.ctx);
 	ImGuiIO& io = ImGui::GetIO();
 	io.IniFilename = nullptr;
 	io.LogFilename = nullptr;
-	if (p.navigation) {
+	if (panel.navigation) {
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard;
 		io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 	}
-	LoadFont(io, p.fontSize);
-	Style(p.fontSize);
-	if (!ImGui_ImplDX11_Init(dev, dc)) {
-		Log("ui: %s: ImGui DX11 backend could not start", p.name);
-		ImGui::DestroyContext(p.ctx);
-		p.ctx = nullptr;
+	LoadFont(io, panel.fontSize);
+	ApplyStyle(panel.fontSize);
+	if (!ImGui_ImplDX11_Init(device, context)) {
+		Log("ui: %s: ImGui DX11 backend could not start", panel.name);
+		ImGui::DestroyContext(panel.ctx);
+		panel.ctx = nullptr;
 		return false;
 	}
-	QueryPerformanceCounter(&p.last);
-	Log("ui: %s: Dear ImGui %s", p.name, IMGUI_VERSION);
+	QueryPerformanceCounter(&panel.last);
+	Log("ui: %s: Dear ImGui %s", panel.name, IMGUI_VERSION);
 	return true;
 }
 }  // namespace
 
-bool UiPrepare(UiPanel& p, ID3D11Device* dev, ID3D11DeviceContext* dc, int w, int h) {
-	if (p.failed) return false;
-	if (!p.ctx && !Create(p, dev, dc)) {
-		p.failed = true;
+bool UiPrepare(UiPanel& panel, ID3D11Device* device, ID3D11DeviceContext* context, int width, int height) {
+	if (panel.failed) return false;
+	if (!panel.ctx && !CreatePanel(panel, device, context)) {
+		panel.failed = true;
 		return false;
 	}
-	ImGui::SetCurrentContext(p.ctx);
+	ImGui::SetCurrentContext(panel.ctx);
 	ImGuiIO& io = ImGui::GetIO();
-	io.DisplaySize = ImVec2((float)w, (float)h);
+	io.DisplaySize = ImVec2((float)width, (float)height);
 	LARGE_INTEGER now, freq;
 	QueryPerformanceCounter(&now);
 	QueryPerformanceFrequency(&freq);
-	float dt = (float)(now.QuadPart - p.last.QuadPart) / (float)freq.QuadPart;
+	float dt = (float)(now.QuadPart - panel.last.QuadPart) / (float)freq.QuadPart;
 	io.DeltaTime = dt > 0 && dt < 1 ? dt : 1.0f / 60;
-	p.last = now;
+	panel.last = now;
 	return true;
 }
 
@@ -130,11 +131,11 @@ void UiNewFrame() {
 }
 
 // Ends the frame and draws it into rtv, cleared to fully see-through first.
-void UiRender(ID3D11DeviceContext* dc, ID3D11RenderTargetView* rtv) {
+void UiRender(ID3D11DeviceContext* context, ID3D11RenderTargetView* rtv) {
 	ImGui::Render();
 	const float clear[4] = {0, 0, 0, 0};
-	dc->ClearRenderTargetView(rtv, clear);
-	dc->OMSetRenderTargets(1, &rtv, nullptr);
+	context->ClearRenderTargetView(rtv, clear);
+	context->OMSetRenderTargets(1, &rtv, nullptr);
 	ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-	dc->OMSetRenderTargets(0, nullptr, nullptr);
+	context->OMSetRenderTargets(0, nullptr, nullptr);
 }
