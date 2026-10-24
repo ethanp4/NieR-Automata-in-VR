@@ -5,12 +5,19 @@
 #include <initializer_list>
 #include "core/pure.h"
 static int fails;
-static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
+static void check(bool c, const char* w) {
+	if (!c) {
+		std::printf("FAIL %s\n", w);
+		fails++;
+	}
+}
 static pure::Q yawPitch(float y, float p) {
 	y /= 57.29578f, p /= 57.29578f;
 	return pure::q_mul(pure::Q{0, std::sin(y / 2), 0, std::cos(y / 2)}, pure::Q{std::sin(p / 2), 0, 0, std::cos(p / 2)});
 }
-struct Warp { float outTan[4], srcTan[2], m[3][3]; };
+struct Warp {
+	float outTan[4], srcTan[2], m[3][3];
+};
 static Warp make(pure::Q render, pure::Q shown, float l, float r, float u, float d, float hw, float hh) {
 	Warp w{{l, r, u, d}, {hw, hh}, {}};
 	pure::M4 rr = pure::m4_from_pose(render, {0, 0, 0}), rd = pure::m4_from_pose(shown, {0, 0, 0});

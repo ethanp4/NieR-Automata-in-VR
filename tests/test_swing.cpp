@@ -66,8 +66,7 @@ int main() {
 	{  // raise then swing down: the raise is ignored, the downswing attacks once
 		pure::SwingDetector d;
 		uint32_t t = 1000;
-		const pure::V3 v[] = {{0, 1, 0}, {0, 2.5f, 0}, {0, 3, 0.2f}, {0, 1, 0}, {0, 0.2f, 0}, {0, -1, 0.5f},
-							  {0, -2.5f, 1}, {0, -3.5f, 1}, {0, -2, 0.5f}, {0, -0.5f, 0}};
+		const pure::V3 v[] = {{0, 1, 0}, {0, 2.5f, 0}, {0, 3, 0.2f}, {0, 1, 0}, {0, 0.2f, 0}, {0, -1, 0.5f}, {0, -2.5f, 1}, {0, -3.5f, 1}, {0, -2, 0.5f}, {0, -0.5f, 0}};
 		int fires = 0;
 		for (const pure::V3& s : v) {
 			float speed = pure::fsqrt(s.x * s.x + s.y * s.y + s.z * s.z);
@@ -83,8 +82,11 @@ int main() {
 		struct F {
 			float dist, speed;
 		};
-		const F f[] = {{0.5f, 0.5f}, {0.3f, 1.0f}, {0.2f, 0.8f},  {0.15f, 2.5f}, {0.15f, 2.2f}, {0.2f, 0.5f},  // adjusting
-					   {0.3f, 2.4f}, {0.4f, 2.8f}, {0.5f, 2.0f},  {0.6f, 0.8f}};                                  // lowering
+		const F f[] = {{0.5f, 0.5f}, {0.3f, 1.0f}, {0.2f, 0.8f}, {0.15f, 2.5f}, {0.15f, 2.2f}, {0.2f, 0.5f},  // adjusting
+					   {0.3f, 2.4f},
+					   {0.4f, 2.8f},
+					   {0.5f, 2.0f},
+					   {0.6f, 0.8f}};                                  // lowering
 		int fires = 0;
 		for (const F& s : f) {
 			fires += d.update(z.update(s.dist, t) ? 0 : s.speed, t, 2.0f);

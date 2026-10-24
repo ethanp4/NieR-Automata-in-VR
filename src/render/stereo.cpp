@@ -640,7 +640,7 @@ void StereoMemoryScan() {
 					for (float v : fovValues)
 						if (around[k] > v * 0.9999f && around[k] < v * 1.0001f)
 							nl += snprintf(nearBuf + nl, sizeof(nearBuf) - nl, " %d:%.5f",
-											   (int)(k * 4) + startOff, (double)around[k]);
+										   (int)(k * 4) + startOff, (double)around[k]);
 				Log("memscan: camera position at %p (%s)%s%s", at, where, nl ? "; fov-like values at offsets" : "",
 					nearBuf);
 				if (++hits >= 24) break;

@@ -127,7 +127,12 @@ UINT g_bbW, g_bbH;
 unsigned g_frameCounter;
 unsigned g_warps, g_skips;
 // why frames weren't corrected (logged with the 30 s report)
-enum { WHY_COLOR, WHY_DEPTH, WHY_OLD, WHY_SIZE, WHY_CAMERA, WHY_COUNT };
+enum { WHY_COLOR,
+	   WHY_DEPTH,
+	   WHY_OLD,
+	   WHY_SIZE,
+	   WHY_CAMERA,
+	   WHY_COUNT };
 unsigned g_why[WHY_COUNT];
 const char* const kWhy[WHY_COUNT] = {"no image of the other eye", "no depth of the other eye",
 									 "the other eye's depth isn't from the previous frame", "image and depth sizes differ",
@@ -207,13 +212,25 @@ bool Init(ID3D11Device* dev) {
 bool DepthFormats(DXGI_FORMAT f, DXGI_FORMAT* tex, DXGI_FORMAT* srv) {
 	switch (f) {
 		case DXGI_FORMAT_D24_UNORM_S8_UINT:
-		case DXGI_FORMAT_R24G8_TYPELESS: *tex = DXGI_FORMAT_R24G8_TYPELESS; *srv = DXGI_FORMAT_R24_UNORM_X8_TYPELESS; return true;
+		case DXGI_FORMAT_R24G8_TYPELESS:
+			*tex = DXGI_FORMAT_R24G8_TYPELESS;
+			*srv = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+			return true;
 		case DXGI_FORMAT_D32_FLOAT:
-		case DXGI_FORMAT_R32_TYPELESS: *tex = DXGI_FORMAT_R32_TYPELESS; *srv = DXGI_FORMAT_R32_FLOAT; return true;
+		case DXGI_FORMAT_R32_TYPELESS:
+			*tex = DXGI_FORMAT_R32_TYPELESS;
+			*srv = DXGI_FORMAT_R32_FLOAT;
+			return true;
 		case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
-		case DXGI_FORMAT_R32G8X24_TYPELESS: *tex = DXGI_FORMAT_R32G8X24_TYPELESS; *srv = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS; return true;
+		case DXGI_FORMAT_R32G8X24_TYPELESS:
+			*tex = DXGI_FORMAT_R32G8X24_TYPELESS;
+			*srv = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+			return true;
 		case DXGI_FORMAT_D16_UNORM:
-		case DXGI_FORMAT_R16_TYPELESS: *tex = DXGI_FORMAT_R16_TYPELESS; *srv = DXGI_FORMAT_R16_UNORM; return true;
+		case DXGI_FORMAT_R16_TYPELESS:
+			*tex = DXGI_FORMAT_R16_TYPELESS;
+			*srv = DXGI_FORMAT_R16_UNORM;
+			return true;
 		default: return false;
 	}
 }
@@ -392,11 +409,12 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
 	float T[16], proj[4];
 	ID3D11Texture2D* result = nullptr;
 	EyeData& o = g_eye[other];
-	int why = !o.colorOk ? WHY_COLOR
-			  : !o.depthOk ? WHY_DEPTH
-			  : o.depthFrame + 1 != g_frameCounter ? WHY_OLD
-			  : !SameShape(g_depthDesc, sd) ? WHY_SIZE
-			  : !StereoReprojectParams(other, T, proj, tag) ? WHY_CAMERA : -1;
+	int why = !o.colorOk                                    ? WHY_COLOR
+			  : !o.depthOk                                  ? WHY_DEPTH
+			  : o.depthFrame + 1 != g_frameCounter          ? WHY_OLD
+			  : !SameShape(g_depthDesc, sd)                 ? WHY_SIZE
+			  : !StereoReprojectParams(other, T, proj, tag) ? WHY_CAMERA
+															: -1;
 	bool ready = why < 0;
 	if (why >= 0) g_why[why]++;
 	if (ready) {

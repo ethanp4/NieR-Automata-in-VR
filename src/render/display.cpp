@@ -196,17 +196,13 @@ HRESULT STDMETHODCALLTYPE H_GetDisplayModeList(IDXGIOutput* o, DXGI_FORMAT fmt, 
 											   DXGI_MODE_DESC* desc) {
 	UINT bw = 0, bh = 0;
 	OutputDesktopSize(o, &bw, &bh);
-	return ModeListWithExtras("GetDisplayModeList", __builtin_return_address(0),
-							  [&](UINT* n, DXGI_MODE_DESC* d) { return o_GetDisplayModeList(o, fmt, flags, n, d); },
-							  fmt, flags, num, desc, bw, bh);
+	return ModeListWithExtras("GetDisplayModeList", __builtin_return_address(0), [&](UINT* n, DXGI_MODE_DESC* d) { return o_GetDisplayModeList(o, fmt, flags, n, d); }, fmt, flags, num, desc, bw, bh);
 }
 HRESULT STDMETHODCALLTYPE H_GetDisplayModeList1(IDXGIOutput1* o, DXGI_FORMAT fmt, UINT flags, UINT* num,
 												DXGI_MODE_DESC1* desc) {
 	UINT bw = 0, bh = 0;
 	OutputDesktopSize(o, &bw, &bh);
-	return ModeListWithExtras("GetDisplayModeList1", __builtin_return_address(0),
-							  [&](UINT* n, DXGI_MODE_DESC1* d) { return o_GetDisplayModeList1(o, fmt, flags, n, d); },
-							  fmt, flags, num, desc, bw, bh);
+	return ModeListWithExtras("GetDisplayModeList1", __builtin_return_address(0), [&](UINT* n, DXGI_MODE_DESC1* d) { return o_GetDisplayModeList1(o, fmt, flags, n, d); }, fmt, flags, num, desc, bw, bh);
 }
 
 HRESULT STDMETHODCALLTYPE H_FindClosest(IDXGIOutput* o, const DXGI_MODE_DESC* want, DXGI_MODE_DESC* out,
@@ -408,30 +404,22 @@ bool Ready(void* ret) {
 BOOL WINAPI H_EnumDisplaySettingsW(LPCWSTR dev, DWORD i, DEVMODEW* dm) {
 	void* ret = __builtin_return_address(0);
 	if (!Ready(ret)) return o_EnumDisplaySettingsW(dev, i, dm);
-	return EnumWithExtras(g_enumW, "EnumDisplaySettingsW", i, dm, ret,
-						  [&] { return o_EnumDisplaySettingsW(dev, i, dm); },
-						  [&](DEVMODEW* c) { return o_EnumDisplaySettingsW(dev, ENUM_CURRENT_SETTINGS, c); });
+	return EnumWithExtras(g_enumW, "EnumDisplaySettingsW", i, dm, ret, [&] { return o_EnumDisplaySettingsW(dev, i, dm); }, [&](DEVMODEW* c) { return o_EnumDisplaySettingsW(dev, ENUM_CURRENT_SETTINGS, c); });
 }
 BOOL WINAPI H_EnumDisplaySettingsA(LPCSTR dev, DWORD i, DEVMODEA* dm) {
 	void* ret = __builtin_return_address(0);
 	if (!Ready(ret)) return o_EnumDisplaySettingsA(dev, i, dm);
-	return EnumWithExtras(g_enumA, "EnumDisplaySettingsA", i, dm, ret,
-						  [&] { return o_EnumDisplaySettingsA(dev, i, dm); },
-						  [&](DEVMODEA* c) { return o_EnumDisplaySettingsA(dev, ENUM_CURRENT_SETTINGS, c); });
+	return EnumWithExtras(g_enumA, "EnumDisplaySettingsA", i, dm, ret, [&] { return o_EnumDisplaySettingsA(dev, i, dm); }, [&](DEVMODEA* c) { return o_EnumDisplaySettingsA(dev, ENUM_CURRENT_SETTINGS, c); });
 }
 BOOL WINAPI H_EnumDisplaySettingsExW(LPCWSTR dev, DWORD i, DEVMODEW* dm, DWORD fl) {
 	void* ret = __builtin_return_address(0);
 	if (!Ready(ret)) return o_EnumDisplaySettingsExW(dev, i, dm, fl);
-	return EnumWithExtras(g_enumW, "EnumDisplaySettingsExW", i, dm, ret,
-						  [&] { return o_EnumDisplaySettingsExW(dev, i, dm, fl); },
-						  [&](DEVMODEW* c) { return o_EnumDisplaySettingsExW(dev, ENUM_CURRENT_SETTINGS, c, 0); });
+	return EnumWithExtras(g_enumW, "EnumDisplaySettingsExW", i, dm, ret, [&] { return o_EnumDisplaySettingsExW(dev, i, dm, fl); }, [&](DEVMODEW* c) { return o_EnumDisplaySettingsExW(dev, ENUM_CURRENT_SETTINGS, c, 0); });
 }
 BOOL WINAPI H_EnumDisplaySettingsExA(LPCSTR dev, DWORD i, DEVMODEA* dm, DWORD fl) {
 	void* ret = __builtin_return_address(0);
 	if (!Ready(ret)) return o_EnumDisplaySettingsExA(dev, i, dm, fl);
-	return EnumWithExtras(g_enumA, "EnumDisplaySettingsExA", i, dm, ret,
-						  [&] { return o_EnumDisplaySettingsExA(dev, i, dm, fl); },
-						  [&](DEVMODEA* c) { return o_EnumDisplaySettingsExA(dev, ENUM_CURRENT_SETTINGS, c, 0); });
+	return EnumWithExtras(g_enumA, "EnumDisplaySettingsExA", i, dm, ret, [&] { return o_EnumDisplaySettingsExA(dev, i, dm, fl); }, [&](DEVMODEA* c) { return o_EnumDisplaySettingsExA(dev, ENUM_CURRENT_SETTINGS, c, 0); });
 }
 
 // DXGI factories made by the game: initialise the mod first, so the mode-list hooks exist before
@@ -713,8 +701,8 @@ void DisplayInstallHooks() {
 					 (void**)&o_CreateDXGIFactory1, "CreateDXGIFactory1");
 	}
 	PFN_CreateFactory create = o_CreateDXGIFactory ? o_CreateDXGIFactory
-							   : dxgi ? (PFN_CreateFactory)(void*)GetProcAddress(dxgi, "CreateDXGIFactory")
-									  : nullptr;
+							   : dxgi              ? (PFN_CreateFactory)(void*)GetProcAddress(dxgi, "CreateDXGIFactory")
+												   : nullptr;
 	IDXGIFactory* f = nullptr;
 	if (create && SUCCEEDED(create(__uuidof(IDXGIFactory), (void**)&f)) && f) {
 		void** fv = *(void***)f;

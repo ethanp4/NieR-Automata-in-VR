@@ -32,19 +32,29 @@
 #include <xinput.h>
 
 namespace {
-#define VR_FUNCS(X)                                                                                         \
-	X(xrStringToPath) X(xrCreateActionSet) X(xrDestroyActionSet) X(xrCreateAction)                         \
-	X(xrSuggestInteractionProfileBindings) X(xrAttachSessionActionSets) X(xrSyncActions)                   \
-	X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(xrGetActionStateVector2f) X(xrApplyHapticFeedback) \
-	X(xrStopHapticFeedback) X(xrGetCurrentInteractionProfile) X(xrPathToString) X(xrCreateActionSpace)          \
-	X(xrLocateSpace) X(xrDestroySpace)
+#define VR_FUNCS(X)                                                                                                  \
+	X(xrStringToPath)                                                                                                \
+	X(xrCreateActionSet) X(xrDestroyActionSet) X(xrCreateAction)                                                     \
+		X(xrSuggestInteractionProfileBindings) X(xrAttachSessionActionSets) X(xrSyncActions)                         \
+			X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(xrGetActionStateVector2f) X(xrApplyHapticFeedback) \
+				X(xrStopHapticFeedback) X(xrGetCurrentInteractionProfile) X(xrPathToString) X(xrCreateActionSpace)   \
+					X(xrLocateSpace) X(xrDestroySpace)
 struct {
 #define DECL(n) PFN_##n n;
 	VR_FUNCS(DECL)
 #undef DECL
 } F;
 
-enum Act { A_STICK, A_CLICK, A_TRIGGER, A_GRIP, A_A, A_B, A_MENU, A_HAPTIC, A_POSE, A_COUNT };
+enum Act { A_STICK,
+		   A_CLICK,
+		   A_TRIGGER,
+		   A_GRIP,
+		   A_A,
+		   A_B,
+		   A_MENU,
+		   A_HAPTIC,
+		   A_POSE,
+		   A_COUNT };
 XrInstance g_inst;
 XrActionSet g_set;
 XrAction g_act[A_COUNT];
@@ -88,9 +98,22 @@ bool HandoffKey(int vk) {
 	if (vk >= VK_F1 && vk <= VK_F24) return false;  // the mod's hotkeys
 	switch (vk) {
 		case VK_INSERT:  // settings menu
-		case VK_SHIFT: case VK_CONTROL: case VK_MENU: case VK_LSHIFT: case VK_RSHIFT: case VK_LCONTROL:
-		case VK_RCONTROL: case VK_LMENU: case VK_RMENU: case VK_LWIN: case VK_RWIN: case VK_APPS:
-		case VK_SNAPSHOT: case VK_CAPITAL: case VK_NUMLOCK: case VK_SCROLL:
+		case VK_SHIFT:
+		case VK_CONTROL:
+		case VK_MENU:
+		case VK_LSHIFT:
+		case VK_RSHIFT:
+		case VK_LCONTROL:
+		case VK_RCONTROL:
+		case VK_LMENU:
+		case VK_RMENU:
+		case VK_LWIN:
+		case VK_RWIN:
+		case VK_APPS:
+		case VK_SNAPSHOT:
+		case VK_CAPITAL:
+		case VK_NUMLOCK:
+		case VK_SCROLL:
 			return false;
 	}
 	return true;
@@ -147,47 +170,13 @@ void Suggest(const char* profile, const Bind* b, int n) {
 
 #define L "/user/hand/left/"
 #define R "/user/hand/right/"
-const Bind kTouch[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumbstick"},
-					   {A_CLICK, L "input/thumbstick/click"}, {A_CLICK, R "input/thumbstick/click"},
-					   {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"},
-					   {A_GRIP, L "input/squeeze/value"}, {A_GRIP, R "input/squeeze/value"},
-					   {A_A, L "input/x/click"}, {A_A, R "input/a/click"}, {A_B, L "input/y/click"}, {A_B, R "input/b/click"},
-					   {A_MENU, L "input/menu/click"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
-					   {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
-const Bind kIndex[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumbstick"},
-					   {A_CLICK, L "input/thumbstick/click"}, {A_CLICK, R "input/thumbstick/click"},
-					   {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"},
-					   {A_GRIP, L "input/squeeze/value"}, {A_GRIP, R "input/squeeze/value"},
-					   {A_A, L "input/a/click"}, {A_A, R "input/a/click"}, {A_B, L "input/b/click"}, {A_B, R "input/b/click"},
-					   {A_MENU, L "input/trackpad/force"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
-					   {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
-const Bind kPico[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumbstick"},
-					  {A_CLICK, L "input/thumbstick/click"}, {A_CLICK, R "input/thumbstick/click"},
-					  {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"},
-					  {A_GRIP, L "input/squeeze/value"}, {A_GRIP, R "input/squeeze/value"},
-					  {A_A, L "input/x/click"}, {A_A, R "input/a/click"}, {A_B, L "input/y/click"}, {A_B, R "input/b/click"},
-					  {A_MENU, L "input/menu/click"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
-					  {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
+const Bind kTouch[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumbstick"}, {A_CLICK, L "input/thumbstick/click"}, {A_CLICK, R "input/thumbstick/click"}, {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"}, {A_GRIP, L "input/squeeze/value"}, {A_GRIP, R "input/squeeze/value"}, {A_A, L "input/x/click"}, {A_A, R "input/a/click"}, {A_B, L "input/y/click"}, {A_B, R "input/b/click"}, {A_MENU, L "input/menu/click"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}, {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
+const Bind kIndex[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumbstick"}, {A_CLICK, L "input/thumbstick/click"}, {A_CLICK, R "input/thumbstick/click"}, {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"}, {A_GRIP, L "input/squeeze/value"}, {A_GRIP, R "input/squeeze/value"}, {A_A, L "input/a/click"}, {A_A, R "input/a/click"}, {A_B, L "input/b/click"}, {A_B, R "input/b/click"}, {A_MENU, L "input/trackpad/force"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}, {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
+const Bind kPico[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumbstick"}, {A_CLICK, L "input/thumbstick/click"}, {A_CLICK, R "input/thumbstick/click"}, {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"}, {A_GRIP, L "input/squeeze/value"}, {A_GRIP, R "input/squeeze/value"}, {A_A, L "input/x/click"}, {A_A, R "input/a/click"}, {A_B, L "input/y/click"}, {A_B, R "input/b/click"}, {A_MENU, L "input/menu/click"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}, {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
 // Vive wands have few buttons: right trackpad click = A, right menu = B, left trackpad click = L3.
-const Bind kVive[] = {{A_STICK, L "input/trackpad"}, {A_STICK, R "input/trackpad"},
-					  {A_CLICK, L "input/trackpad/click"}, {A_A, R "input/trackpad/click"},
-					  {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"},
-					  {A_GRIP, L "input/squeeze/click"}, {A_GRIP, R "input/squeeze/click"},
-					  {A_MENU, L "input/menu/click"}, {A_B, R "input/menu/click"},
-					  {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
-					  {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
-const Bind kWmr[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumbstick"},
-					 {A_CLICK, L "input/thumbstick/click"}, {A_CLICK, R "input/thumbstick/click"},
-					 {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"},
-					 {A_GRIP, L "input/squeeze/click"}, {A_GRIP, R "input/squeeze/click"},
-					 {A_A, L "input/trackpad/click"}, {A_A, R "input/trackpad/click"},
-					 {A_MENU, L "input/menu/click"}, {A_B, R "input/menu/click"},
-					 {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
-					 {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
-const Bind kSimple[] = {{A_TRIGGER, L "input/select/click"}, {A_TRIGGER, R "input/select/click"},
-						{A_MENU, L "input/menu/click"}, {A_B, R "input/menu/click"},
-						{A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"},
-						{A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
+const Bind kVive[] = {{A_STICK, L "input/trackpad"}, {A_STICK, R "input/trackpad"}, {A_CLICK, L "input/trackpad/click"}, {A_A, R "input/trackpad/click"}, {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"}, {A_GRIP, L "input/squeeze/click"}, {A_GRIP, R "input/squeeze/click"}, {A_MENU, L "input/menu/click"}, {A_B, R "input/menu/click"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}, {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
+const Bind kWmr[] = {{A_STICK, L "input/thumbstick"}, {A_STICK, R "input/thumbstick"}, {A_CLICK, L "input/thumbstick/click"}, {A_CLICK, R "input/thumbstick/click"}, {A_TRIGGER, L "input/trigger/value"}, {A_TRIGGER, R "input/trigger/value"}, {A_GRIP, L "input/squeeze/click"}, {A_GRIP, R "input/squeeze/click"}, {A_A, L "input/trackpad/click"}, {A_A, R "input/trackpad/click"}, {A_MENU, L "input/menu/click"}, {A_B, R "input/menu/click"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}, {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
+const Bind kSimple[] = {{A_TRIGGER, L "input/select/click"}, {A_TRIGGER, R "input/select/click"}, {A_MENU, L "input/menu/click"}, {A_B, R "input/menu/click"}, {A_HAPTIC, L "output/haptic"}, {A_HAPTIC, R "output/haptic"}, {A_POSE, L "input/grip/pose"}, {A_POSE, R "input/grip/pose"}};
 #undef L
 #undef R
 
@@ -278,7 +267,7 @@ void VrInputInit(PFN_xrGetInstanceProcAddr gipa, XrInstance inst, bool pico) {
 	g_ready = false;
 	g_inst = inst;
 	bool ok = true;
-#define LOAD(n)                                                              \
+#define LOAD(n) \
 	if (XR_FAILED(gipa(inst, #n, (PFN_xrVoidFunction*)&F.n)) || !F.n) ok = false;
 	VR_FUNCS(LOAD)
 #undef LOAD

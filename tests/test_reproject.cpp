@@ -5,7 +5,12 @@
 #include <initializer_list>
 #include "core/pure.h"
 static int fails;
-static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
+static void check(bool c, const char* w) {
+	if (!c) {
+		std::printf("FAIL %s\n", w);
+		fails++;
+	}
+}
 static pure::M4 pose(float yawDeg, float pitchDeg, pure::V3 p) {
 	float y = yawDeg / 57.29578f, x = pitchDeg / 57.29578f;
 	return pure::m4_from_pose(pure::q_mul(pure::Q{0, std::sin(y / 2), 0, std::cos(y / 2)}, pure::Q{std::sin(x / 2), 0, 0, std::cos(x / 2)}), p);
@@ -17,7 +22,9 @@ static pure::V3 mulp(const pure::M4& m, pure::V3 v) {
 
 // The vertex shader's gap test (0.4.1): a triangle of grid corners (pixel, depth) in the old image is a
 // gap when its depth jumps by more than edge0 and the motion stretched it beyond edge1 grid steps.
-struct Corner { float px, py, d; };
+struct Corner {
+	float px, py, d;
+};
 static bool gapTri(const Corner* c, const pure::M4& T, float W, float H, float step, float P22, float P23, float sx,
 				   float sy, float edge0 = 1.03f, float edge1 = 2.5f) {
 	float s[3][2], dist[3];
@@ -83,8 +90,7 @@ int main() {
 		Corner farTri[3] = {{1000, 1352, far_}, {1004, 1352, depthAt(31, P22, P23)}, {1000, 1356, far_}};
 		check(!gapTri(farTri, T, W, H, step, P22, P23, sx, sy), "background with a small depth step is not a gap");
 		// flat ground seen at a grazing angle 100 m away: big relative depth change, but not pulled open
-		Corner ground[3] = {{2400, 1400, depthAt(100, P22, P23)}, {2404, 1400, depthAt(100, P22, P23)},
-							{2400, 1404, depthAt(92, P22, P23)}};
+		Corner ground[3] = {{2400, 1400, depthAt(100, P22, P23)}, {2404, 1400, depthAt(100, P22, P23)}, {2400, 1404, depthAt(92, P22, P23)}};
 		check(!gapTri(ground, T, W, H, step, P22, P23, sx, sy), "distant ground is not a gap");
 		// no motion: nothing is a gap
 		pure::M4 I = pure::m4_mul(pure::m4_rigid_inverse(A), A);

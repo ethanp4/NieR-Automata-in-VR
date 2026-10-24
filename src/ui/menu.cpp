@@ -18,9 +18,20 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------------------------
-enum Type { T_BOOL, T_INT, T_FLOAT, T_ACTION, T_TEXT, T_CHOICE };  // T_CHOICE: fmt holds the names, "Off|On"
-enum Flags { F_RESTART = 1, F_LOG = 2, F_RECENTER = 4, F_ALTERNATE = 8, F_BOTHEYES = 16 };  // ALTERNATE/BOTHEYES: only used in that mode
-enum Action { A_RECENTER = 1, A_BOTHEYES_STATS, A_DLSS_FILE };
+enum Type { T_BOOL,
+			T_INT,
+			T_FLOAT,
+			T_ACTION,
+			T_TEXT,
+			T_CHOICE };  // T_CHOICE: fmt holds the names, "Off|On"
+enum Flags { F_RESTART = 1,
+			 F_LOG = 2,
+			 F_RECENTER = 4,
+			 F_ALTERNATE = 8,
+			 F_BOTHEYES = 16 };  // ALTERNATE/BOTHEYES: only used in that mode
+enum Action { A_RECENTER = 1,
+			  A_BOTHEYES_STATS,
+			  A_DLSS_FILE };
 struct Item {
 	const char* label;
 	Type type;
@@ -227,9 +238,21 @@ bool g_resetPending;  // X / Delete was pressed: the focused setting goes back t
 void KeyName(int vk, char* out, size_t cap) {
 	UINT sc = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC);
 	switch (vk) {  // keys on the extended part of the keyboard (else the name of the numpad key)
-		case VK_INSERT: case VK_DELETE: case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
-		case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_DIVIDE: case VK_NUMLOCK:
-		case VK_RCONTROL: case VK_RMENU: case VK_SNAPSHOT:
+		case VK_INSERT:
+		case VK_DELETE:
+		case VK_HOME:
+		case VK_END:
+		case VK_PRIOR:
+		case VK_NEXT:
+		case VK_LEFT:
+		case VK_RIGHT:
+		case VK_UP:
+		case VK_DOWN:
+		case VK_DIVIDE:
+		case VK_NUMLOCK:
+		case VK_RCONTROL:
+		case VK_RMENU:
+		case VK_SNAPSHOT:
 			sc |= 0x100;
 			break;
 	}

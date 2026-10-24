@@ -11,15 +11,16 @@
 volatile DWORD g_xrThreadId;
 void InstallCrashHandler();
 
-#define XR_INSTANCE_FUNCS(X)                                                                               \
-	X(xrGetInstanceProperties) X(xrGetSystem) X(xrGetSystemProperties) X(xrDestroyInstance)                \
-	X(xrResultToString) X(xrPollEvent) X(xrCreateSession) X(xrDestroySession) X(xrBeginSession)            \
-	X(xrEndSession) X(xrWaitFrame) X(xrBeginFrame) X(xrEndFrame) X(xrCreateReferenceSpace)                 \
-	X(xrDestroySpace) X(xrLocateSpace) X(xrEnumerateSwapchainFormats) X(xrCreateSwapchain)                 \
-	X(xrDestroySwapchain) X(xrEnumerateSwapchainImages) X(xrAcquireSwapchainImage)                         \
-	X(xrWaitSwapchainImage) X(xrReleaseSwapchainImage) X(xrEnumerateEnvironmentBlendModes)                 \
-	X(xrGetD3D11GraphicsRequirementsKHR) X(xrLocateViews) X(xrEnumerateViewConfigurations)                \
-	X(xrEnumerateViewConfigurationViews)
+#define XR_INSTANCE_FUNCS(X)                                                                                       \
+	X(xrGetInstanceProperties)                                                                                     \
+	X(xrGetSystem) X(xrGetSystemProperties) X(xrDestroyInstance)                                                   \
+		X(xrResultToString) X(xrPollEvent) X(xrCreateSession) X(xrDestroySession) X(xrBeginSession)                \
+			X(xrEndSession) X(xrWaitFrame) X(xrBeginFrame) X(xrEndFrame) X(xrCreateReferenceSpace)                 \
+				X(xrDestroySpace) X(xrLocateSpace) X(xrEnumerateSwapchainFormats) X(xrCreateSwapchain)             \
+					X(xrDestroySwapchain) X(xrEnumerateSwapchainImages) X(xrAcquireSwapchainImage)                 \
+						X(xrWaitSwapchainImage) X(xrReleaseSwapchainImage) X(xrEnumerateEnvironmentBlendModes)     \
+							X(xrGetD3D11GraphicsRequirementsKHR) X(xrLocateViews) X(xrEnumerateViewConfigurations) \
+								X(xrEnumerateViewConfigurationViews)
 
 static const uint32_t kMaxImages = 8;
 
@@ -249,10 +250,10 @@ static bool InitInstance() {
 	}
 
 	bool ok = true;
-#define LOAD_FN(n)                                                                     \
+#define LOAD_FN(n)                                                              \
 	if (XR_FAILED(X.gipa(X.instance, #n, (PFN_xrVoidFunction*)&X.n)) || !X.n) { \
-		Log("ERROR: OpenXR: missing function " #n);                                   \
-		ok = false;                                                                    \
+		Log("ERROR: OpenXR: missing function " #n);                             \
+		ok = false;                                                             \
 	}
 	XR_INSTANCE_FUNCS(LOAD_FN)
 #undef LOAD_FN
@@ -310,7 +311,8 @@ static bool InitSystem() {
 		vv[0].type = vv[1].type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
 		uint32_t nv = 0;
 		if (XR_SUCCEEDED(X.xrEnumerateViewConfigurationViews(X.instance, X.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2,
-															 &nv, vv)) && nv == 2) {
+															 &nv, vv)) &&
+			nv == 2) {
 			X.recW = vv[0].recommendedImageRectWidth;
 			X.recH = vv[0].recommendedImageRectHeight;
 			Log("headset recommends %ux%u per eye (max %ux%u)", X.recW, X.recH, vv[0].maxImageRectWidth,
@@ -621,7 +623,7 @@ static bool InitSession() {
 	XrEnvironmentBlendMode modes[8];
 	X.blend = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 	if (XR_SUCCEEDED(X.xrEnumerateEnvironmentBlendModes(X.instance, X.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
-														 8, &n, modes)) &&
+														8, &n, modes)) &&
 		n > 0)
 		X.blend = modes[0];
 
@@ -816,7 +818,7 @@ static void ServiceShare() {
 	HANDLE handles[3 * kRingSize] = {};
 	for (int i = 0; i < (up ? 3 : 2) * kRingSize; i++) {
 		ID3D11Texture2D** t = i < kRingSize ? &X.ring[i] : i < 2 * kRingSize ? &X.ringScene[i - kRingSize]
-																			: &X.ringKey[i - 2 * kRingSize];
+																			 : &X.ringKey[i - 2 * kRingSize];
 		bool big = i >= kRingSize && i < 2 * kRingSize;
 		d.Width = big ? sw : w;
 		d.Height = big ? sh : h;
@@ -954,7 +956,9 @@ static void Blit(ID3D11RenderTargetView* rtv, uint32_t w, uint32_t h, ID3D11Shad
 		X.ctx->UpdateSubresource(X.cbWarp, 0, nullptr, warp, 0, 0);
 		X.ctx->PSSetConstantBuffers(1, 1, &X.cbWarp);
 	}
-	X.ctx->PSSetShader(warp ? X.psWarp : scene ? X.psKey : X.ps, nullptr, 0);
+	X.ctx->PSSetShader(warp ? X.psWarp : scene ? X.psKey
+											   : X.ps,
+					   nullptr, 0);
 	ID3D11ShaderResourceView* srvs[2] = {srv, scene};
 	X.ctx->PSSetShaderResources(0, 2, srvs);
 	X.ctx->PSSetSamplers(0, 1, &X.sampler);
@@ -1088,7 +1092,7 @@ static void HandleHotkeys() {
 		else if (s) CullingCycleTest();           // Shift+F5: wide-fov test steps
 		else {                                    // F5: both eyes every frame on/off
 			g_cfg.bothEyes = !g_cfg.bothEyes;
-			Log("both eyes every frame %s", !g_cfg.bothEyes ? "OFF (alternate eyes)"
+			Log("both eyes every frame %s", !g_cfg.bothEyes     ? "OFF (alternate eyes)"
 											: ReplayAvailable() ? "ON (the game's frame is drawn again for the right eye)"
 																: "ON, but not available (see the log above)");
 			ConfigSave(&g_cfg.bothEyes);
@@ -1155,10 +1159,24 @@ static void HandleHotkeys() {
 		ConfigSave(&g_cfg.cameraDolly);
 		cl = fa = false;
 	}
-	if (sm) { g_cfg.width = g_cfg.width / 1.1f < 0.2f ? 0.2f : g_cfg.width / 1.1f; changed = true; }
-	if (lg) { g_cfg.width = g_cfg.width * 1.1f > 100.f ? 100.f : g_cfg.width * 1.1f; changed = true; }
-	if (cl) { g_cfg.distance = g_cfg.distance - 0.25f < 0.3f ? 0.3f : g_cfg.distance - 0.25f; changed = true; X.recenterRequested = true; }
-	if (fa) { g_cfg.distance = g_cfg.distance + 0.25f > 50.f ? 50.f : g_cfg.distance + 0.25f; changed = true; X.recenterRequested = true; }
+	if (sm) {
+		g_cfg.width = g_cfg.width / 1.1f < 0.2f ? 0.2f : g_cfg.width / 1.1f;
+		changed = true;
+	}
+	if (lg) {
+		g_cfg.width = g_cfg.width * 1.1f > 100.f ? 100.f : g_cfg.width * 1.1f;
+		changed = true;
+	}
+	if (cl) {
+		g_cfg.distance = g_cfg.distance - 0.25f < 0.3f ? 0.3f : g_cfg.distance - 0.25f;
+		changed = true;
+		X.recenterRequested = true;
+	}
+	if (fa) {
+		g_cfg.distance = g_cfg.distance + 0.25f > 50.f ? 50.f : g_cfg.distance + 0.25f;
+		changed = true;
+		X.recenterRequested = true;
+	}
 	if (changed) {
 		Log("screen: distance %.2f m, width %.2f m", (double)g_cfg.distance, (double)g_cfg.width);
 		ConfigSave(&g_cfg.distance);
@@ -1322,12 +1340,11 @@ static void LogStats() {
 		X.statCovN ? 100.0 * X.statCovSum / X.statCovN : 0.0, 100.0 * X.statCovMax);
 	{
 		char info[160];
-		snprintf(info, sizeof(info), "Mode: %s", !X.statStereoFrames ? "flat screen"
-													 : g_cfg.bothEyes ? "stereo, both eyes every frame"
-																	  : "stereo, alternate eyes");
+		snprintf(info, sizeof(info), "Mode: %s", !X.statStereoFrames ? "flat screen" : g_cfg.bothEyes ? "stereo, both eyes every frame"
+																									  : "stereo, alternate eyes");
 		MenuSetInfo(0, info);
 		snprintf(info, sizeof(info), "Headset %.0f fps; game images per second: left %.0f, right %.0f, flat %.0f",
-					 X.statFrames / secs, X.statGameFrames[0] / secs, X.statGameFrames[1] / secs, X.statGameFrames[2] / secs);
+				 X.statFrames / secs, X.statGameFrames[0] / secs, X.statGameFrames[1] / secs, X.statGameFrames[2] / secs);
 		MenuSetInfo(1, info);
 	}
 	if (X.statLagN || X.statTurnN) {
@@ -1339,8 +1356,8 @@ static void LogStats() {
 			X.statTurnN ? 100.0 * X.statTurnOver / X.statTurnN : 0.0);
 		char info[160];
 		snprintf(info, sizeof(info), "Head: images shown %.0f ms after their pose; predicting %.0f ms; past margin %.1f%%",
-					 X.statLagN ? X.statLagSum / X.statLagN : 0.0, (double)X.predictNs / 1e6,
-					 X.statTurnN ? 100.0 * X.statTurnOver / X.statTurnN : 0.0);
+				 X.statLagN ? X.statLagSum / X.statLagN : 0.0, (double)X.predictNs / 1e6,
+				 X.statTurnN ? 100.0 * X.statTurnOver / X.statTurnN : 0.0);
 		MenuSetInfo(13, info);
 	}
 	static UINT resLoggedW, resLoggedH;
@@ -1353,7 +1370,7 @@ static void LogStats() {
 			X.resSuggestW, X.resSuggestH);
 		char info[160];
 		snprintf(info, sizeof(info), "Resolution %ux%u: %.0f%% / %.0f%% of recommended (across / up-down); ~%ux%u matches",
-					 X.contentW, X.contentH, (double)X.resPct, (double)X.resPctH, X.resSuggestW, X.resSuggestH);
+				 X.contentW, X.contentH, (double)X.resPct, (double)X.resPctH, X.resSuggestW, X.resSuggestH);
 		MenuSetInfo(14, info);
 	}
 	X.statLagSum = X.statTurnSum = 0;
@@ -1543,7 +1560,8 @@ static void Frame() {
 					w.srcTan[2] = w.srcTan[3] = 0;
 					pure::M4 rr = pure::m4_from_pose({t.rot[0], t.rot[1], t.rot[2], t.rot[3]}, {0, 0, 0});
 					pure::M4 rd = pure::m4_from_pose({d.pose.orientation.x, d.pose.orientation.y, d.pose.orientation.z,
-													  d.pose.orientation.w}, {0, 0, 0});
+													  d.pose.orientation.w},
+													 {0, 0, 0});
 					for (int r = 0; r < 3; r++) {
 						for (int c = 0; c < 3; c++)
 							w.m[r][c] = rr.at(0, r) * rd.at(0, c) + rr.at(1, r) * rd.at(1, c) + rr.at(2, r) * rd.at(2, c);
@@ -1820,7 +1838,8 @@ static bool UpdateOverlay() {
 		bool stereoOn = g_stereo.enabled;
 		ReleaseSRWLockShared(&g_stereo.lock);
 		snprintf(X.ovMode, sizeof(X.ovMode), "%s",
-					 !stereoOn || X.menuMode ? "flat screen" : g_cfg.bothEyes ? "both eyes" : "alternate eyes");
+				 !stereoOn || X.menuMode ? "flat screen" : g_cfg.bothEyes ? "both eyes"
+																		  : "alternate eyes");
 		st.headsetFps = (float)(X.ovFrames / secs);
 		for (int i = 0; i < 3; i++) st.gameFps[i] = (float)(X.ovGameFrames[i] / secs);
 		st.gameW = X.contentW;

@@ -147,7 +147,8 @@ void GpuProfCompute(ID3D11DeviceContext* c, const char* prefix, int kind) {
 	if (!g_active || c != g_ctx) return;
 	char label[56];
 	snprintf(label, sizeof(label), "%scompute: %s", prefix,
-				 kind == 1 ? "light lists" : kind == 2 ? "GI volumes" : "other");
+			 kind == 1 ? "light lists" : kind == 2 ? "GI volumes"
+												   : "other");
 	if (strcmp(label, g_lastLabel) != 0) GpuProfMark(c, label);
 }
 void GpuProfDraw() {
@@ -216,7 +217,7 @@ void GpuProfPoll(ID3D11DeviceContext* c) {
 		total, cpuTotal, left, ui, right, shadowR, giMs, giN, g_cfg.giVolumes, g_f.n - 1);
 	char info[160];
 	snprintf(info, sizeof(info), "GPU per frame %.1f ms: left scene %.1f, UI %.1f, right eye %.1f; GI pass %.2f ms",
-				 total, left, ui, right, giMs);
+			 total, left, ui, right, giMs);
 	MenuSetInfo(4, info);
 	for (int k = 0; k < ns && k < 10; k++) {
 		const Mark& m = g_f.marks[segs[k].i];

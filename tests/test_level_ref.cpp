@@ -3,7 +3,12 @@
 #include <cmath>
 #include "core/pure.h"
 static int fails;
-static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
+static void check(bool c, const char* w) {
+	if (!c) {
+		std::printf("FAIL %s\n", w);
+		fails++;
+	}
+}
 static pure::Q axisAngle(float x, float y, float z, float deg) {
 	float a = deg / 57.29578f / 2, s = std::sin(a);
 	return {x * s, y * s, z * s, std::cos(a)};

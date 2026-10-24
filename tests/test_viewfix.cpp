@@ -4,9 +4,17 @@
 #include <cstring>
 #include "core/pure.h"
 static int fails;
-static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
+static void check(bool c, const char* w) {
+	if (!c) {
+		std::printf("FAIL %s\n", w);
+		fails++;
+	}
+}
 static void apply(const pure::M4& m, const float p[4], float o[4]) {
-	for (int r = 0; r < 4; r++) { o[r] = 0; for (int c = 0; c < 4; c++) o[r] += m.at(r, c) * p[c]; }
+	for (int r = 0; r < 4; r++) {
+		o[r] = 0;
+		for (int c = 0; c < 4; c++) o[r] += m.at(r, c) * p[c];
+	}
 }
 int main() {
 	// game camera: rotated 30 deg about Y, at (5, 2, -3); eye camera: different pose
@@ -26,9 +34,13 @@ int main() {
 	}
 	// probe rows: row . p_game == (row * Tinv) . p_eye
 	float row[4] = {0.3f, -0.2f, 0.9f, 4.0f}, rowT[4] = {0, 0, 0, 0};
-	for (int c = 0; c < 4; c++) for (int k = 0; k < 4; k++) rowT[c] += row[k] * Ti.at(k, c);
+	for (int c = 0; c < 4; c++)
+		for (int k = 0; k < 4; k++) rowT[c] += row[k] * Ti.at(k, c);
 	float a = 0, b = 0;
-	for (int k = 0; k < 4; k++) { a += row[k] * pg[k]; b += rowT[k] * pe[k]; }
+	for (int k = 0; k < 4; k++) {
+		a += row[k] * pg[k];
+		b += rowT[k] * pe[k];
+	}
 	check(std::fabs(a - b) < 1e-4f, "probe row transform");
 	std::printf(fails ? "viewfix tests FAILED\n" : "viewfix tests passed\n");
 	return fails != 0;

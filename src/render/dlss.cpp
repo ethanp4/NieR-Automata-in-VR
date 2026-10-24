@@ -63,8 +63,14 @@ volatile LONG g_hashedGen = -1;  // g_fileGen that g_fileMatchesSha is for
 volatile LONG g_fileMatchesSha;  // the file in the game's folder is the one kDllSha names
 
 // vtable slots (see the top of the file)
-enum { S_PTR = 0, S_R11 = 2, S_I = 3, S_UI = 4, S_F = 6, GET = 8 };
-template <class F> F V(Param* p, int slot) { return (F)(*(void***)p)[slot]; }
+enum { S_PTR = 0,
+	   S_R11 = 2,
+	   S_I = 3,
+	   S_UI = 4,
+	   S_F = 6,
+	   GET = 8 };
+template <class F>
+F V(Param* p, int slot) { return (F)(*(void***)p)[slot]; }
 void SetUI(Param* p, const char* n, unsigned v) { V<void (*)(Param*, const char*, unsigned)>(p, S_UI)(p, n, v); }
 void SetI(Param* p, const char* n, int v) { V<void (*)(Param*, const char*, int)>(p, S_I)(p, n, v); }
 void SetF(Param* p, const char* n, float v) { V<void (*)(Param*, const char*, float)>(p, S_F)(p, n, v); }
@@ -100,7 +106,8 @@ void Release(Feature& f) {
 // Our quality index -> NVSDK_NGX_PerfQuality_Value
 int PerfQuality(int q) {
 	static const int v[] = {5 /*DLAA*/, 2 /*MaxQuality*/, 1 /*Balanced*/, 0 /*MaxPerf*/, 3 /*UltraPerformance*/};
-	return v[q < 0 ? 0 : q > 4 ? 4 : q];
+	return v[q < 0 ? 0 : q > 4 ? 4
+							   : q];
 }
 
 // A file in the game's folder (next to its exe: where NGX looks for nvngx_dlss.dll).

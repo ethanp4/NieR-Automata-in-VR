@@ -4,7 +4,12 @@
 #include <initializer_list>
 #include "core/pure.h"
 static int fails;
-static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
+static void check(bool c, const char* w) {
+	if (!c) {
+		std::printf("FAIL %s\n", w);
+		fails++;
+	}
+}
 static pure::M4 camAt(float yawDeg, float pitchDeg) {
 	float y = yawDeg / 57.29578f, p = pitchDeg / 57.29578f;
 	pure::Q qy{0, std::sin(y / 2), 0, std::cos(y / 2)}, qp{std::sin(p / 2), 0, 0, std::cos(p / 2)};

@@ -26,17 +26,37 @@ enum RecType : uint16_t {
 	R_SET_SRV = 13,     // u8 stage, pad[3], u32 start, u32 count, count * {u64 res, u32 w, u32 h, u32 fmt, u32 dim}
 	R_SET_UAV = 14,     // same layout as R_SET_SRV (stage = CS)
 };
-enum Stage : uint8_t { ST_VS = 0, ST_PS = 1, ST_GS = 2, ST_CS = 3 };
+enum Stage : uint8_t { ST_VS = 0,
+					   ST_PS = 1,
+					   ST_GS = 2,
+					   ST_CS = 3 };
 
 // vtable slots (verified against the d3d11.h layout at build time, see tools/vtable_check.c)
 enum {
-	CTX_VSSetConstantBuffers = 7, CTX_PSSetShader = 9, CTX_VSSetShader = 11, CTX_DrawIndexed = 12, CTX_Draw = 13,
-	CTX_Map = 14, CTX_Unmap = 15, CTX_PSSetConstantBuffers = 16, CTX_DrawIndexedInstanced = 20, CTX_DrawInstanced = 21,
-	CTX_GSSetConstantBuffers = 22, CTX_OMSetRenderTargets = 33, CTX_Dispatch = 41, CTX_RSSetViewports = 44,
-	CTX_UpdateSubresource = 48, CTX_ExecuteCommandList = 58, CTX_CSSetConstantBuffers = 71,
-	CTX_PSSetShaderResources = 8, CTX_CSSetShaderResources = 67, CTX_CSSetUnorderedAccessViews = 68,
+	CTX_VSSetConstantBuffers = 7,
+	CTX_PSSetShader = 9,
+	CTX_VSSetShader = 11,
+	CTX_DrawIndexed = 12,
+	CTX_Draw = 13,
+	CTX_Map = 14,
+	CTX_Unmap = 15,
+	CTX_PSSetConstantBuffers = 16,
+	CTX_DrawIndexedInstanced = 20,
+	CTX_DrawInstanced = 21,
+	CTX_GSSetConstantBuffers = 22,
+	CTX_OMSetRenderTargets = 33,
+	CTX_Dispatch = 41,
+	CTX_RSSetViewports = 44,
+	CTX_UpdateSubresource = 48,
+	CTX_ExecuteCommandList = 58,
+	CTX_CSSetConstantBuffers = 71,
+	CTX_PSSetShaderResources = 8,
+	CTX_CSSetShaderResources = 67,
+	CTX_CSSetUnorderedAccessViews = 68,
 	CTX_CSSetShader = 69,
-	DEV_CreateVertexShader = 12, DEV_CreatePixelShader = 15, DEV_CreateComputeShader = 18,
+	DEV_CreateVertexShader = 12,
+	DEV_CreatePixelShader = 15,
+	DEV_CreateComputeShader = 18,
 	DEV_CreateDeferredContext = 27,
 };
 
@@ -248,7 +268,12 @@ bool IsUIShader(void* shader) {
 int PsClass(void* shader, uint32_t* sampled = nullptr, uint64_t* hash = nullptr) {
 	AcquireSRWLockShared(&g_shaderLock);
 	ShaderEntry* e = FindShader(shader);
-	int k = !e ? 0 : e->sao ? 1 : e->shadowMask ? 2 : e->vignette ? 3 : e->effect ? 4 : e->scatter ? 5 : 0;
+	int k = !e ? 0 : e->sao      ? 1
+				 : e->shadowMask ? 2
+				 : e->vignette   ? 3
+				 : e->effect     ? 4
+				 : e->scatter    ? 5
+								 : 0;
 	if (sampled) *sampled = e ? e->sampled : 0;
 	if (hash) *hash = e ? e->hash : 0;
 	ReleaseSRWLockShared(&g_shaderLock);
@@ -304,7 +329,10 @@ template <int S>
 void STDMETHODCALLTYPE H_SetCB(ID3D11DeviceContext* c, UINT start, UINT n, ID3D11Buffer* const* bufs) {
 	if (g_replaying) return o_SetCB[S](c, start, n, bufs);
 	if (S == ST_VS && c == g_ctx && bufs) UiOnSetVSConstantBuffers(start, n, bufs);
-	if (RecOn(c)) RecSetCB(S == ST_VS ? RS_VS : S == ST_PS ? RS_PS : S == ST_GS ? RS_GS : RS_CS, start, n, bufs);
+	if (RecOn(c)) RecSetCB(S == ST_VS ? RS_VS : S == ST_PS ? RS_PS
+											: S == ST_GS   ? RS_GS
+														   : RS_CS,
+						   start, n, bufs);
 	if (Recording(c) && bufs && n <= 14) {
 		struct {
 			uint8_t stage, pad[3];

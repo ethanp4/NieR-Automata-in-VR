@@ -127,7 +127,7 @@ bool ReadPhysicalPad(XINPUT_GAMEPAD* g) {
 	}
 	return false;
 }
-}
+}  // namespace
 
 volatile LONG g_blockPad;
 

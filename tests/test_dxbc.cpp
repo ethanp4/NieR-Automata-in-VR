@@ -4,7 +4,12 @@
 #include <vector>
 #include "core/pure.h"
 static int fails;
-static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
+static void check(bool c, const char* w) {
+	if (!c) {
+		std::printf("FAIL %s\n", w);
+		fails++;
+	}
+}
 static uint32_t opnd(uint32_t type, uint32_t ncomp = 2, uint32_t mode = 1) {
 	return ncomp | mode << 2 | (mode == 1 ? 0xE4u << 4 : 0xFu << 4) | type << 12 | 1u << 20;  // 1-D, imm32 index
 }

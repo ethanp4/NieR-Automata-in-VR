@@ -32,21 +32,62 @@ volatile LONG g_recSuspend;     // mod-internal calls in progress (not recorded)
 
 namespace {
 enum Op : uint16_t {
-	OP_SET_CB = 1, OP_SET_SRV, OP_SET_SAMP, OP_SET_SHADER, OP_CS_UAV, OP_IA_LAYOUT, OP_IA_VB, OP_IA_IB, OP_IA_TOPO,
-	OP_DRAW, OP_DRAW_AUTO, OP_DRAW_INDIRECT, OP_DISPATCH, OP_DISPATCH_INDIRECT, OP_OM_RT, OP_OM_RT_UAV, OP_OM_BLEND,
-	OP_OM_DS, OP_RS_STATE, OP_RS_VP, OP_RS_SCISSOR, OP_SO, OP_COPY_REGION, OP_COPY, OP_UPDATE, OP_COPY_COUNT,
-	OP_CLEAR_RTV, OP_CLEAR_UAV_U, OP_CLEAR_UAV_F, OP_CLEAR_DSV, OP_GENMIPS, OP_MINLOD, OP_RESOLVE, OP_MAP,
-	OP_PREDICATION, OP_CLEAR_STATE, OP_DISCARD_RES, OP_DISCARD_VIEW, OP_GEN, OP_COUNT
+	OP_SET_CB = 1,
+	OP_SET_SRV,
+	OP_SET_SAMP,
+	OP_SET_SHADER,
+	OP_CS_UAV,
+	OP_IA_LAYOUT,
+	OP_IA_VB,
+	OP_IA_IB,
+	OP_IA_TOPO,
+	OP_DRAW,
+	OP_DRAW_AUTO,
+	OP_DRAW_INDIRECT,
+	OP_DISPATCH,
+	OP_DISPATCH_INDIRECT,
+	OP_OM_RT,
+	OP_OM_RT_UAV,
+	OP_OM_BLEND,
+	OP_OM_DS,
+	OP_RS_STATE,
+	OP_RS_VP,
+	OP_RS_SCISSOR,
+	OP_SO,
+	OP_COPY_REGION,
+	OP_COPY,
+	OP_UPDATE,
+	OP_COPY_COUNT,
+	OP_CLEAR_RTV,
+	OP_CLEAR_UAV_U,
+	OP_CLEAR_UAV_F,
+	OP_CLEAR_DSV,
+	OP_GENMIPS,
+	OP_MINLOD,
+	OP_RESOLVE,
+	OP_MAP,
+	OP_PREDICATION,
+	OP_CLEAR_STATE,
+	OP_DISCARD_RES,
+	OP_DISCARD_VIEW,
+	OP_GEN,
+	OP_COUNT
 };
 const char* const kOpNames[OP_COUNT] = {"?", "SetConstantBuffers", "SetShaderResources", "SetSamplers", "SetShader",
-	"CSSetUnorderedAccessViews", "IASetInputLayout", "IASetVertexBuffers", "IASetIndexBuffer", "IASetPrimitiveTopology",
-	"Draw*", "DrawAuto", "Draw*Indirect", "Dispatch", "DispatchIndirect", "OMSetRenderTargets",
-	"OMSetRenderTargetsAndUAVs", "OMSetBlendState", "OMSetDepthStencilState", "RSSetState", "RSSetViewports",
-	"RSSetScissorRects", "SOSetTargets", "CopySubresourceRegion", "CopyResource", "UpdateSubresource",
-	"CopyStructureCount", "ClearRenderTargetView", "ClearUAVUint", "ClearUAVFloat", "ClearDepthStencilView",
-	"GenerateMips", "SetResourceMinLOD", "ResolveSubresource", "Map", "SetPredication", "ClearState",
-	"DiscardResource", "DiscardView", "dynamic buffer refill"};
-enum Stage { S_VS, S_HS, S_DS, S_GS, S_PS, S_CS, S_COUNT };
+										"CSSetUnorderedAccessViews", "IASetInputLayout", "IASetVertexBuffers", "IASetIndexBuffer", "IASetPrimitiveTopology",
+										"Draw*", "DrawAuto", "Draw*Indirect", "Dispatch", "DispatchIndirect", "OMSetRenderTargets",
+										"OMSetRenderTargetsAndUAVs", "OMSetBlendState", "OMSetDepthStencilState", "RSSetState", "RSSetViewports",
+										"RSSetScissorRects", "SOSetTargets", "CopySubresourceRegion", "CopyResource", "UpdateSubresource",
+										"CopyStructureCount", "ClearRenderTargetView", "ClearUAVUint", "ClearUAVFloat", "ClearDepthStencilView",
+										"GenerateMips", "SetResourceMinLOD", "ResolveSubresource", "Map", "SetPredication", "ClearState",
+										"DiscardResource", "DiscardView", "dynamic buffer refill"};
+enum Stage { S_VS,
+			 S_HS,
+			 S_DS,
+			 S_GS,
+			 S_PS,
+			 S_CS,
+			 S_COUNT };
 
 struct CmdHeader {
 	uint16_t op;
@@ -144,46 +185,116 @@ struct Rec {
 bool FormatInfo(DXGI_FORMAT f, UINT* bytesPerBlock, UINT* blockDim) {
 	*blockDim = 1;
 	switch (f) {
-		case DXGI_FORMAT_R32G32B32A32_TYPELESS: case DXGI_FORMAT_R32G32B32A32_FLOAT: case DXGI_FORMAT_R32G32B32A32_UINT:
+		case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+		case DXGI_FORMAT_R32G32B32A32_FLOAT:
+		case DXGI_FORMAT_R32G32B32A32_UINT:
 		case DXGI_FORMAT_R32G32B32A32_SINT:
-			*bytesPerBlock = 16; return true;
-		case DXGI_FORMAT_R32G32B32_TYPELESS: case DXGI_FORMAT_R32G32B32_FLOAT: case DXGI_FORMAT_R32G32B32_UINT:
+			*bytesPerBlock = 16;
+			return true;
+		case DXGI_FORMAT_R32G32B32_TYPELESS:
+		case DXGI_FORMAT_R32G32B32_FLOAT:
+		case DXGI_FORMAT_R32G32B32_UINT:
 		case DXGI_FORMAT_R32G32B32_SINT:
-			*bytesPerBlock = 12; return true;
-		case DXGI_FORMAT_R16G16B16A16_TYPELESS: case DXGI_FORMAT_R16G16B16A16_FLOAT: case DXGI_FORMAT_R16G16B16A16_UNORM:
-		case DXGI_FORMAT_R16G16B16A16_UINT: case DXGI_FORMAT_R16G16B16A16_SNORM: case DXGI_FORMAT_R16G16B16A16_SINT:
-		case DXGI_FORMAT_R32G32_TYPELESS: case DXGI_FORMAT_R32G32_FLOAT: case DXGI_FORMAT_R32G32_UINT:
-		case DXGI_FORMAT_R32G32_SINT: case DXGI_FORMAT_R32G8X24_TYPELESS: case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
-			*bytesPerBlock = 8; return true;
-		case DXGI_FORMAT_R10G10B10A2_TYPELESS: case DXGI_FORMAT_R10G10B10A2_UNORM: case DXGI_FORMAT_R10G10B10A2_UINT:
-		case DXGI_FORMAT_R11G11B10_FLOAT: case DXGI_FORMAT_R8G8B8A8_TYPELESS: case DXGI_FORMAT_R8G8B8A8_UNORM:
-		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: case DXGI_FORMAT_R8G8B8A8_UINT: case DXGI_FORMAT_R8G8B8A8_SNORM:
-		case DXGI_FORMAT_R8G8B8A8_SINT: case DXGI_FORMAT_R16G16_TYPELESS: case DXGI_FORMAT_R16G16_FLOAT:
-		case DXGI_FORMAT_R16G16_UNORM: case DXGI_FORMAT_R16G16_UINT: case DXGI_FORMAT_R16G16_SNORM:
-		case DXGI_FORMAT_R16G16_SINT: case DXGI_FORMAT_R32_TYPELESS: case DXGI_FORMAT_D32_FLOAT:
-		case DXGI_FORMAT_R32_FLOAT: case DXGI_FORMAT_R32_UINT: case DXGI_FORMAT_R32_SINT:
-		case DXGI_FORMAT_R24G8_TYPELESS: case DXGI_FORMAT_D24_UNORM_S8_UINT: case DXGI_FORMAT_B8G8R8A8_UNORM:
-		case DXGI_FORMAT_B8G8R8X8_UNORM: case DXGI_FORMAT_B8G8R8A8_TYPELESS: case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
-		case DXGI_FORMAT_B8G8R8X8_TYPELESS: case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB: case DXGI_FORMAT_R9G9B9E5_SHAREDEXP:
-			*bytesPerBlock = 4; return true;
-		case DXGI_FORMAT_R8G8_TYPELESS: case DXGI_FORMAT_R8G8_UNORM: case DXGI_FORMAT_R8G8_UINT:
-		case DXGI_FORMAT_R8G8_SNORM: case DXGI_FORMAT_R8G8_SINT: case DXGI_FORMAT_R16_TYPELESS:
-		case DXGI_FORMAT_R16_FLOAT: case DXGI_FORMAT_D16_UNORM: case DXGI_FORMAT_R16_UNORM: case DXGI_FORMAT_R16_UINT:
-		case DXGI_FORMAT_R16_SNORM: case DXGI_FORMAT_R16_SINT: case DXGI_FORMAT_B5G6R5_UNORM:
-		case DXGI_FORMAT_B5G5R5A1_UNORM: case DXGI_FORMAT_B4G4R4A4_UNORM:
-			*bytesPerBlock = 2; return true;
-		case DXGI_FORMAT_R8_TYPELESS: case DXGI_FORMAT_R8_UNORM: case DXGI_FORMAT_R8_UINT: case DXGI_FORMAT_R8_SNORM:
-		case DXGI_FORMAT_R8_SINT: case DXGI_FORMAT_A8_UNORM:
-			*bytesPerBlock = 1; return true;
-		case DXGI_FORMAT_BC1_TYPELESS: case DXGI_FORMAT_BC1_UNORM: case DXGI_FORMAT_BC1_UNORM_SRGB:
-		case DXGI_FORMAT_BC4_TYPELESS: case DXGI_FORMAT_BC4_UNORM: case DXGI_FORMAT_BC4_SNORM:
-			*bytesPerBlock = 8; *blockDim = 4; return true;
-		case DXGI_FORMAT_BC2_TYPELESS: case DXGI_FORMAT_BC2_UNORM: case DXGI_FORMAT_BC2_UNORM_SRGB:
-		case DXGI_FORMAT_BC3_TYPELESS: case DXGI_FORMAT_BC3_UNORM: case DXGI_FORMAT_BC3_UNORM_SRGB:
-		case DXGI_FORMAT_BC5_TYPELESS: case DXGI_FORMAT_BC5_UNORM: case DXGI_FORMAT_BC5_SNORM:
-		case DXGI_FORMAT_BC6H_TYPELESS: case DXGI_FORMAT_BC6H_UF16: case DXGI_FORMAT_BC6H_SF16:
-		case DXGI_FORMAT_BC7_TYPELESS: case DXGI_FORMAT_BC7_UNORM: case DXGI_FORMAT_BC7_UNORM_SRGB:
-			*bytesPerBlock = 16; *blockDim = 4; return true;
+			*bytesPerBlock = 12;
+			return true;
+		case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+		case DXGI_FORMAT_R16G16B16A16_FLOAT:
+		case DXGI_FORMAT_R16G16B16A16_UNORM:
+		case DXGI_FORMAT_R16G16B16A16_UINT:
+		case DXGI_FORMAT_R16G16B16A16_SNORM:
+		case DXGI_FORMAT_R16G16B16A16_SINT:
+		case DXGI_FORMAT_R32G32_TYPELESS:
+		case DXGI_FORMAT_R32G32_FLOAT:
+		case DXGI_FORMAT_R32G32_UINT:
+		case DXGI_FORMAT_R32G32_SINT:
+		case DXGI_FORMAT_R32G8X24_TYPELESS:
+		case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+			*bytesPerBlock = 8;
+			return true;
+		case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+		case DXGI_FORMAT_R10G10B10A2_UNORM:
+		case DXGI_FORMAT_R10G10B10A2_UINT:
+		case DXGI_FORMAT_R11G11B10_FLOAT:
+		case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+		case DXGI_FORMAT_R8G8B8A8_UNORM:
+		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+		case DXGI_FORMAT_R8G8B8A8_UINT:
+		case DXGI_FORMAT_R8G8B8A8_SNORM:
+		case DXGI_FORMAT_R8G8B8A8_SINT:
+		case DXGI_FORMAT_R16G16_TYPELESS:
+		case DXGI_FORMAT_R16G16_FLOAT:
+		case DXGI_FORMAT_R16G16_UNORM:
+		case DXGI_FORMAT_R16G16_UINT:
+		case DXGI_FORMAT_R16G16_SNORM:
+		case DXGI_FORMAT_R16G16_SINT:
+		case DXGI_FORMAT_R32_TYPELESS:
+		case DXGI_FORMAT_D32_FLOAT:
+		case DXGI_FORMAT_R32_FLOAT:
+		case DXGI_FORMAT_R32_UINT:
+		case DXGI_FORMAT_R32_SINT:
+		case DXGI_FORMAT_R24G8_TYPELESS:
+		case DXGI_FORMAT_D24_UNORM_S8_UINT:
+		case DXGI_FORMAT_B8G8R8A8_UNORM:
+		case DXGI_FORMAT_B8G8R8X8_UNORM:
+		case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+		case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+		case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+		case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+		case DXGI_FORMAT_R9G9B9E5_SHAREDEXP:
+			*bytesPerBlock = 4;
+			return true;
+		case DXGI_FORMAT_R8G8_TYPELESS:
+		case DXGI_FORMAT_R8G8_UNORM:
+		case DXGI_FORMAT_R8G8_UINT:
+		case DXGI_FORMAT_R8G8_SNORM:
+		case DXGI_FORMAT_R8G8_SINT:
+		case DXGI_FORMAT_R16_TYPELESS:
+		case DXGI_FORMAT_R16_FLOAT:
+		case DXGI_FORMAT_D16_UNORM:
+		case DXGI_FORMAT_R16_UNORM:
+		case DXGI_FORMAT_R16_UINT:
+		case DXGI_FORMAT_R16_SNORM:
+		case DXGI_FORMAT_R16_SINT:
+		case DXGI_FORMAT_B5G6R5_UNORM:
+		case DXGI_FORMAT_B5G5R5A1_UNORM:
+		case DXGI_FORMAT_B4G4R4A4_UNORM:
+			*bytesPerBlock = 2;
+			return true;
+		case DXGI_FORMAT_R8_TYPELESS:
+		case DXGI_FORMAT_R8_UNORM:
+		case DXGI_FORMAT_R8_UINT:
+		case DXGI_FORMAT_R8_SNORM:
+		case DXGI_FORMAT_R8_SINT:
+		case DXGI_FORMAT_A8_UNORM:
+			*bytesPerBlock = 1;
+			return true;
+		case DXGI_FORMAT_BC1_TYPELESS:
+		case DXGI_FORMAT_BC1_UNORM:
+		case DXGI_FORMAT_BC1_UNORM_SRGB:
+		case DXGI_FORMAT_BC4_TYPELESS:
+		case DXGI_FORMAT_BC4_UNORM:
+		case DXGI_FORMAT_BC4_SNORM:
+			*bytesPerBlock = 8;
+			*blockDim = 4;
+			return true;
+		case DXGI_FORMAT_BC2_TYPELESS:
+		case DXGI_FORMAT_BC2_UNORM:
+		case DXGI_FORMAT_BC2_UNORM_SRGB:
+		case DXGI_FORMAT_BC3_TYPELESS:
+		case DXGI_FORMAT_BC3_UNORM:
+		case DXGI_FORMAT_BC3_UNORM_SRGB:
+		case DXGI_FORMAT_BC5_TYPELESS:
+		case DXGI_FORMAT_BC5_UNORM:
+		case DXGI_FORMAT_BC5_SNORM:
+		case DXGI_FORMAT_BC6H_TYPELESS:
+		case DXGI_FORMAT_BC6H_UF16:
+		case DXGI_FORMAT_BC6H_SF16:
+		case DXGI_FORMAT_BC7_TYPELESS:
+		case DXGI_FORMAT_BC7_UNORM:
+		case DXGI_FORMAT_BC7_UNORM_SRGB:
+			*bytesPerBlock = 16;
+			*blockDim = 4;
+			return true;
 		default: return false;
 	}
 }
@@ -568,7 +679,7 @@ void RecUpdate(ID3D11Resource* res, UINT sub, const D3D11_BOX* box, const void* 
 		D3D11_BOX box;
 		uint32_t rp, dp, bytes, isCB;
 	} hd = {res, sub, box ? 1u : 0u, box ? *box : D3D11_BOX{}, rp, dp, (uint32_t)bytes,
-		   (uint32_t)(e.buffer && (e.bind & D3D11_BIND_CONSTANT_BUFFER) && !box ? 1 : 0)};
+			(uint32_t)(e.buffer && (e.bind & D3D11_BIND_CONSTANT_BUFFER) && !box ? 1 : 0)};
 	uint8_t* p = Begin(OP_UPDATE, 0, sizeof(hd) + bytes);
 	if (!p) return;
 	memcpy(p, &hd, sizeof(hd));
@@ -592,12 +703,18 @@ struct SlotHook {
 	PFN_SetSlots orig;
 };
 SlotHook g_slotHooks[] = {
-	{OP_SET_SAMP, S_PS, 10, "PSSetSamplers", nullptr},       {OP_SET_SRV, S_VS, 25, "VSSetShaderResources", nullptr},
-	{OP_SET_SAMP, S_VS, 26, "VSSetSamplers", nullptr},       {OP_SET_SRV, S_GS, 31, "GSSetShaderResources", nullptr},
-	{OP_SET_SAMP, S_GS, 32, "GSSetSamplers", nullptr},       {OP_SET_SRV, S_HS, 59, "HSSetShaderResources", nullptr},
-	{OP_SET_SAMP, S_HS, 61, "HSSetSamplers", nullptr},       {OP_SET_CB, S_HS, 62, "HSSetConstantBuffers", nullptr},
-	{OP_SET_SRV, S_DS, 63, "DSSetShaderResources", nullptr}, {OP_SET_SAMP, S_DS, 65, "DSSetSamplers", nullptr},
-	{OP_SET_CB, S_DS, 66, "DSSetConstantBuffers", nullptr},  {OP_SET_SAMP, S_CS, 70, "CSSetSamplers", nullptr},
+	{OP_SET_SAMP, S_PS, 10, "PSSetSamplers", nullptr},
+	{OP_SET_SRV, S_VS, 25, "VSSetShaderResources", nullptr},
+	{OP_SET_SAMP, S_VS, 26, "VSSetSamplers", nullptr},
+	{OP_SET_SRV, S_GS, 31, "GSSetShaderResources", nullptr},
+	{OP_SET_SAMP, S_GS, 32, "GSSetSamplers", nullptr},
+	{OP_SET_SRV, S_HS, 59, "HSSetShaderResources", nullptr},
+	{OP_SET_SAMP, S_HS, 61, "HSSetSamplers", nullptr},
+	{OP_SET_CB, S_HS, 62, "HSSetConstantBuffers", nullptr},
+	{OP_SET_SRV, S_DS, 63, "DSSetShaderResources", nullptr},
+	{OP_SET_SAMP, S_DS, 65, "DSSetSamplers", nullptr},
+	{OP_SET_CB, S_DS, 66, "DSSetConstantBuffers", nullptr},
+	{OP_SET_SAMP, S_CS, 70, "CSSetSamplers", nullptr},
 };
 static_assert(sizeof(g_slotHooks) / sizeof(g_slotHooks[0]) == 12, "H_Slots<0..11> below");
 template <int I>
@@ -610,8 +727,7 @@ struct ShaderHook {
 	const char* name;
 	PFN_SetShaderX orig;
 };
-ShaderHook g_shaderHooks[] = {{S_GS, 23, "GSSetShader", nullptr}, {S_HS, 60, "HSSetShader", nullptr},
-							  {S_DS, 64, "DSSetShader", nullptr}};
+ShaderHook g_shaderHooks[] = {{S_GS, 23, "GSSetShader", nullptr}, {S_HS, 60, "HSSetShader", nullptr}, {S_DS, 64, "DSSetShader", nullptr}};
 template <int I>
 void STDMETHODCALLTYPE H_Shader(CTX_ARGS, void* sh, ID3D11ClassInstance* const* ci, UINT n) {
 	if (On(c)) RecSetShader(g_shaderHooks[I].stage, sh, ci, n);
@@ -1862,7 +1978,7 @@ void ReplayReport() {
 	{
 		char info[160];
 		snprintf(info, sizeof(info), "Both eyes: %u of %u frames drawn twice, right eye %.1f ms CPU", g_statReplayed,
-					 g_statFrames, n ? g_statReplayMs / n : 0.0);
+				 g_statFrames, n ? g_statReplayMs / n : 0.0);
 		MenuSetInfo(3, info);
 	}
 	g_statFrames = g_statReplayed = g_statCancelled = g_statNoCamera = 0;

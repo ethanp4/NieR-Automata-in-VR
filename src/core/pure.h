@@ -307,7 +307,7 @@ inline float q_angle_deg(Q a, Q b) {
 	w = w < 0 ? -w : w;
 	if (w >= 1) return 0;
 	if (w < 1e-6f) return 180;
-	return 2 * fatan(fsqrt(1 - w * w) / w) * 57.29578f;  
+	return 2 * fatan(fsqrt(1 - w * w) / w) * 57.29578f;
 }
 
 // Camera levelling that adapts to steep views. Pitch and roll are removed while the camera looks
@@ -398,7 +398,6 @@ struct ProjInfo {
 	float vfovDeg, aspect;
 };
 
-
 inline bool classify_projection(const float* m, ProjInfo* out) {
 	ProjInfo p = {};
 	bool row = near0(m[3]) && near0(m[7]) && near0(m[15]) && (near0(m[11] - 1) || near0(m[11] + 1)) && near0(m[1]) &&
@@ -437,7 +436,12 @@ inline bool classify_projection(const float* m, ProjInfo* out) {
 struct MenuButton {
 	uint32_t since = 0, startUntil = 0;
 	bool usedForDpad = false;
-	enum : uint16_t { UP = 1, DOWN = 2, LEFT = 4, RIGHT = 8, START = 0x10, BACK = 0x20 };
+	enum : uint16_t { UP = 1,
+					  DOWN = 2,
+					  LEFT = 4,
+					  RIGHT = 8,
+					  START = 0x10,
+					  BACK = 0x20 };
 	// returns the buttons to add; clears *lx/*ly while the menu button is held
 	uint16_t update(bool down, float* lx, float* ly, uint32_t t) {
 		uint16_t b = 0;
@@ -625,7 +629,8 @@ inline float halton(uint32_t i, uint32_t b) {
 // performance (NVIDIA's ratios).
 inline float upscale_ratio(int mode) {
 	static const float kR[5] = {1.0f, 1.5f, 1.7241f, 2.0f, 3.0f};
-	return kR[mode < 0 ? 0 : mode > 4 ? 4 : mode];
+	return kR[mode < 0 ? 0 : mode > 4 ? 4
+									  : mode];
 }
 
 // The mode a game image enlarged `ratio` times is in (the nearest of the ratios above, by their
@@ -673,7 +678,8 @@ inline void upscale_input_for(uint32_t ow, uint32_t oh, int mode, uint32_t* w, u
 // Number of different jitter offsets for an enlargement (NVIDIA: 8 x ratio squared), 8 to 72.
 inline uint32_t jitter_phases(float ratio) {
 	float n = 8 * ratio * ratio;
-	return n < 8 ? 8u : n > 72 ? 72u : (uint32_t)(n + 0.5f);
+	return n < 8 ? 8u : n > 72 ? 72u
+							   : (uint32_t)(n + 0.5f);
 }
 
 }  // namespace pure

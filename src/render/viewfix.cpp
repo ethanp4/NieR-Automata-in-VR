@@ -56,7 +56,6 @@ RWStructuredBuffer<C> outC : register(u0);
 }
 )";
 
-
 struct Fix {
 	ID3D11ComputeShader* cs;
 	ID3D11ShaderResourceView* lenSrv[257];  // probes: views of buf ending after slot n-1 (made on demand)
@@ -251,10 +250,10 @@ void GiReport() {
 		char info[160];
 		if (g_giPick.dropping)
 			snprintf(info, sizeof(info), "GI volumes: %d in use, %d nearest kept; the pass checks slots 0-%d of %d",
-						 g_giPick.used, g_giPick.kept, g_giPick.length - 1, g_giSlots);
+					 g_giPick.used, g_giPick.kept, g_giPick.length - 1, g_giSlots);
 		else
 			snprintf(info, sizeof(info), "GI volumes: %d in use (last slot %d), all kept; the pass checks slots 0-%d of %d",
-						 g_giPick.used, g_giPick.highest, g_giPick.length - 1, g_giSlots);
+					 g_giPick.used, g_giPick.highest, g_giPick.length - 1, g_giSlots);
 		MenuSetInfo(12, info);
 	}
 	if (t - g_giLogTick < 30000 || g_giUsedMax < 0) return;

@@ -37,7 +37,7 @@ static void LogWrite(const char* fmt, va_list ap) {
 	QueryPerformanceCounter(&now);
 	double secs = (double)(now.QuadPart - g_qpcStart.QuadPart) / (double)g_qpcFreq.QuadPart;
 	int n = snprintf(line, sizeof(line), "%02d:%02d:%02d.%03d [%9.3f] [t%5u] ", st.wHour, st.wMinute, st.wSecond,
-						 st.wMilliseconds, secs, (unsigned)GetCurrentThreadId());
+					 st.wMilliseconds, secs, (unsigned)GetCurrentThreadId());
 	if (n > (int)sizeof(line) - 3) n = (int)sizeof(line) - 3;
 	int m = vsnprintf(line + n, sizeof(line) - n - 2, fmt, ap);
 	if (m < 0) m = 0;  // a bad format string: keep the time stamp

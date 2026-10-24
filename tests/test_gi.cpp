@@ -3,7 +3,12 @@
 #include <cstring>
 #include "core/pure.h"
 static int fails;
-static void check(bool c, const char* w) { if (!c) { std::printf("FAIL %s\n", w); fails++; } }
+static void check(bool c, const char* w) {
+	if (!c) {
+		std::printf("FAIL %s\n", w);
+		fails++;
+	}
+}
 static float buf[128 * 24];
 // a box of half size h around view-space point p (rows: identity, translation -p)
 static void put(int slot, float px, float py, float pz, float h) {

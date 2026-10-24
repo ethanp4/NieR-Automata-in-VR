@@ -249,7 +249,12 @@ extern volatile LONG g_recOn;
 extern ID3D11DeviceContext* g_recCtx;
 extern volatile LONG g_recSuspend;     // mod-internal calls (not recorded)
 inline bool RecOn(ID3D11DeviceContext* c) { return g_recOn && c == g_recCtx && !g_recSuspend && !g_replaying; }
-enum RecStage { RS_VS = 0, RS_HS, RS_DS, RS_GS, RS_PS, RS_CS };
+enum RecStage { RS_VS = 0,
+				RS_HS,
+				RS_DS,
+				RS_GS,
+				RS_PS,
+				RS_CS };
 void RecSetCB(int stage, UINT start, UINT n, ID3D11Buffer* const* b);
 void RecSetSRV(int stage, UINT start, UINT n, ID3D11ShaderResourceView* const* v);
 void RecSetShader(int stage, void* sh, ID3D11ClassInstance* const* ci, UINT n);
@@ -302,7 +307,10 @@ void UpscaleRelease();                                       // before a resize
 void UpscaleStatus(char* out, size_t cap);                   // for the stats overlay / Info page
 // dlss.cpp: NVIDIA's DLSS file (nvngx_dlss.dll in the game's folder), downloaded from the menu
 // DF_UPDATE_AVAILABLE: installed, but not the file the mod's SHA256 names
-enum { DF_MISSING, DF_DOWNLOADING, DF_INSTALLED, DF_UPDATE_AVAILABLE };
+enum { DF_MISSING,
+	   DF_DOWNLOADING,
+	   DF_INSTALLED,
+	   DF_UPDATE_AVAILABLE };
 struct DlssFileState {
 	int state;
 	long long got, total;  // bytes, while downloading
