@@ -1,4 +1,4 @@
-// stereo.h - stereo on the game side: the game camera rewritten for each eye (stereo.cpp).
+// camera.h - stereo on the game side: the game camera rewritten for each eye (camera.cpp).
 #pragma once
 #include <d3d11.h>
 #include "core/pure.h"
@@ -33,7 +33,7 @@ bool StereoGetViewFix(float T[16], float Tinv[16]);  // game view -> eye view (a
 void StereoOnMap(ID3D11Resource* res, void* data, UINT size);
 void StereoBeforeUnmap(ID3D11Resource* res);
 const void* StereoPatchUpdate(UINT size, const void* data, float* scratch);
-bool StereoBothEyesFrame();   // this frame renders the left eye and replays the right one
+bool StereoSynchronizedFrame();  // this frame renders the left eye and replays the right one
 void StereoBeginSecondEye();  // switch the camera patching to the right eye (same head pose)
 bool StereoSecondEyePatched();
 bool StereoReprojectParams(int eye, float T[16], float proj[4], FrameTag* tag);  // depth reprojection

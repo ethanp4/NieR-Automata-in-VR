@@ -1,30 +1,10 @@
-// reproject.cpp - depth-based correction of the older eye in alternate-eye mode (0.3.30).
-//
-// Alternate eyes: each game frame renders one eye, so the other eye's newest image is a game frame
-// older and shows the world from where the camera was then. Here, at each Present, that older image
-// is moved to this frame's camera using its depth buffer: every pixel is put back into 3D with its
-// depth and projected again from where that eye would be now. Near and far things move by the
-// right amounts (the rotation-only "eye sync" of 0.3.25 couldn't do that: NieR's camera orbits 2B).
-// The moved image goes to the headset together with the new eye's image, so both eyes follow the
-// camera 60 times a second. Things that move by themselves (enemies, 2B's animation) still update
-// 30 times a second per eye.
-//
-// How: the game's depth buffer isn't readable by shaders (D24S8, depth-stencil only, 0.3.29 log), so
-// at the first UI draw (the scene is finished) it is copied into a readable twin of the same format
-// family. The scene image (the UI split's HUD-free picture) is copied at Present. Next frame a grid
-// (one vertex every 4 pixels) is drawn over the old image: each vertex reads the depth there, is put
-// into the old eye's view space, moved into the eye's view as it would be now, and projected; the
-// pixel shader samples the old colour. A depth test keeps the nearest surface where things overlap.
-// Where something uncovers the background the grid would stretch the near object's edge over the
-// gap (0.4.0 user: "smearing, rubbery, around 2B"); since 0.4.1 such triangles (a depth jump inside
-// a triangle the motion pulled open) are put behind everything and filled with the colour of the
-// farthest pixel nearby, i.e. the background (ReprojectionEdges=1).
+// reproject.cpp - "reproject" one eyes frame at the other eyes perspective
 #include "render/reproject.h"
 #include "core/config.h"
 #include "core/log.h"
+#include "render/camera.h"
 #include "render/frame_share.h"
 #include "render/replay.h"
-#include "render/stereo.h"
 #include "render/upscale.h"
 #include "ui/menu.h"
 #include <stdio.h>
@@ -342,7 +322,7 @@ bool EnsureColor(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& src) {
 // From the OMSetRenderTargets hook (game thread): remember the game's full-size depth buffer (also
 // for the upscaler, upscale.cpp).
 void ReprojectNoteDsv(ID3D11DepthStencilView* dsv) {
-	if (!((g_cfg.depthReproject && !g_cfg.bothEyes) || UpscaleWantsDepth()) || !dsv || !g_bbW) return;
+	if (!((g_cfg.depthReproject && !g_cfg.synchronized) || UpscaleWantsDepth()) || !dsv || !g_bbW) return;
 	ID3D11Resource* r = nullptr;
 	dsv->GetResource(&r);
 	if (!r) return;
@@ -359,7 +339,7 @@ void ReprojectNoteDsv(ID3D11DepthStencilView* dsv) {
 // At the first UI draw: the scene is finished; copy its depth for next frame's reprojection.
 void ReprojectAtUiStart(ID3D11DeviceContext* c) {
 	int eye = StereoFrameEye();
-	if (!g_cfg.depthReproject || g_cfg.bothEyes || eye < 0 || !g_sceneDepth) return;
+	if (!g_cfg.depthReproject || g_cfg.synchronized || eye < 0 || !g_sceneDepth) return;
 	ID3D11Device* dev = nullptr;
 	c->GetDevice(&dev);
 	if (!dev) return;
@@ -384,7 +364,7 @@ void ReprojectSetBackbufferSize(UINT w, UINT h) {
 	g_bbH = h;
 }
 
-// At Present (alternate eyes), after this frame's eye was pushed to the headset: keep this eye's
+// At Present (alternating), after this frame's eye was pushed to the headset: keep this eye's
 // scene for next frame and return the other eye's previous image moved to this frame's camera.
 // `scene` may be larger than the depth (upscaled, upscale.cpp): the depth is then read scaled.
 ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scene, ID3D11Texture2D* bb, FrameTag* tag) {
@@ -401,7 +381,7 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
 		g_bbH = b.Height;
 	}
 	int eye = StereoFrameEye();
-	if (!g_cfg.depthReproject || g_cfg.bothEyes || eye < 0) {
+	if (!g_cfg.depthReproject || g_cfg.synchronized || eye < 0) {
 		g_eye[0].colorOk = g_eye[1].colorOk = false;
 		return nullptr;
 	}

@@ -2,17 +2,18 @@
 // thread's loop. Each headset frame is in xr_frame.cpp, the thread's D3D11 device in xr_device.cpp.
 //
 // The VR thread runs at the headset's refresh rate, independent of the game's frame rate.
-// Stereo: the game renders left and right eyes on alternate frames (stereo.cpp); each headset
+// Stereo: the game renders left and right eyes on alternate frames (camera.cpp); each headset
 // frame submits the newest left and right images in a projection layer, each with the eye pose it
 // was rendered from, and the runtime reprojects them to the current head pose.
 // Flat: the newest game frame on a quad layer floating in front of the user (menus, F12, startup).
-#include "xr/xr_thread.h"
 #include "xr/xr_main.h"
+#include "xr/xr_thread.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "core/main.h"
-#include "render/stereo.h"
-#include "xr/vrinput.h"
+#include "input/vr_controllers.h"
+#include "render/camera.h"
+#include "xr/runtime_loader.h"
 #include <stdio.h>
 
 VrState g_vr;
@@ -386,7 +387,7 @@ static const char* StateName(XrSessionState s) {
 
 static void PollEvents() {
 	XrEventDataBuffer ev;
-	for (;;) {
+	while (true) {
 		// the runtime overwrites the type with the event's own: it must be reset before every call
 		// (0.5.0; earlier versions passed the previous event's type back in)
 		ev = {};
@@ -461,7 +462,7 @@ static DWORD WINAPI XrThreadMain(void*) {
 	// Every wait in this loop is short so the capture texture is always served promptly.
 	DWORD instanceRetryAt = 0, systemRetryAt = 0, sessionRetryAt = 0, instanceRetryDelay = 10000;
 	bool xrDisabled = false;
-	for (;;) {
+	while (true) {
 		ServiceShare();
 		if (xrDisabled) {
 			Sleep(50);

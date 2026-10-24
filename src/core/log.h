@@ -3,7 +3,7 @@
 #include <windows.h>
 
 void LogOpen(const wchar_t* path);
-void Log(const char* fmt, ...) __attribute__((format(gnu_printf, 1, 2)));  // GCC checks the arguments
+void Log(const char* fmt, ...) __attribute__((format(gnu_printf, 1, 2)));  // the compiler checks the arguments
 void LogV(const char* fmt, ...) __attribute__((format(gnu_printf, 1, 2)));  // only when [Debug] Verbose=1
 // Returns true while fewer than `max` messages were logged through this counter.
 bool LogBudget(volatile LONG* counter, LONG max);

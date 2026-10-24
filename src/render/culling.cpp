@@ -1,22 +1,22 @@
-// cull.cpp - widens the field of view NieR culls (and lays out) its scene with.
+// culling.cpp - widens the field of view NieR culls (and lays out) its scene with.
 //
 // The game decides what to draw from its own camera: about 50 degrees tall, 16:9. In the headset
 // you see ~95 x 109 degrees and can look around, so things outside the game's view were missing
 // (NPC hair, screen contents, lights at the edges). While stereo is rendering, the game camera's
 // field-of-view setter is hooked to hand the game a wider value (CullingFov), so its own camera
 // update builds a wider culling frustum. The renderer's projection is replaced per eye anyway
-// (stereo.cpp), so the VR image keeps its shape.
+// (camera.cpp), so the VR image keeps its shape.
 //
 // Also here: a background memory scan for the camera object and a hardware-breakpoint "watch"
 // (Ctrl+F5) that logs which game code reads/writes the camera fov: the diagnostic that found the
 // setter (0.3.10).
-#include "render/cull.h"
+#include "render/culling.h"
 #include "core/config.h"
 #include "core/hook.h"
 #include "core/log.h"
 #include "core/main.h"
 #include "core/pure.h"
-#include "render/stereo.h"
+#include "render/camera.h"
 #include "ui/menu.h"
 #include <stdio.h>
 #include <string.h>
@@ -128,11 +128,11 @@ volatile LONG g_widened, g_passed;
 bool g_hookOk;
 
 volatile float g_gameFov;  // the last field of view the game asked for (main camera, radians)
-// fovstubs.S: the main camera object (0 = off) and the widened fov (radians) for the sites below.
+// culling_stubs.S: the main camera object (0 = off) and the widened fov (radians) for the sites below.
 extern "C" {
 extern void* volatile nvr_fov_obj;
 extern void* volatile nvr_fov_site_obj[4];  // per read site (Shift+F5 test switches sites off)
-extern volatile LONG nvr_head_cull;          // fovstubs.S calls nvr_head_cull_builder when set
+extern volatile LONG nvr_head_cull;          // culling_stubs.S calls nvr_head_cull_builder when set
 extern volatile float nvr_fov_wide;
 extern volatile float nvr_fov_wide_b;  // the frustum builder's (site B): headset-sized with head culling
 extern void* nvr_fov_resume[4];
@@ -153,7 +153,7 @@ bool g_siteA;      // the projection rebuild site is among them (required for th
 // CullingFov=170 it reaches ~87: turn your head further than ~35-40 deg from where the game camera
 // points and the edge of your view leaves it (0.3.21 user report). The frustum builder after site B
 // gets LookAt(eye, target, up) as three pointers (0.3.20/0.3.21 logs: r14 = eye, rbp = target,
-// rsi = up, values with leftover w lanes, i.e. a temporary on the stack). fovstubs.S calls this
+// rsi = up, values with leftover w lanes, i.e. a temporary on the stack). culling_stubs.S calls this
 // right before that call: the target and up are turned by the eye's rotation relative to the game
 // camera (StereoHeadRelative), so the culling view looks where you look. Only done when the three
 // vectors are on this thread's stack: then they're a copy made for this call and the camera itself
@@ -256,7 +256,7 @@ extern "C" void nvr_head_cull_builder(float* eye, float* target, float* up) {
 	if (turn) InterlockedIncrement(&g_hcDone);
 }
 
-// fovstubs.S (nvr_post_builder): right after the frustum builder call returns.
+// culling_stubs.S (nvr_post_builder): right after the frustum builder call returns.
 extern "C" void nvr_head_cull_restore() {
 	float* b = g_hcBlock;
 	if (!b || g_hcTid != GetCurrentThreadId()) return;
@@ -453,7 +453,7 @@ static const uint8_t kSetFovBytes[] = {0x48, 0x8b, 0x01, 0xf3, 0x0f, 0x11, 0x88,
 //   exe+0x27ad44  getter (camera controller: eases the fov from the current value)
 // 0.3.11-0.3.16 widened the stored value, so all of them saw 120 deg: the controller then eased
 // from 120 (the game "asked" for 113-119, 0.3.16 log) and model detail dropped. Now only the first
-// four are redirected (fovstubs.S); each is found by its bytes plus neighbours and must match once.
+// four are redirected (culling_stubs.S); each is found by its bytes plus neighbours and must match once.
 struct FovSite {
 	const char* what;
 	uint8_t bytes[28];
@@ -487,7 +487,7 @@ static const FovSite kSites[4] = {
 // (rdx, r8, r9: pointers? vectors?) and who asks the camera for its matrix (getter returning
 // obj+0xc0, right after the fov getter). Logged a few times; the game is not changed.
 // ---------------------------------------------------------------------------------------------
-extern "C" void* volatile nvr_diag_regs[3];  // fovstubs.S: r14, rbp, rsi at the frustum builder call
+extern "C" void* volatile nvr_diag_regs[3];  // culling_stubs.S: r14, rbp, rsi at the frustum builder call
 typedef void* (*PFN_GetMat)(void** cam);
 PFN_GetMat o_GetMat;
 volatile LONG g_builderLogs;
@@ -781,11 +781,12 @@ void CullingUpdate(bool wide) {
 				if (!c) continue;
 				char where[300];
 				DescribeAddress(g_callers[i].ra, where, sizeof(where));
-				Log("culling:   fov getter caller %s: %ld calls, %ld votes, %s", where, (long)c, (long)g_callers[i].votes,
-					!ctl ? "real value (still finding the camera's easing)"
-						 : (&g_callers[i] == ctl ? "real value (camera easing)"
-												 : (g_callers[i].real ? "real value (FovRealCallers)"
-																	  : (GetterReal(&g_callers[i]) ? "real value (Shift+F5 test)" : "wide value"))));
+				const char* value = "wide value";
+				if (!ctl) value = "real value (still finding the camera's easing)";
+				else if (&g_callers[i] == ctl) value = "real value (camera easing)";
+				else if (g_callers[i].real) value = "real value (FovRealCallers)";
+				else if (GetterReal(&g_callers[i])) value = "real value (Shift+F5 test)";
+				Log("culling:   fov getter caller %s: %ld calls, %ld votes, %s", where, (long)c, (long)g_callers[i].votes, value);
 			}
 			LogBuilderArgs();
 			{

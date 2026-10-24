@@ -1,4 +1,4 @@
-// vrinput.cpp - VR controllers as a gamepad, and motion controls.
+// vr_controllers.cpp - VR controllers as a gamepad, and motion controls.
 //
 // The VR controllers (Quest/Touch, Index, Vive wands, Windows MR, Pico via SteamVR/VD, ...) are read
 // through OpenXR actions and handed to the game as an Xbox-style gamepad: the XInput hook in
@@ -28,25 +28,35 @@
 // presses the button for 100 ms and gives a short rumble on that hand (VrInputMotion). With
 // [Input] IgnoreUpwardSwings=1 (default) reaching for the headset doesn't attack: a hand moving mostly
 // upward doesn't count, nor one within 25 cm of the head and for 0.4 s after it leaves.
-#include "xr/xr.h"
-#include "xr/vrinput.h"
+#include "input/vr_controllers.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "core/pure.h"
 #include "ui/menu.h"
+#include "xr/openxr.h"
 #include <stdio.h>
 #include <string.h>
 #include <xinput.h>
 
 namespace {
-#define VR_FUNCS(X)                                                                                                  \
-	X(xrStringToPath)                                                                                                \
-	X(xrCreateActionSet)                                                                                             \
-	X(xrDestroyActionSet) X(xrCreateAction)                                                                          \
-		X(xrSuggestInteractionProfileBindings) X(xrAttachSessionActionSets) X(xrSyncActions)                         \
-			X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(xrGetActionStateVector2f) X(xrApplyHapticFeedback) \
-				X(xrStopHapticFeedback) X(xrGetCurrentInteractionProfile) X(xrPathToString) X(xrCreateActionSpace)   \
-					X(xrLocateSpace) X(xrDestroySpace)
+#define VR_FUNCS(X)                        \
+	X(xrStringToPath)                      \
+	X(xrCreateActionSet)                   \
+	X(xrDestroyActionSet)                  \
+	X(xrCreateAction)                      \
+	X(xrSuggestInteractionProfileBindings) \
+	X(xrAttachSessionActionSets)           \
+	X(xrSyncActions)                       \
+	X(xrGetActionStateBoolean)             \
+	X(xrGetActionStateFloat)               \
+	X(xrGetActionStateVector2f)            \
+	X(xrApplyHapticFeedback)               \
+	X(xrStopHapticFeedback)                \
+	X(xrGetCurrentInteractionProfile)      \
+	X(xrPathToString)                      \
+	X(xrCreateActionSpace)                 \
+	X(xrLocateSpace)                       \
+	X(xrDestroySpace)
 struct {
 #define DECL(n) PFN_##n n;
 	VR_FUNCS(DECL)
@@ -396,7 +406,7 @@ void VrInputSync(bool focused, bool foreground) {
 	if (GetFloat(A_GRIP, 1) > 0.5f) b |= XINPUT_GAMEPAD_RIGHT_SHOULDER;
 	p.bLeftTrigger = (BYTE)(ltv * 255.0f + 0.5f);
 	p.bRightTrigger = (BYTE)(rtv * 255.0f + 0.5f);
-	// left menu button: tap = Start, hold = Back, + left stick = D-pad (pure.h, test_vrinput)
+	// left menu button: tap = Start, hold = Back, + left stick = D-pad (pure.h, test_vr_controllers)
 	DWORD t = GetTickCount();
 	b |= g_menuBtn.update(GetBool(A_MENU, 0), &ls.x, &ls.y, t);
 	if ((LONG)(g_swingUntil[1] - t) > 0) b |= XINPUT_GAMEPAD_X;  // motion controls (VrInputMotion)

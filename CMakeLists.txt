@@ -1,13 +1,12 @@
-# Needs MSYS2 UCRT64 (GCC), the OpenXR SDK headers, CMake and Ninja:
-#   pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openxr-sdk mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
-# Add C:/msys64/ucrt64/bin to path
-# handy commands for me
-#   cmake -S . -B build -G Ninja -DCMAKE_INSTALL_PREFIX="C:/Program Files (x86)/Steam/steamapps/common/NieRAutomata"
-#   cmake -S . -B build-clang -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_ASM_COMPILER=clang -DCMAKE_INSTALL_PREFIX="C:/Program Files (x86)/Steam/steamapps/common/NieRAutomata"
+# Needs MSYS2 CLANG64 (Clang, lld), the OpenXR SDK headers, CMake and Ninja:
+#   pacman -S mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-lld mingw-w64-clang-x86_64-clang-tools-extra mingw-w64-clang-x86_64-openxr-sdk mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja
+# Add C:/msys64/clang64/bin to path
+# handy commands for me (CMakePresets.json: "clang" builds in build)
+#   cmake --preset clang
 #   cmake --build build
 #   cmake --install build
 #   cmake --build build --target launch
-#   ctest --test-dir build
+#   ctest --preset clang
 #	-DNIERVR_VERSION=x
 cmake_minimum_required(VERSION 3.20)
 project(NieRVR LANGUAGES C CXX ASM)
@@ -24,7 +23,7 @@ FetchContent_Declare(minhook  # function hooking (upstream master, Sep 2026)
 	URL_HASH SHA256=6c0334d09607da1c4a34a68b5febf0cf24c5810cae842eda13c9c24ea4196adb
 	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 	SOURCE_SUBDIR none)
-FetchContent_Declare(imgui    # Dear ImGui: the stats overlay (ui/overlay.cpp)
+FetchContent_Declare(imgui    # Dear ImGui: the stats overlay (ui/stats_overlay.cpp)
 	URL https://github.com/ocornut/imgui/archive/refs/tags/v1.92.9b.tar.gz
 	URL_HASH SHA256=21d8a0a565e85dce943e375db00812c2f3f0ab21f3f0f7964e364a63422d7f99
 	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
@@ -49,7 +48,7 @@ file(GLOB_RECURSE NIERVR_SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.S)
 # "missing field initializers" is off: brace-initialising a struct partly (= {a, b}) is used on purpose.
 set(NIERVR_WARNINGS -Wall -Wextra -Wno-missing-field-initializers)
 set_source_files_properties(${NIERVR_SOURCES} PROPERTIES COMPILE_OPTIONS "${NIERVR_WARNINGS}")
-list(FILTER NIERVR_SOURCES EXCLUDE REGEX "/src/gen/")  # thunks.S is listed below
+list(FILTER NIERVR_SOURCES EXCLUDE REGEX "/src/gen/")
 add_library(nier_vr SHARED
 	${NIERVR_SOURCES}
 	src/gen/thunks.S
@@ -78,7 +77,7 @@ target_compile_definitions(nier_vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 # ImGui only draws the overlay: no clipboard/IME/shell helpers (they'd import SHELL32 and more)
 target_compile_definitions(nier_vr PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS IMGUI_DISABLE_WIN32_FUNCTIONS
 	NIERVR_VERSION="${NIERVR_VERSION}")
-# -fno-threadsafe-statics: a guarded function-local static pulls all of libstdc++'s exception
+# -fno-threadsafe-statics: a guarded function-local static pulls all of the C++ runtime's exception
 # handling into the DLL (see build/d3d11.map); ImGui runs on one thread only.
 target_compile_options(nier_vr PRIVATE
 	-O2 -msse4.1 -fno-math-errno -fno-asynchronous-unwind-tables -fno-stack-protector

@@ -1,4 +1,3 @@
-// config.h - the settings, from NieRVR.ini next to the DLL (config.cpp).
 #pragma once
 #include <windows.h>
 
@@ -13,7 +12,7 @@ struct Config {
 	float distance;            // metres in front of the head
 	float width;               // metres
 	float heightOffset;        // metres, relative to eye height
-	int statsOverlay;          // live stats in the corner of your view (ui/overlay.cpp)
+	int statsOverlay;          // live stats in the corner of your view (ui/stats_overlay.cpp)
 	float overlayX, overlayY;  // its position: metres right / up of straight ahead (at 0.8 m; scaled with the distance)
 	float overlayDistance;     // metres in front of your eyes (it keeps its size in your view)
 	float menuDistance;        // the settings menu: metres in front of you when it opens (keeps its size in your view)
@@ -30,7 +29,6 @@ struct Config {
 	int keyStereo;               // [Keys] ToggleStereo
 	int keyMenu;                 // [Keys] Menu: opens/closes the settings menu (0 = no key)
 	float verticalFill;          // 1 = render the headset's full vertical FOV; 0 = fit width (sharper, crops top/bottom)
-	int uiSplit;                 // HUD/menus on a separate flat layer
 	int anamorphic;              // fill each eye's own FOV shape (non-square pixels) instead of a 16:9 cover
 	float cameraDolly;           // metres to move the camera along its line of sight (towards the character)
 	int firstPerson;             // prototype: eyes at the game camera's look-at target (around 2B), not behind her
@@ -53,9 +51,9 @@ struct Config {
 	int fovRealCount;
 	int headCulling;       // turn the culling frustum the way the headset looks
 	float headCullMargin;  // degrees added around the headset's view for the head-culling frustum
-	int bothEyes;          // render both eyes every frame (record + replay)
-	int reuseShadows;      // BothEyes: the replay reuses the left eye's shadow map
-	int depthReproject;    // alternate eyes: move the older eye's image to the new camera with its depth
+	int synchronized;      // both eyes rendered every frame (record + replay)
+	int reuseShadows;      // Synchronized: the replay reuses the left eye's shadow map
+	int depthReproject;    // alternating mode: move the older eye's image to the new camera with its depth
 	int reprojectEdges;    // fill the gaps it opens with background instead of stretching edges
 	int posePrediction;    // [Stereo] PosePrediction: predict the game's head pose for when its frame is shown
 	int lateWarp;          // [Stereo] LateWarp: submit the headset's pose/fov, eye images re-aimed to it
@@ -69,7 +67,7 @@ struct Config {
 	// [Input]
 	int vrControllers;   // VR controllers act as an XInput gamepad
 	int vrRumble;        // the game's rumble goes to the VR controllers
-	int motionControls;  // swing a hand to attack (vrinput.cpp)
+	int motionControls;  // swing a hand to attack (vr_controllers.cpp)
 	float swingSpeed;    // m/s a hand must move (relative to the head) to count as a swing
 	int ignoreUpSwings;  // no swings from a hand moving mostly upward or at the headset
 	int eyeSync;         // turn the older eye's image by the game camera's turn since

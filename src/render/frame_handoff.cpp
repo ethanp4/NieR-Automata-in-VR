@@ -1,24 +1,24 @@
-// present_hook.cpp - hooks IDXGISwapChain::Present (inline detour via MinHook) and copies each
+// frame_handoff.cpp - hooks IDXGISwapChain::Present (inline detour via MinHook) and copies each
 // finished game frame into a texture shared with the VR thread. The game is never made to wait.
-#include "render/present_hook.h"
+#include "render/frame_handoff.h"
 #include "core/config.h"
+#include "core/d3d11_proxy.h"
 #include "core/hook.h"
 #include "core/log.h"
 #include "core/main.h"
-#include "core/proxy.h"
-#include "debug/gpuprof.h"
-#include "render/display.h"
+#include "debug/frame_capture.h"
+#include "debug/gpu_timing.h"
+#include "render/camera.h"
+#include "render/d3d_hooks.h"
+#include "render/extra_resolutions.h"
 #include "render/frame_share.h"
+#include "render/game_effects.h"
+#include "render/hud_layer.h"
 #include "render/replay.h"
 #include "render/reproject.h"
-#include "render/screenfx.h"
-#include "render/stereo.h"
-#include "render/uisplit.h"
 #include "render/upscale.h"
 #include "xr/xr_main.h"
 #include <string.h>
-#include "debug/frame_capture.h"
-#include "render/d3d_hooks.h"
 
 FrameShare g_share;
 
@@ -31,6 +31,11 @@ static void* g_hookTarget[kMaxTargets];
 static volatile LONG g_hookCount;
 static SRWLOCK g_hookLock = SRWLOCK_INIT;
 static DWORD g_tlsDepth = TLS_OUT_OF_INDEXES;  // per-thread Present nesting depth
+
+typedef HRESULT(STDMETHODCALLTYPE* PFN_ResizeBuffers)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
+static const int kResizeBuffersIndex = 13;
+static PFN_ResizeBuffers g_origResizeBuffers;
+static volatile LONG g_resizeLogBudget;
 
 // ---------------------------------------------------------------------------------------------
 // Game-side capture state (only touched at nesting depth 0 on the presenting thread)
@@ -95,7 +100,7 @@ static void PublishLocked(int i) {
 	}
 }
 
-// Publishes ring slots whose copy the GPU has finished. Never blocks. The two images of a BothEyes
+// Publishes ring slots whose copy the GPU has finished. Never blocks. The two images of a Synchronized
 // frame (same pairId) are published together, once both are done, so the headset never shows the
 // left eye of one game frame with the right eye of another (0.3.26: the right image is finished
 // a replay later than the left one, and the right eye lagged).
@@ -258,7 +263,7 @@ static void CaptureFrame(IDXGISwapChain* sc) {
 	DXGI_FORMAT fmt = ConcreteFormat(d.Format);
 	if (s_presentCount++ == 0) {
 		Log("first Present: backbuffer %ux%u format %d msaa %u", d.Width, d.Height, (int)d.Format, d.SampleDesc.Count);
-		DisplayOnFirstPresent(sc);
+		ExtraResolutionsOnFirstPresent(sc);
 	}
 	StereoSetAspect((float)d.Width / (float)d.Height);
 	UiSetBackbuffer(bb);
@@ -327,15 +332,15 @@ static void CaptureFrame(IDXGISwapChain* sc) {
 	// 3. Publish finished copies, then copy this frame into the next free slot.
 	if (s_ring[0]) {
 		PollPending();
-		ID3D11Texture2D* scene = g_cfg.uiSplit ? UiSceneTexture() : nullptr;
-		bool both = StereoBothEyesFrame() && ReplayAvailable();
-		if (both && FreeSlots() < 2) {
-			// BothEyes and the GPU is behind: drop this game frame for the headset (both eyes keep
+		ID3D11Texture2D* scene = UiSceneTexture();
+		bool synchronized = StereoSynchronizedFrame() && ReplayAvailable();
+		if (synchronized && FreeSlots() < 2) {
+			// Synchronized and the GPU is behind: drop this game frame for the headset (both eyes keep
 			// the previous pair) and skip the replay, which lets the GPU catch up.
 			s_droppedPairs++;
-		} else if (!both && g_cfg.depthReproject && StereoFrameEye() >= 0 && d.SampleDesc.Count == 1 && FreeSlots() >= 2 &&
+		} else if (!synchronized && g_cfg.depthReproject && StereoFrameEye() >= 0 && d.SampleDesc.Count == 1 && FreeSlots() >= 2 &&
 				   (!up || scene)) {
-			// Alternate eyes with depth reprojection: this frame's eye, plus the other eye's last
+			// Alternating with depth reprojection: this frame's eye, plus the other eye's last
 			// image moved to this frame's camera, handed to the headset as a pair. Upscaling: the
 			// upscaled images are moved.
 			ID3D11Texture2D* sc = UpscaleScene(s_ctx, StereoFrameEye(), scene);
@@ -350,8 +355,8 @@ static void CaptureFrame(IDXGISwapChain* sc) {
 		} else {
 			int left = PushToRing(bb, d.SampleDesc.Count > 1, fmt, UpscaleScene(s_ctx, StereoFrameEye(), scene), false,
 								  nullptr, scene);
-			// BothEyes: the same frame again for the right eye (replay.cpp), into the next slot.
-			if (both && left >= 0) {
+			// Synchronized: the same frame again for the right eye (replay.cpp), into the next slot.
+			if (synchronized && left >= 0) {
 				bool inBackbuffer = false;
 				int right = -1;
 				if (ReplaySecondEye(s_ctx, &inBackbuffer)) {
@@ -383,12 +388,12 @@ static void AfterPresent() {
 	FrameLatencyTick();
 	if (s_ring[0]) PollPending();
 	UiBeginFrame();
-	ScreenFxBeginFrame();
+	GameEffectsBeginFrame();
 	StereoBeginFrame();
 	if (s_ctx) {
-		ReplayFrameStart(s_ctx, StereoBothEyesFrame());
-		GpuProfPoll(s_ctx);
-		GpuProfFrameStart(s_ctx);
+		ReplayFrameStart(s_ctx, StereoSynchronizedFrame());
+		GpuTimingPoll(s_ctx);
+		GpuTimingFrameStart(s_ctx);
 	}
 	ReplayReport();
 }
@@ -405,11 +410,11 @@ static HRESULT PresentCommon(int slot, void* retAddr, IDXGISwapChain* self, UINT
 			guaranteed = true;
 		}
 		if (!(flags & DXGI_PRESENT_TEST)) {
-			ReplayStop(false);  // BothEyes: the game's frame is complete
-			if (s_ctx) GpuProfMark(s_ctx, "present");
+			ReplayStop(false);  // Synchronized: the game's frame is complete
+			if (s_ctx) GpuTimingMark(s_ctx, "present");
 			CaptureBeforePresent();
 			CaptureFrame(self);
-			if (s_ctx) GpuProfFrameEnd(s_ctx);
+			if (s_ctx) GpuTimingFrameEnd(s_ctx);
 		}
 	} else {
 		if (LogBudget(&s_budgetNested, 5)) {
@@ -474,6 +479,19 @@ static void InstallDetour(void* target, const char* how) {
 	ReleaseSRWLockExclusive(&g_hookLock);
 }
 
+// The backbuffer changes size: every feature frees its textures of the old size first.
+static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* sc, UINT count, UINT w, UINT h, DXGI_FORMAT format,
+													 UINT flags) {
+	UiOnResizeBuffers();
+	ReplayRelease();
+	ReprojectRelease();
+	UpscaleRelease();
+	HRESULT hr = g_origResizeBuffers(sc, count, w, h, format, flags);
+	if (LogBudget(&g_resizeLogBudget, 8))
+		Log("swapchain: ResizeBuffers %ux%u format %d -> 0x%08x", w, h, (int)format, (unsigned)hr);
+	return hr;
+}
+
 void HookFromSwapChain(IDXGISwapChain* sc) { InstallDetour((*(void***)sc)[kPresentIndex], "game swapchain"); }
 
 void HookWithDummySwapChain() {
@@ -514,7 +532,9 @@ void HookWithDummySwapChain() {
 	}
 	if (SUCCEEDED(hr) && sc) {
 		InstallDetour((*(void***)sc)[kPresentIndex], "via dummy swapchain");
-		DisplayHookSwapChain(sc);
+		HookFunction((*(void***)sc)[kResizeBuffersIndex], (void*)&HookedResizeBuffers, (void**)&g_origResizeBuffers,
+					 "IDXGISwapChain::ResizeBuffers");
+		ExtraResolutionsHookSwapChain(sc);
 		sc->Release();
 		if (ctx) ctx->Release();
 		if (dev) dev->Release();

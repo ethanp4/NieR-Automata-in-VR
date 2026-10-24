@@ -1,4 +1,4 @@
-// proxy.h - stands in for d3d11.dll: loads the real one and forwards every export (proxy.cpp).
+// d3d11_proxy.h - stands in for d3d11.dll: loads the real one and forwards every export (d3d11_proxy.cpp).
 #pragma once
 #include <d3d11.h>
 

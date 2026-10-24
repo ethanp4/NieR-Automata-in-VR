@@ -1,10 +1,9 @@
-// imgui_panel.cpp - Dear ImGui setup shared by the settings menu and the stats overlay.
 #include "ui/imgui_panel.h"
 #include "core/log.h"
 #include <stdio.h>
 #include <d3dcompiler.h>
-#include "imgui.h"
 #include "backends/imgui_impl_dx11.h"
+#include "imgui.h"
 
 // ImGui's DX11 backend calls D3DCompile for its two small shaders. Defined here so the DLL doesn't
 // import d3dcompiler_47.dll at load time: it's loaded on first use, like xr_main.cpp does.
@@ -27,7 +26,6 @@ namespace {
 ImVec4 C(const float* c) { return ImVec4(c[0], c[1], c[2], c[3]); }
 ImVec4 C(const float* c, float a) { return ImVec4(c[0], c[1], c[2], a); }
 
-// Segoe UI from Windows' font folder (on every Windows 10/11); ImGui's own font if it's missing.
 void LoadFont(ImGuiIO& io, float size) {
 	char path[MAX_PATH];
 	UINT n = GetWindowsDirectoryA(path, MAX_PATH - 32);
@@ -46,7 +44,7 @@ void Style(float fontSize) {
 	s.WindowBorderSize = 0;
 	s.FrameRounding = 4;
 	s.GrabRounding = 4;
-	s.GrabMinSize = fontSize * 0.2f;  // a thin handle, so it doesn't cover the value text
+	s.GrabMinSize = fontSize * 0.2f;
 	s.FramePadding = ImVec2(fontSize * 0.4f, fontSize * 0.2f);
 	s.ItemSpacing = ImVec2(fontSize * 0.4f, fontSize * 0.3f);
 	s.CellPadding = ImVec2(fontSize * 0.3f, fontSize * 0.25f);
@@ -60,7 +58,7 @@ void Style(float fontSize) {
 	c[ImGuiCol_FrameBg] = C(Colors::bar);
 	c[ImGuiCol_FrameBgHovered] = C(Colors::bar);
 	c[ImGuiCol_FrameBgActive] = C(Colors::accent, 0.35f);
-	c[ImGuiCol_SliderGrab] = C(Colors::accent, 0.55f);  // see-through: the value text stays readable
+	c[ImGuiCol_SliderGrab] = C(Colors::accent, 0.55f);
 	c[ImGuiCol_SliderGrabActive] = C(Colors::text);
 	c[ImGuiCol_CheckMark] = C(Colors::accent);
 	c[ImGuiCol_CheckboxSelectedBg] = C(Colors::bar);
@@ -88,7 +86,7 @@ bool Create(UiPanel& p, ID3D11Device* dev, ID3D11DeviceContext* dc) {
 	p.ctx = ImGui::CreateContext();
 	ImGui::SetCurrentContext(p.ctx);
 	ImGuiIO& io = ImGui::GetIO();
-	io.IniFilename = nullptr;  // no imgui.ini in the game folder
+	io.IniFilename = nullptr;
 	io.LogFilename = nullptr;
 	if (p.navigation) {
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard;
@@ -108,8 +106,6 @@ bool Create(UiPanel& p, ID3D11Device* dev, ID3D11DeviceContext* dc) {
 }
 }  // namespace
 
-// Makes the panel's context current (creating it the first time) and sets size and frame time.
-// False: ImGui couldn't start (logged once), draw nothing.
 bool UiPrepare(UiPanel& p, ID3D11Device* dev, ID3D11DeviceContext* dc, int w, int h) {
 	if (p.failed) return false;
 	if (!p.ctx && !Create(p, dev, dc)) {

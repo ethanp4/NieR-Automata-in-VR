@@ -1,9 +1,3 @@
-// download.cpp - one HTTPS file download with Windows' own WinHTTP, checked by SHA256 (bcrypt).
-//
-// Runs on the caller's thread (dlss.cpp starts one for it). The file is written next to its
-// destination as "<name>.part", hashed while it arrives, and only renamed into place when the hash
-// matches: a cut or wrong download never leaves a broken file behind. Redirects (GitHub sends large
-// files on to its download host) are followed by WinHTTP; the system's proxy settings are used.
 #include "core/download.h"
 #include <stdio.h>
 #include <stdint.h>
@@ -92,7 +86,7 @@ bool HttpDownload(const wchar_t* url, const wchar_t* path, const char* sha256, v
 	Sha256 hash;
 	static char buf[1 << 16];
 	bool ok = true;
-	for (;;) {
+	while (true) {
 		if (*cancel) {
 			snprintf(err, errCap, "cancelled");
 			ok = false;
@@ -135,7 +129,11 @@ bool FileSha256(const wchar_t* path, char hex[65]) {
 	static char buf[1 << 16];
 	DWORD n = 0;
 	bool ok = true;
-	while ((ok = ReadFile(f, buf, sizeof(buf), &n, nullptr)) && n > 0) hash.Add(buf, n);
+	while (true) {
+		ok = ReadFile(f, buf, sizeof(buf), &n, nullptr);
+		if (!ok || n == 0) break;
+		hash.Add(buf, n);
+	}
 	CloseHandle(f);
 	return ok && hash.Hex(hex);
 }

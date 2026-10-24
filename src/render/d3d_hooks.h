@@ -1,5 +1,5 @@
 // d3d_hooks.h - hooks on the game's D3D11 device and immediate context, passing each call on to the
-// features that need it (camera patching, HUD split, both-eyes recording, effect toggles, capture).
+// features that need it (camera patching, HUD split, synchronized recording, effect toggles, capture).
 #pragma once
 #include <d3d11.h>
 

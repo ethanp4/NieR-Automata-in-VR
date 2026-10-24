@@ -3,7 +3,7 @@
 #include "xr/xr_thread.h"
 #include "core/config.h"
 #include "core/log.h"
-#include "render/stereo.h"
+#include "render/camera.h"
 #include <string.h>
 #include <d3dcompiler.h>
 
@@ -190,7 +190,7 @@ bool InitDevice() {
 	Log("VR device created (feature level 0x%x)", (unsigned)got);
 	// 0.5.1: the VR thread's few small GPU jobs per headset frame must not wait behind the game's
 	// frame on the same GPU, or the runtime sees late frames and throttles the app (0.5.0 Pico log:
-	// headset 27-32 fps in both-eyes mode while the GPU needed only 15-19 ms per game frame)
+	// headset 27-32 fps in synchronized mode while the GPU needed only 15-19 ms per game frame)
 	{
 		IDXGIDevice* xd = nullptr;
 		if (SUCCEEDED(g_vr.dev->QueryInterface(__uuidof(IDXGIDevice), (void**)&xd)) && xd) {
@@ -384,7 +384,7 @@ void UpdateContent() {
 		// during some damage effects): stay in stereo with the HUD inside the 3D image. (0.3.4-0.3.11
 		// switched to the flat screen here, which made the view flicker to flat when hit; the title
 		// screen that needed it is handled by FlatBelowDraws now.)
-		if (k < 2 && g_cfg.uiSplit) {
+		if (k < 2) {
 			if (latest[k].tag.hasScene) {
 				g_vr.noSceneRun = 0;
 			} else if (++g_vr.noSceneRun == 30) {
@@ -425,9 +425,7 @@ void Blit(ID3D11RenderTargetView* rtv, uint32_t w, uint32_t h, ID3D11ShaderResou
 		g_vr.ctx->UpdateSubresource(g_vr.cbWarp, 0, nullptr, warp, 0, 0);
 		g_vr.ctx->PSSetConstantBuffers(1, 1, &g_vr.cbWarp);
 	}
-	g_vr.ctx->PSSetShader(warp ? g_vr.psWarp : scene ? g_vr.psKey
-													 : g_vr.ps,
-						  nullptr, 0);
+	g_vr.ctx->PSSetShader(warp ? g_vr.psWarp : (scene ? g_vr.psKey : g_vr.ps), nullptr, 0);
 	ID3D11ShaderResourceView* srvs[2] = {srv, scene};
 	g_vr.ctx->PSSetShaderResources(0, 2, srvs);
 	g_vr.ctx->PSSetSamplers(0, 1, &g_vr.sampler);
@@ -483,7 +481,7 @@ static void SetMenuMode(bool on, float frac) {
 }
 
 void MeasureUICoverage() {
-	if (!g_cfg.uiSplit || !g_vr.psKey || !EnsureCoverageTargets()) return;
+	if (!g_vr.psKey || !EnsureCoverageTargets()) return;
 	for (int i = 0; i < 3; i++) {
 		if (!g_vr.covPending[i]) continue;
 		D3D11_MAPPED_SUBRESOURCE m;

@@ -1,33 +1,11 @@
-// replay.cpp - both eyes every frame ("BothEyes", 0.3.26, experimental).
-//
-// Alternate-eye rendering gives each eye a new image 30 times a second, a game frame apart, which
-// makes fast camera motion uncomfortable. Here the game renders the left eye as usual while every
-// call it makes on its immediate context is recorded (with the data it uploads); at Present the
-// recording is played back once more with the camera patched for the right eye. The game's own
-// code runs once; the GPU draws the scene twice.
-//
-// Recording window: from just after the previous Present to the first UI draw (the HUD is drawn
-// once, for the left eye, and shown on the flat HUD layer). Frames without UI are recorded up to
-// Present (then the replay also runs the game's final pass into the backbuffer).
-//
-// What playback needs besides the calls themselves:
-//  * the pipeline state at the start of the window (StateBlock), restored before playback, and the
-//    state at Present, restored after it, so the game never sees a difference;
-//  * the data of every Map/UpdateSubresource, copied at record time before the mod patches the
-//    camera into it: playback uploads it again and patches it for the right eye (the same code
-//    finds and rewrites the camera buffers, so lights/reflection fixes follow the right eye too);
-//  * the view-space fix compute passes (viewfix.cpp), run again before the same game dispatches;
-//  * every object referenced, kept alive (AddRef) until playback is over.
-// Anything the recorder doesn't understand (deferred command lists, a D3D11.1 call it can't
-// replay, a buffer too large) cancels the second eye for that frame: it then shows the previous
-// right image, as in alternate-eye mode, and the log says why.
+// replay.cpp - rerender draw calls from the other eyes perspective
 #include "render/replay.h"
 #include "core/config.h"
 #include "core/hook.h"
 #include "core/log.h"
-#include "debug/gpuprof.h"
-#include "render/stereo.h"
-#include "render/uisplit.h"
+#include "debug/gpu_timing.h"
+#include "render/camera.h"
+#include "render/hud_layer.h"
 #include "render/viewfix.h"
 #include "ui/menu.h"
 #include <stdio.h>
@@ -893,7 +871,7 @@ void STDMETHODCALLTYPE H_OMSetRTUAV(CTX_ARGS, UINT nrt, ID3D11RenderTargetView* 
 		}
 	}
 	if (c == g_recCtx && !g_replaying && nrt != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
-		GpuProfTargets(c, nrt, rtvs, dsv, "");
+		GpuTimingTargets(c, nrt, rtvs, dsv, "");
 	o_OMSetRTUAV(c, nrt, rtvs, dsv, us, nu, uavs, counts);
 }
 void STDMETHODCALLTYPE H_OMSetBlendState(CTX_ARGS, ID3D11BlendState* bs, const FLOAT f[4], UINT mask) {
@@ -1597,7 +1575,7 @@ void Play(ID3D11DeviceContext* c) {
 					g_skippedDraws++;
 					break;
 				}
-				GpuProfDraw();
+				GpuTimingDraw();
 				const uint32_t* v = (const uint32_t*)p;
 				switch (h.a) {
 					case 0: c->Draw(v[0], v[1]); break;
@@ -1615,7 +1593,7 @@ void Play(ID3D11DeviceContext* c) {
 					c->DrawInstancedIndirect(SubBuf(Get<ID3D11Buffer*>(p, 0)), Get<uint32_t>(p, 8));
 				break;
 			case OP_DISPATCH: {
-				GpuProfCompute(c, "R ", h.a);
+				GpuTimingCompute(c, "R ", h.a);
 				const uint32_t* v = (const uint32_t*)p;
 				if (h.a) ViewFixBeforeDispatch(c, h.a);
 				c->Dispatch(v[0], v[1], v[2]);
@@ -1628,7 +1606,7 @@ void Play(ID3D11DeviceContext* c) {
 				ID3D11DepthStencilView* dsv = Get<ID3D11DepthStencilView*>(p, 0);
 				skipping = g_cfg.reuseShadows && AllNull(rtvs, h.a) && IsShadowDsv(dsv);
 				c->OMSetRenderTargets(h.a, rtvs, dsv);
-				GpuProfTargets(c, h.a, rtvs, dsv, skipping ? "R reused " : "R ");
+				GpuTimingTargets(c, h.a, rtvs, dsv, skipping ? "R reused " : "R ");
 				break;
 			}
 			case OP_OM_RT_UAV: {
@@ -1639,8 +1617,8 @@ void Play(ID3D11DeviceContext* c) {
 				if (nrt != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
 					skipping = g_cfg.reuseShadows && AllNull((ID3D11RenderTargetView* const*)(p + 24), kr) && nu == 0 &&
 							   IsShadowDsv(Get<ID3D11DepthStencilView*>(p, 16));
-					GpuProfTargets(c, kr, (ID3D11RenderTargetView* const*)(p + 24), Get<ID3D11DepthStencilView*>(p, 16),
-								   skipping ? "R reused " : "R ");
+					GpuTimingTargets(c, kr, (ID3D11RenderTargetView* const*)(p + 24), Get<ID3D11DepthStencilView*>(p, 16),
+									 skipping ? "R reused " : "R ");
 				}
 				c->OMSetRenderTargetsAndUnorderedAccessViews(
 					nrt, kr ? (ID3D11RenderTargetView* const*)(p + 24) : nullptr, Get<ID3D11DepthStencilView*>(p, 16), us, nu,
@@ -1763,7 +1741,7 @@ void ReplayInstall(ID3D11DeviceContext* ctx) {
 	g_arena = (uint8_t*)VirtualAlloc(nullptr, kArenaCap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	g_refs = (IUnknown**)VirtualAlloc(nullptr, kMaxRefs * sizeof(IUnknown*), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	if (!g_arena || !g_refs) {
-		Log("both eyes: could not reserve recording memory; BothEyes unavailable");
+		Log("both eyes: could not reserve recording memory; synchronized mode unavailable");
 		return;
 	}
 	void** v = *(void***)ctx;
@@ -1833,8 +1811,8 @@ void ReplayInstall(ID3D11DeviceContext* ctx) {
 	}
 #undef HK
 	g_ready = ok == want;
-	Log("both eyes: %d/%d extra context hooks in place%s (BothEyes=%d, F5 switches it)", ok, want,
-		g_ready ? "" : "; BothEyes unavailable", g_cfg.bothEyes);
+	Log("both eyes: %d/%d extra context hooks in place%s (Synchronized=%d, F5 switches it)", ok, want,
+		g_ready ? "" : "; synchronized mode unavailable", g_cfg.synchronized);
 }
 
 bool ReplayAvailable() { return g_ready; }
@@ -1867,9 +1845,9 @@ void ReplayRelease() {
 	ReleaseSRWLockExclusive(&g_lock);
 }
 
-void ReplayFrameStart(ID3D11DeviceContext* c, bool bothEyes) {
+void ReplayFrameStart(ID3D11DeviceContext* c, bool synchronized) {
 	if (!g_ready) return;
-	if (!bothEyes) {
+	if (!synchronized) {
 		ReplayRelease();
 		return;
 	}
@@ -1882,14 +1860,14 @@ void ReplayFrameStart(ID3D11DeviceContext* c, bool bothEyes) {
 	g_frameCmds = 0;
 	g_copyMs = 0;
 	memset(g_counts, 0, sizeof(g_counts));
-	g_frameValid = bothEyes;
+	g_frameValid = synchronized;
 	g_cancelWhy = nullptr;
 	g_stoppedAtUi = false;
 	g_genCount = 0;
 	for (int i = 0; i < g_poolCount; i++) g_pool[i].used = false;
 	ReleaseViewCache();
 	ReleaseSRWLockExclusive(&g_lock);
-	if (!bothEyes) return;
+	if (!synchronized) return;
 	CaptureState(c, g_startState);
 	InterlockedExchange(&g_recOn, 1);
 }
@@ -1935,10 +1913,10 @@ bool ReplaySecondEye(ID3D11DeviceContext* c, bool* inBackbuffer) {
 	g_replaying = true;
 	CaptureState(c, g_endState);
 	StereoBeginSecondEye();
-	GpuProfMark(c, "replay start");
+	GpuTimingMark(c, "replay start");
 	ApplyState(c, g_startState);
 	Play(c);
-	GpuProfMark(c, "replay end");
+	GpuTimingMark(c, "replay end");
 	bool patched = StereoSecondEyePatched(), ready = patched;
 	if (ready && g_stoppedAtUi) {
 		ready = UiSecondEyeScene(c);

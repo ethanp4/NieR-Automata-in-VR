@@ -9,8 +9,8 @@ bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UIN
 // can't be. Returns `scene` itself when not upscaling, null on failure.
 ID3D11Texture2D* UpscaleScene(ID3D11DeviceContext* c, int eye, ID3D11Texture2D* scene);
 void UpscaleAtUiStart(ID3D11DeviceContext* c);               // the scene is finished: keep this eye's depth
-void UpscaleCaptureDepth(ID3D11DeviceContext* c, int eye);   // BothEyes: the replayed right eye's depth
-bool UpscaleJitter(int eye, float ndc[2], float pixels[2]);  // stereo.cpp: this frame's sub-pixel offset
+void UpscaleCaptureDepth(ID3D11DeviceContext* c, int eye);   // Synchronized: the replayed right eye's depth
+bool UpscaleJitter(int eye, float ndc[2], float pixels[2]);  // camera.cpp: this frame's sub-pixel offset
 bool UpscaleWantsDepth();                                    // the scene depth buffer has to be tracked
 void UpscaleRelease();                                       // before a resize
 void UpscaleStatus(char* out, size_t cap);                   // for the stats overlay / Info page

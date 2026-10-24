@@ -3,12 +3,12 @@
 #include "xr/xr_thread.h"
 #include "core/config.h"
 #include "core/log.h"
-#include "render/cull.h"
+#include "input/vr_controllers.h"
+#include "render/camera.h"
+#include "render/culling.h"
 #include "render/replay.h"
-#include "render/stereo.h"
 #include "render/upscale.h"
 #include "ui/menu.h"
-#include "xr/vrinput.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -48,12 +48,12 @@ static void HandleHotkeys() {
 		if (c && s) CullingToggleHeadCulling();  // Ctrl+Shift+F5: head-direction culling on/off
 		else if (c) CullingWatch();               // Ctrl+F5: diagnostic watch
 		else if (s) CullingCycleTest();           // Shift+F5: wide-fov test steps
-		else {                                    // F5: both eyes every frame on/off
-			g_cfg.bothEyes = !g_cfg.bothEyes;
-			Log("both eyes every frame %s", !g_cfg.bothEyes     ? "OFF (alternate eyes)"
+		else {                                    // F5: synchronized / alternating
+			g_cfg.synchronized = !g_cfg.synchronized;
+			Log("both eyes every frame %s", !g_cfg.synchronized ? "OFF (alternate eyes)"
 											: ReplayAvailable() ? "ON (the game's frame is drawn again for the right eye)"
 																: "ON, but not available (see the log above)");
-			ConfigSave(&g_cfg.bothEyes);
+			ConfigSave(&g_cfg.synchronized);
 		}
 	}
 	if (f11 && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
@@ -224,8 +224,7 @@ static void LogStats() {
 		g_vr.statCovN ? 100.0 * g_vr.statCovSum / g_vr.statCovN : 0.0, 100.0 * g_vr.statCovMax);
 	{
 		char info[160];
-		snprintf(info, sizeof(info), "Mode: %s", !g_vr.statStereoFrames ? "flat screen" : g_cfg.bothEyes ? "stereo, both eyes every frame"
-																										 : "stereo, alternate eyes");
+		snprintf(info, sizeof(info), "Mode: %s", !g_vr.statStereoFrames ? "flat screen" : (g_cfg.synchronized ? "stereo, both eyes every frame" : "stereo, alternate eyes"));
 		MenuSetInfo(0, info);
 		snprintf(info, sizeof(info), "Headset %.0f fps; game images per second: left %.0f, right %.0f, flat %.0f",
 				 g_vr.statFrames / secs, g_vr.statGameFrames[0] / secs, g_vr.statGameFrames[1] / secs, g_vr.statGameFrames[2] / secs);
@@ -398,7 +397,7 @@ void Frame() {
 		// of view for this frame, each image re-aimed to it here. Runtimes that stream to the headset
 		// (Pico Connect, Steam Link, ...) assume one head pose per frame and images that cover exactly
 		// the eye's field of view: 0.5.0 sent each eye with its render pose (different moments in
-		// alternate-eye mode: the right eye stuttered) and a symmetric, wider field of view (Quest 3,
+		// alternating mode: the right eye stuttered) and a symmetric, wider field of view (Quest 3,
 		// 54/40 deg per eye: squeezed sideways, cross-eyed).
 		bool late = stereo && g_cfg.lateWarp && g_vr.psWarp && g_vr.dispHave;
 		// the image the eyes show: the scene-only one (upscaled or not) when both eyes have it
@@ -538,7 +537,7 @@ void Frame() {
 				layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&proj;
 				g_vr.statStereoFrames++;
 				// HUD: keyed out of the newest eye frame, on a transparent flat layer in front.
-				// (BothEyes: the right eye is replayed without UI, so the HUD comes from the left)
+				// (Synchronized: the right eye is replayed without UI, so the HUD comes from the left)
 				auto& H = (L.seq > R.seq && !L.tag.noUI) || R.tag.noUI ? L : R;
 				if (bothScene && g_vr.placed && EnsureSwap(g_vr.hudSwap, g_vr.contentW, g_vr.contentH, "HUD") &&
 					RenderInto(g_vr.hudSwap, H.srv, KeySrv(H))) {
@@ -722,8 +721,7 @@ static bool UpdateOverlay() {
 		bool stereoOn = g_stereo.enabled;
 		ReleaseSRWLockShared(&g_stereo.lock);
 		snprintf(g_vr.ovMode, sizeof(g_vr.ovMode), "%s",
-				 !stereoOn || g_vr.menuMode ? "flat screen" : g_cfg.bothEyes ? "both eyes"
-																			 : "alternate eyes");
+				 !stereoOn || g_vr.menuMode ? "flat screen" : (g_cfg.synchronized ? "both eyes" : "alternate eyes"));
 		st.headsetFps = (float)(g_vr.ovFrames / secs);
 		for (int i = 0; i < 3; i++) st.gameFps[i] = (float)(g_vr.ovGameFrames[i] / secs);
 		st.gameW = g_vr.contentW;

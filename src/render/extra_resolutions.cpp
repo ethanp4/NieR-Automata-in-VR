@@ -1,30 +1,10 @@
-// display.cpp - render resolution.
-//
-// With [Render] ExtraResolutions=1 the game's resolution list gets extra entries above the
-// monitor's native size (125%, 150%, 175%, 200%, 250%, 300%). The game then renders at that size; in windowed
-// or borderless mode Windows scales the image down for the monitor, while the headset gets the full
-// resolution. Exclusive fullscreen at those sizes is refused (the monitor can't show them), and
-// the game window is kept within the monitor. Works on any GPU, no driver settings involved.
-//
-// NieR doesn't ask DXGI for its mode list: it reads the desktop size with
-// EnumDisplaySettingsW(ENUM_CURRENT_SETTINGS) (0.3.2 log) and apparently only offers resolutions up to
-// it. So with the option on, calls coming from the game's own code are told the desktop is 300% of
-// the real one (our own code and other DLLs see the real size). ExtraResolutions=2 additionally
-// rewrites the smallest entries of the game's built-in resolution table (found by scanning the exe
-// image; the table and what was changed are logged) in case the list is fixed.
-//
-// The hooks always log how the game enumerates and applies resolutions (first few calls), so we
-// can see which path NieR takes even with the option off.
-#include "render/display.h"
+// extra_resolutions.cpp - lets the game render above the monitor's resolution.
+#include "render/extra_resolutions.h"
 #include "core/config.h"
 #include "core/hook.h"
 #include "core/log.h"
 #include "core/main.h"
 #include "core/pure.h"
-#include "render/replay.h"
-#include "render/reproject.h"
-#include "render/uisplit.h"
-#include "render/upscale.h"
 #include <dxgi1_2.h>
 #include <stdio.h>
 #include <string.h>
@@ -37,7 +17,6 @@ typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSwapChain)(IDXGIFactory*, IUnknown*
 														IDXGISwapChain**);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_SetFullscreenState)(IDXGISwapChain*, BOOL, IDXGIOutput*);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_ResizeTarget)(IDXGISwapChain*, const DXGI_MODE_DESC*);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_ResizeBuffers)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
 typedef BOOL(WINAPI* PFN_EnumDisplaySettingsW)(LPCWSTR, DWORD, DEVMODEW*);
 typedef BOOL(WINAPI* PFN_EnumDisplaySettingsA)(LPCSTR, DWORD, DEVMODEA*);
 typedef BOOL(WINAPI* PFN_SetWindowPos)(HWND, HWND, int, int, int, int, UINT);
@@ -60,7 +39,6 @@ PFN_FindClosest o_FindClosest;
 PFN_CreateSwapChain o_CreateSwapChain;
 PFN_SetFullscreenState o_SetFullscreenState;
 PFN_ResizeTarget o_ResizeTarget;
-PFN_ResizeBuffers o_ResizeBuffers;
 PFN_EnumDisplaySettingsW o_EnumDisplaySettingsW;
 PFN_EnumDisplaySettingsA o_EnumDisplaySettingsA;
 PFN_SetWindowPos o_SetWindowPos;
@@ -70,7 +48,7 @@ HWND g_gameHwnd;
 uintptr_t g_exeBase, g_exeEnd;
 UINT g_spoofW, g_spoofH;  // desktop size reported to the game (0 = not spoofing)
 volatile LONG g_bSysMet, g_bMonInfo, g_bEnumCur, g_bEnumList;
-volatile LONG g_bModes, g_bClosest, g_bSwap, g_bFull, g_bTarget, g_bBuffers, g_bWin;
+volatile LONG g_bModes, g_bClosest, g_bSwap, g_bFull, g_bTarget, g_bWin;
 // 0.4.5: up to 300% (a 1080p monitor reaches 5760x3240 for high-resolution headsets)
 const float kFactors[] = {1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f};
 const int kExtra = 6;
@@ -288,17 +266,6 @@ HRESULT STDMETHODCALLTYPE H_ResizeTarget(IDXGISwapChain* sc, const DXGI_MODE_DES
 	HRESULT hr = o_ResizeTarget(sc, m);
 	if (LogBudget(&g_bTarget, 8))
 		Log("display: ResizeTarget %ux%u -> 0x%08x", m ? m->Width : 0, m ? m->Height : 0, (unsigned)hr);
-	return hr;
-}
-
-HRESULT STDMETHODCALLTYPE H_ResizeBuffers(IDXGISwapChain* sc, UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT flags) {
-	UiOnResizeBuffers();
-	ReplayRelease();
-	ReprojectRelease();
-	UpscaleRelease();
-	HRESULT hr = o_ResizeBuffers(sc, n, w, h, f, flags);
-	if (LogBudget(&g_bBuffers, 8))
-		Log("display: ResizeBuffers %ux%u format %d -> 0x%08x", w, h, (int)f, (unsigned)hr);
 	return hr;
 }
 
@@ -669,7 +636,7 @@ void HookExport(const wchar_t* dll, const char* name, void* detour, void* orig) 
 
 // At load time (DllMain): hooks that must exist before the game's first display queries. Only
 // patches code (no calls into other DLLs), so it is safe under the loader lock.
-void DisplayEarlyHooks() {
+void ExtraResolutionsEarlyHooks() {
 	HMODULE exe = GetModuleHandleW(nullptr);
 	auto* dos = (IMAGE_DOS_HEADER*)exe;
 	auto* nt = (IMAGE_NT_HEADERS64*)((char*)exe + dos->e_lfanew);
@@ -701,10 +668,10 @@ void DisplayEarlyHooks() {
 }
 
 // Installed once from EnsureInit (first call into the DLL, outside the loader lock).
-void DisplayInstallHooks() {
+void ExtraResolutionsInstallHooks() {
 	static volatile LONG done = 0;
 	if (InterlockedCompareExchange(&done, 1, 0) != 0) return;
-	if (!g_exeBase) DisplayEarlyHooks();
+	if (!g_exeBase) ExtraResolutionsEarlyHooks();
 	HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
 	if (!o_CreateDXGIFactory && dxgi) {  // dxgi wasn't loaded at start: hook the factory functions now
 		HookFunction((void*)GetProcAddress(dxgi, "CreateDXGIFactory"), (void*)&H_CreateDXGIFactory,
@@ -760,7 +727,7 @@ void DisplayInstallHooks() {
 }
 
 // First Present: remember the game window; log the backbuffer against the monitor.
-void DisplayOnFirstPresent(IDXGISwapChain* sc) {
+void ExtraResolutionsOnFirstPresent(IDXGISwapChain* sc) {
 	DXGI_SWAP_CHAIN_DESC d;
 	if (FAILED(sc->GetDesc(&d))) return;
 	g_gameHwnd = d.OutputWindow;
@@ -768,12 +735,11 @@ void DisplayOnFirstPresent(IDXGISwapChain* sc) {
 		d.Windowed ? "windowed/borderless" : "exclusive fullscreen", (int)d.SwapEffect, d.BufferCount);
 }
 
-// Swapchain methods, hooked through the dummy swapchain made for the Present hook.
-void DisplayHookSwapChain(IDXGISwapChain* sc) {
+// Swapchain methods that change the display mode, hooked through the dummy swapchain made for the Present hook.
+void ExtraResolutionsHookSwapChain(IDXGISwapChain* sc) {
 	static volatile LONG done = 0;
 	if (InterlockedCompareExchange(&done, 1, 0) != 0) return;
 	void** v = *(void***)sc;
 	HookFunction(v[10], (void*)&H_SetFullscreenState, (void**)&o_SetFullscreenState, "IDXGISwapChain::SetFullscreenState");
-	HookFunction(v[13], (void*)&H_ResizeBuffers, (void**)&o_ResizeBuffers, "IDXGISwapChain::ResizeBuffers");
 	HookFunction(v[14], (void*)&H_ResizeTarget, (void**)&o_ResizeTarget, "IDXGISwapChain::ResizeTarget");
 }

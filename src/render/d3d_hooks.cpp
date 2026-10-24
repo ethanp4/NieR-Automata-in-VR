@@ -1,24 +1,22 @@
 // d3d_hooks.cpp - hooks on the game's D3D11 device and immediate context. Every call the game makes
-// is passed on to the features that need it: camera patching (stereo.cpp), the HUD split
-// (uisplit.cpp), both-eyes recording (replay.cpp), the view-space fix (viewfix.cpp), GPU timing,
-// the frame capture, and the effect toggles kept here (vignette, shadows, ambient occlusion).
+// is passed on to the features that need it: camera patching (camera.cpp), the HUD split
+// (hud_layer.cpp), synchronized recording (replay.cpp), the view-space fix (viewfix.cpp), GPU timing,
+// the frame capture, and the game-effect toggles (game_effects.cpp).
 // While replay.cpp plays a frame back, the hooks pass calls straight through.
 #include "render/d3d_hooks.h"
 #include "core/config.h"
 #include "core/hook.h"
 #include "core/log.h"
-#include "debug/gpuprof.h"
-#include "render/present_hook.h"
+#include "debug/frame_capture.h"
+#include "debug/gpu_timing.h"
+#include "render/camera.h"
+#include "render/frame_handoff.h"
+#include "render/game_effects.h"
+#include "render/hud_layer.h"
 #include "render/replay.h"
 #include "render/reproject.h"
-#include "render/screenfx.h"
-#include "render/stereo.h"
-#include "render/uisplit.h"
-#include "render/viewfix.h"
-#include <string.h>
-#include "debug/frame_capture.h"
 #include "render/shader_table.h"
-#include <d3dcompiler.h>
+#include "render/viewfix.h"
 
 namespace {
 // vtable slots (verified against the d3d11.h layout at build time, see tools/vtable_check.c)
@@ -110,90 +108,6 @@ uint32_t g_psSampled;  // texture registers it samples
 uint64_t g_psHash;     // bytecode hash (stable between runs, for the log)
 ComputeShaderClass g_csClass;
 
-// --- effect toggles ----------------------------------------------------------------------------
-// Vignette: the 48-byte PSParamBuffer1 bound at b1 when the tone-mapping shader draws;
-// g_VignettoParam.x (float 8) is the radius where darkening ends, as in
-// v = pow(saturate((1 - |uv - 0.5|) / x), y). A tiny x keeps v = 1 everywhere.
-ID3D11Resource* g_vignetteBuffer;
-void* g_vignetteMapped;
-void PatchVignette(float* f) {
-	if (!g_cfg.vignette) f[8] = 0.0001f;
-}
-
-// Shadows off: the game's shadow-mask draw runs with a pixel shader that just writes 1 ("lit")
-// instead of sampling the shadow map, keeping the game's own blend state, write mask, stencil and
-// render targets.
-ID3D11PixelShader* g_litShader;
-bool g_litShaderTried;
-ID3D11PixelShader* g_savedShader;
-ID3D11ClassInstance* g_savedInstances[8];
-UINT g_savedInstanceCount;
-bool g_restoreShader;
-ID3D11PixelShader* LitShader() {
-	if (g_litShaderTried) return g_litShader;
-	g_litShaderTried = true;
-	HMODULE comp = LoadLibraryW(L"d3dcompiler_47.dll");
-	pD3DCompile compile = comp ? (pD3DCompile)(void*)GetProcAddress(comp, "D3DCompile") : nullptr;
-	static const char src[] = "float4 main() : SV_Target { return 1; }";  // no inputs: links to any VS
-	ID3DBlob *b = nullptr, *err = nullptr;
-	HRESULT hr = compile ? compile(src, sizeof(src) - 1, "lit", nullptr, nullptr, "main", "ps_5_0", 0, 0, &b, &err) : E_FAIL;
-	if (SUCCEEDED(hr) && g_dev) hr = g_dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &g_litShader);
-	if (FAILED(hr)) {
-		g_litShader = nullptr;
-		Log("shadows off: no replacement shader (0x%08x); the shadow pass stays on", (unsigned)hr);
-	}
-	if (b) b->Release();
-	if (err) err->Release();
-	return g_litShader;
-}
-
-// Vignette, shadows and ambient occlusion. Ambient occlusion off: instead of the SAO pass, its
-// output is cleared to 1 (no occlusion). Returns true when the draw must be skipped.
-bool ApplyEffectToggles(ID3D11DeviceContext* c) {
-	if (g_psClass == PS_TONE_MAPPING && !g_vignetteBuffer) {  // learn which buffer holds the vignette parameters
-		ID3D11Buffer* b = nullptr;
-		c->PSGetConstantBuffers(1, 1, &b);
-		if (b) {
-			D3D11_BUFFER_DESC d;
-			b->GetDesc(&d);
-			if (d.ByteWidth == 48) {
-				g_vignetteBuffer = b;
-				Log("vignette: parameters found (buffer of %u bytes); %s", d.ByteWidth,
-					g_cfg.vignette ? "kept (Vignette=1)" : "removed from the next frame on");
-			}
-			b->Release();
-		}
-	}
-	if (g_psClass == PS_SHADOW_MASK && !g_cfg.shadows && LitShader()) {
-		// swap the pixel shader for this draw (through the hooked call, so BothEyes records it too)
-		g_savedInstanceCount = 8;
-		c->PSGetShader(&g_savedShader, g_savedInstances, &g_savedInstanceCount);
-		c->PSSetShader(g_litShader, nullptr, 0);
-		g_restoreShader = true;
-		return false;
-	}
-	if (g_psClass != PS_AMBIENT_OCCLUSION || g_cfg.ambientOcclusion) return false;
-	ID3D11RenderTargetView* rtv = nullptr;
-	c->OMGetRenderTargets(1, &rtv, nullptr);
-	if (rtv) {
-		const FLOAT one[4] = {1, 1, 1, 1};
-		c->ClearRenderTargetView(rtv, one);
-		rtv->Release();
-	}
-	return true;
-}
-
-void RestoreShadowShader(ID3D11DeviceContext* c) {
-	if (!g_restoreShader) return;
-	g_restoreShader = false;
-	c->PSSetShader(g_savedShader, g_savedInstanceCount ? g_savedInstances : nullptr, g_savedInstanceCount);
-	if (g_savedShader) g_savedShader->Release();
-	for (UINT i = 0; i < g_savedInstanceCount && i < 8; i++)
-		if (g_savedInstances[i]) g_savedInstances[i]->Release();
-	g_savedShader = nullptr;
-	g_savedInstanceCount = 0;
-}
-
 // --- hooks -------------------------------------------------------------------------------------
 template <int Stage>
 void STDMETHODCALLTYPE H_SetCB(ID3D11DeviceContext* c, UINT start, UINT n, ID3D11Buffer* const* bufs) {
@@ -225,8 +139,8 @@ void STDMETHODCALLTYPE H_PSSetShader(ID3D11DeviceContext* c, void* sh, ID3D11Cla
 		static const char* const kNames[6] = {nullptr, "AO (SAO)", "shadow mask", nullptr, nullptr, "light scattering"};
 		if (g_psClass != was) {
 			const char* now = kNames[g_psClass];
-			if (now) GpuProfMark(c, now);
-			else if (kNames[was]) GpuProfMark(c, "(after a full-screen pass)");
+			if (now) GpuTimingMark(c, now);
+			else if (kNames[was]) GpuTimingMark(c, "(after a full-screen pass)");
 		}
 	}
 	if (CaptureRecording(c)) CaptureSetShader(ST_PS, sh);
@@ -237,14 +151,14 @@ void STDMETHODCALLTYPE H_PSSetShader(ID3D11DeviceContext* c, void* sh, ID3D11Cla
 bool PreDraw(ID3D11DeviceContext* c) {
 	CapturePollMidFrame();
 	StereoCountDraw();
-	if (ApplyEffectToggles(c)) return true;
+	if (GameEffectsBeforeDraw(c, g_psClass)) return true;
 	if (UiBeforeDraw(c)) return true;
-	if (g_psClass == PS_EFFECT && ScreenFxSkipEffectDraw(c, g_psSampled, g_psHash)) return true;
-	GpuProfDraw();
+	if (g_psClass == PS_EFFECT && GameEffectsSkipEffectDraw(c, g_psSampled, g_psHash)) return true;
+	GpuTimingDraw();
 	return false;
 }
 void PostDraw(ID3D11DeviceContext* c, const DrawArgs& a) {
-	RestoreShadowShader(c);
+	GameEffectsAfterDraw(c);
 	UiAfterDraw(c, a);
 }
 
@@ -293,14 +207,11 @@ HRESULT STDMETHODCALLTYPE H_Map(ID3D11DeviceContext* c, ID3D11Resource* r, UINT 
 	if (SUCCEEDED(hr) && RecOn(c)) RecMap(r, sub, type, flags, m);
 	UINT size;
 	if (c != g_ctx || FAILED(hr) || !m || !r || type == D3D11_MAP_READ) return hr;
-	bool needStereo = StereoWatching();
-	bool capturing = CaptureRecording(c);
-	if (!needStereo && !capturing && !g_cfg.uiSplit && !g_vignetteBuffer) return hr;
 	if (!IsConstantBuffer(r, &size)) return hr;
-	if (needStereo) StereoOnMap(r, m->pData, size);
-	if (r == g_vignetteBuffer && size == 48) g_vignetteMapped = m->pData;
-	if (g_cfg.uiSplit) UiOnMap(r, m->pData, size);
-	if (capturing) CaptureMap(r, m->pData, size);
+	if (StereoWatching()) StereoOnMap(r, m->pData, size);
+	GameEffectsOnMap(r, m->pData, size);
+	UiOnMap(r, m->pData, size);
+	if (CaptureRecording(c)) CaptureMap(r, m->pData, size);
 	return hr;
 }
 
@@ -310,10 +221,7 @@ void STDMETHODCALLTYPE H_Unmap(ID3D11DeviceContext* c, ID3D11Resource* r, UINT s
 	if (c == g_ctx && r) {
 		StereoBeforeUnmap(r);  // patch the camera for this frame's eye
 		UiBeforeUnmap(r);      // remember UI draw parameters
-		if (r == g_vignetteBuffer && g_vignetteMapped) {
-			PatchVignette((float*)g_vignetteMapped);
-			g_vignetteMapped = nullptr;
-		}
+		GameEffectsBeforeUnmap(r);
 	}
 	if (CaptureRecording(c) && r) CaptureUnmap(r);
 	o_Unmap(c, r, sub);
@@ -325,16 +233,11 @@ void STDMETHODCALLTYPE H_UpdateSubresource(ID3D11DeviceContext* c, ID3D11Resourc
 	if (RecOn(c)) RecUpdate(r, sub, box, data, rp, dp);
 	UINT size;
 	float scratch[64];
-	if (c == g_ctx && r && data && !box && (StereoWatching() || CaptureRecording(c) || g_cfg.uiSplit || g_vignetteBuffer) &&
-		IsConstantBuffer(r, &size)) {
+	if (c == g_ctx && r && data && !box && IsConstantBuffer(r, &size)) {
 		// Constant buffers can only be updated whole, so `data` holds byteWidth bytes.
 		if (StereoWatching()) data = StereoPatchUpdate(size, data, scratch);
-		if (r == g_vignetteBuffer && size == 48) {
-			if (data != scratch) memcpy(scratch, data, 48);
-			PatchVignette(scratch);
-			data = scratch;
-		}
-		if (g_cfg.uiSplit) UiOnUpdate(r, data, size);
+		data = GameEffectsPatchUpdate(r, data, size, scratch);
+		UiOnUpdate(r, data, size);
 		if (CaptureRecording(c)) CaptureUpdate(r, data, size);
 	}
 	o_UpdateSubresource(c, r, sub, box, data, rp, dp);
@@ -345,7 +248,7 @@ void STDMETHODCALLTYPE H_OMSetRT(ID3D11DeviceContext* c, UINT n, ID3D11RenderTar
 	if (g_replaying) return o_OMSetRT(c, n, rtvs, dsv);
 	if (RecOn(c)) RecOMSetRT(n, rtvs, dsv);
 	if (c == g_ctx) {
-		GpuProfTargets(c, n, rtvs, dsv, "");
+		GpuTimingTargets(c, n, rtvs, dsv, "");
 		if (dsv) ReprojectNoteDsv(dsv);
 	}
 	if (CaptureRecording(c)) CaptureSetRenderTargets(n, rtvs, dsv);
@@ -396,7 +299,7 @@ void STDMETHODCALLTYPE H_CSSetShader(ID3D11DeviceContext* c, void* sh, ID3D11Cla
 void STDMETHODCALLTYPE H_Dispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z) {
 	if (g_replaying) return o_Dispatch(c, x, y, z);
 	if (RecOn(c)) RecDispatch(x, y, z, c == g_ctx ? g_csClass : 0);
-	if (c == g_ctx) GpuProfCompute(c, "", g_csClass);
+	if (c == g_ctx) GpuTimingCompute(c, "", g_csClass);
 	if (CaptureRecording(c)) CaptureDispatch(x, y, z);
 	bool fix = c == g_ctx && g_csClass != CS_OTHER;
 	if (fix) {  // the fix's own calls aren't the game's: not recorded (playback runs the fix again)
@@ -545,10 +448,5 @@ void OriginalSetRenderTargets(ID3D11DeviceContext* c, UINT n, ID3D11RenderTarget
 
 const void* PatchConstantBufferForReplay(ID3D11Resource* r, const void* data, UINT size, float* scratch) {
 	data = StereoPatchUpdate(size, data, scratch);
-	if (r == g_vignetteBuffer && size == 48) {
-		if (data != scratch) memcpy(scratch, data, 48);
-		PatchVignette(scratch);
-		data = scratch;
-	}
-	return data;
+	return GameEffectsPatchUpdate(r, data, size, scratch);
 }

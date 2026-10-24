@@ -56,6 +56,6 @@ int main() {
 		m.update(true, &x, &y, 0xFFFFFF00u);
 		check(m.update(false, &x, &y, 0x40u) == MB::START, "wrap: tap");
 	}
-	if (!fails) std::printf("test_vrinput: all passed\n");
+	if (!fails) std::printf("test_vr_controllers: all passed\n");
 	return fails ? 1 : 0;
 }

@@ -23,8 +23,8 @@
 #include "core/config.h"
 #include "core/log.h"
 #include "core/pure.h"
+#include "render/camera.h"
 #include "render/replay.h"
-#include "render/stereo.h"
 #include "ui/menu.h"
 #include <stdio.h>
 #include <string.h>
@@ -184,7 +184,7 @@ bool EnsureCopy(ID3D11Device* dev, Fix& f, ID3D11ShaderResourceView* src, UINT* 
 	return true;
 }
 
-// Each frame (not in the both-eyes replay): copy the game's GI volume buffer into the ring, and use
+// Each frame (not in the synchronized replay): copy the game's GI volume buffer into the ring, and use
 // the oldest copy the GPU has finished to decide which slots stay on.
 void GiReadback(ID3D11DeviceContext* c, ID3D11Device* dev, ID3D11ShaderResourceView* src, UINT first, UINT count) {
 	// newest finished copy

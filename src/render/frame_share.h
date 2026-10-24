@@ -1,5 +1,5 @@
 // frame_share.h - hand-off of finished game frames from the game's device to the VR thread's device
-// (g_share is defined in present_hook.cpp). The VR thread owns the shared textures (created on its
+// (g_share is defined in frame_handoff.cpp). The VR thread owns the shared textures (created on its
 // own device); the game thread asks for a size/format and opens whatever the VR thread publishes.
 #pragma once
 #include <d3d11.h>
@@ -10,14 +10,14 @@ struct FrameTag {  // what a captured game frame shows
 	bool hasScene;  // a scene-only (no UI) image was captured too
 	float pos[3], rot[4];  // eye pose (LOCAL) it was rendered from
 	float tanHalfW, tanHalfH;
-	unsigned pairId;     // BothEyes: left and right image of one game frame share it (0 = single)
+	unsigned pairId;     // Synchronized: left and right image of one game frame share it (0 = single)
 	bool noUI;           // drawn without UI (the replayed second eye): don't key the HUD from it
 	bool hasWorld;       // worldRot is valid (the scene camera was patched)
 	float worldRot[4];   // game-world orientation of LOCAL space for this frame (eye sync)
 	long long poseBase;  // StereoShared::poseBase of the pose it was rendered with (0 = unknown)
 };
 
-const int kRingSize = 8;  // capture ring slots (BothEyes pushes two images per game frame)
+const int kRingSize = 8;  // capture ring slots (Synchronized pushes two images per game frame)
 
 struct FrameShare {
 	CRITICAL_SECTION cs;

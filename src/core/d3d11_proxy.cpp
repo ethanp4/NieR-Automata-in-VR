@@ -1,10 +1,10 @@
-// proxy.cpp - stands in for d3d11.dll: loads the real one and forwards every export to it.
-#include "core/proxy.h"
+// d3d11_proxy.cpp - stands in for d3d11.dll: loads the real one and forwards every export to it.
+#include "core/d3d11_proxy.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "core/main.h"
-#include "render/present_hook.h"
 #include "render/d3d_hooks.h"
+#include "render/frame_handoff.h"
 
 static const char* const kThunkNames[] = {
 #include "gen/export_names.inc"

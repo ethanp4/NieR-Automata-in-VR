@@ -46,19 +46,6 @@ jobs:
   build:
     needs: version
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - compiler: gcc
-            cc: gcc
-            cxx: g++
-            asm: gcc
-          - compiler: clang
-            cc: clang
-            cxx: clang++
-            asm: clang
-    name: ${{ matrix.compiler }}
     defaults:
       run:
         shell: msys2 {0}
@@ -68,14 +55,14 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
+          msystem: CLANG64
           update: true
           install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-clang
-            mingw-w64-ucrt-x86_64-openxr-sdk
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-lld
+            mingw-w64-clang-x86_64-openxr-sdk
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
             zip
 
       - uses: actions/cache@v4
@@ -87,9 +74,7 @@ jobs:
         run: >-
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_C_COMPILER=${{ matrix.cc }}
-          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
-          -DCMAKE_ASM_COMPILER=${{ matrix.asm }}
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_ASM_COMPILER=clang
           -DNIERVR_DLSS=OFF
           -DNIERVR_VERSION="${{ needs.version.outputs.version }}"
           -DCMAKE_INSTALL_PREFIX="$PWD/dist"
@@ -111,12 +96,12 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NieRVR-${{ matrix.compiler }}-${{ github.sha }}
+          name: NieRVR-${{ github.sha }}
           path: |
             dist/
             build/d3d11.map
 
-      - if: matrix.compiler == 'clang' && needs.version.outputs.tag != ''
+      - if: needs.version.outputs.tag != ''
         uses: actions/upload-artifact@v4
         with:
           name: release-zip
@@ -132,14 +117,15 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
+          msystem: CLANG64
           update: true
           install: >-
-            mingw-w64-ucrt-x86_64-clang
-            mingw-w64-ucrt-x86_64-clang-tools-extra
-            mingw-w64-ucrt-x86_64-openxr-sdk
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-lld
+            mingw-w64-clang-x86_64-clang-tools-extra
+            mingw-w64-clang-x86_64-openxr-sdk
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
 
       - uses: actions/cache@v4
         with:

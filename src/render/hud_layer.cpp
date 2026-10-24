@@ -1,4 +1,4 @@
-// uisplit.cpp - separates NieR's 2D UI (HUD, menus) from the 3D scene, on the game side.
+// hud_layer.cpp - separates NieR's 2D UI (HUD, menus) from the 3D scene, on the game side.
 //
 // NieR draws the UI last, with UIParam/cbUIParam vertex shaders, into an intermediate render
 // target; one final full-screen pass then writes that target to the backbuffer (see
@@ -23,13 +23,13 @@
 // another full-size texture, then draws pieces of that copy back over the UI target, shifted and
 // tinted. On the HUD layer that is a flat copy of the whole screen flashing in front of the 3D view.
 // In stereo those draws are skipped (DistortionEffects=0) or kept in the 3D image (=1).
-#include "render/uisplit.h"
+#include "render/hud_layer.h"
 #include "core/config.h"
 #include "core/log.h"
-#include "debug/gpuprof.h"
+#include "debug/gpu_timing.h"
+#include "render/camera.h"
 #include "render/replay.h"
 #include "render/reproject.h"
-#include "render/stereo.h"
 #include "render/upscale.h"
 #include <string.h>
 #include "render/d3d_hooks.h"
@@ -52,7 +52,7 @@ ID3D11Resource* g_screenCopy;      // this frame's copy of the UI target, made f
 unsigned g_copyEffects;            // distortion draws removed/kept since the last report
 DWORD g_copyReportTick;
 bool g_loggedCopy;
-// BothEyes: the game's final pass of this frame (state captured by replay.cpp), to draw the right
+// Synchronized: the game's final pass of this frame (state captured by replay.cpp), to draw the right
 // eye's scene image after its playback.
 bool g_finalOk;
 int g_finalSlot;
@@ -394,8 +394,8 @@ bool UiBeforeDraw(ID3D11DeviceContext* c) {
 	bd = g_bbDesc;
 	// the UI goes into a full-screen intermediate; ignore UI drawn into smaller offscreen textures
 	if (d.SampleDesc.Count != 1 || d.Width != bd.Width || d.Height != bd.Height) return false;
-	ReplayStop(true);  // BothEyes: the scene is finished, the HUD is drawn once (not recorded)
-	GpuProfMark(c, "UI start");
+	ReplayStop(true);  // Synchronized: the scene is finished, the HUD is drawn once (not recorded)
+	GpuTimingMark(c, "UI start");
 	ReprojectAtUiStart(c);
 	UpscaleAtUiStart(c);
 	g_uiSeen = true;
@@ -503,7 +503,7 @@ void UiAfterDraw(ID3D11DeviceContext* c, const DrawArgs& args) {
 	if (ok) {
 		// Same pipeline state, different input and output: the scene without the UI. Colour only,
 		// so the UI coverage gathered in the alpha channel stays.
-		if (StereoBothEyesFrame()) {  // the same pass will make the right eye's scene image
+		if (StereoSynchronizedFrame()) {  // the same pass will make the right eye's scene image
 			ReplayCaptureFinalPassState(c);
 			g_finalOk = true;
 			g_finalSlot = slot;
@@ -527,7 +527,7 @@ void UiAfterDraw(ID3D11DeviceContext* c, const DrawArgs& args) {
 
 ID3D11Texture2D* UiSceneTexture() { return g_sceneReady ? g_scene : nullptr; }
 
-// BothEyes, during the right eye's playback (which ended where the UI starts): the UI target now
+// Synchronized, during the right eye's playback (which ended where the UI starts): the UI target now
 // holds the right eye's finished scene. Copy it and run the game's final pass on the copy into our
 // scene texture, exactly as for the left eye but without any UI (alpha = no coverage).
 bool UiSecondEyeScene(ID3D11DeviceContext* c) {

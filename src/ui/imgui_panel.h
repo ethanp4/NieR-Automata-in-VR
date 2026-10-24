@@ -1,13 +1,3 @@
-// imgui_panel.h - Dear ImGui for the flat panels the VR thread shows (settings menu, stats overlay).
-//
-// Each panel has its own ImGui context, created on first use with the mod's font and colours and
-// ImGui's DX11 backend on the VR thread's device. A frame of a panel:
-//   if (!UiPrepare(panel, dev, dc, w, h)) return false;   // makes the panel's context current
-//   ...feed input with ImGui::GetIO().AddKeyEvent(...) (optional)...
-//   UiNewFrame();
-//   ...ImGui windows and widgets...
-//   UiRender(dc, rtv);                                     // into the panel's render target
-// Everything here runs on the VR thread.
 #pragma once
 #include <d3d11.h>
 
@@ -15,7 +5,6 @@ struct ImGuiContext;
 struct ImFont;
 
 namespace ui {
-// The mod's colours (sRGB, 0..1)
 struct Colors {
 	static constexpr float bg[4] = {0.118f, 0.114f, 0.102f, 1};       // dark warm grey
 	static constexpr float text[4] = {0.855f, 0.831f, 0.733f, 1};     // beige
@@ -27,9 +16,9 @@ struct Colors {
 }  // namespace ui
 
 struct UiPanel {
-	const char* name;    // for the log
-	float fontSize;      // pixels
-	bool navigation;     // keyboard/gamepad navigation (the menu); the overlay has none
+	const char* name;
+	float fontSize;
+	bool navigation;
 	ImGuiContext* ctx;
 	bool failed;
 	LARGE_INTEGER last;

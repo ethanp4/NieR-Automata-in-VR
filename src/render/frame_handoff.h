@@ -1,5 +1,5 @@
-// present_hook.h - hooks IDXGISwapChain::Present and copies each finished game frame into the
-// textures shared with the VR thread (present_hook.cpp).
+// frame_handoff.h - hooks IDXGISwapChain::Present and copies each finished game frame into the
+// textures shared with the VR thread (frame_handoff.cpp).
 #pragma once
 #include <d3d11.h>
 

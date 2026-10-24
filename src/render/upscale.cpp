@@ -4,16 +4,16 @@
 // enlarged by DLSS (render/dlss.cpp) to the output size and handed to the headset in its place. DLSS
 // builds detail up over several frames, so every frame:
 //   - the eye's projection is shifted by a different fraction of a pixel (UpscaleJitter, applied in
-//     stereo.cpp's PatchScene; a Halton sequence per eye),
+//     camera.cpp's PatchScene; a Halton sequence per eye),
 //   - the game's depth is kept at the first UI draw (the scene is finished), like reproject.cpp,
 //   - a compute pass makes what DLSS needs: the colour in a typed format, the depth as R32_FLOAT and
 //     motion vectors. NieR has none of its own, so they come from depth and the camera: each pixel is
 //     put back into 3D and projected with the same eye's previous camera. That covers camera motion;
 //     things that move by themselves (2B's animation, enemies) have none and rely on DLSS.
 // Each eye has its own DLSS history: it is only ever compared with its own previous frame (generic
-// injectors mix the eyes and smear in VR). Alternate eyes: each eye's history moves at 30 images a second.
+// injectors mix the eyes and smear in VR). Alternating mode: each eye's history moves at 30 images a second.
 //
-// The scene image's alpha channel holds the HUD's coverage (uisplit.cpp); DLSS only does colour, so a
+// The scene image's alpha channel holds the HUD's coverage (hud_layer.cpp); DLSS only does colour, so a
 // last full-screen pass writes DLSS's colour with the scene's alpha (stretched) into the image that
 // goes to the headset. The same pass just stretches frames DLSS can't take (flat/menu frames, no depth
 // or camera), so every scene image of a ring has the same size.
@@ -21,10 +21,10 @@
 #include "core/config.h"
 #include "core/log.h"
 #include "core/pure.h"
+#include "render/camera.h"
 #include "render/frame_share.h"
 #include "render/replay.h"
 #include "render/reproject.h"
-#include "render/stereo.h"
 #include "ui/menu.h"
 #include <stdio.h>
 #include <string.h>
@@ -126,7 +126,7 @@ ID3D11Texture2D* g_final;  // what the headset gets: the scene's format
 ID3D11RenderTargetView* g_finalRtv;
 UINT g_tw, g_th, g_tow, g_toh;
 DXGI_FORMAT g_tFmt;
-// SRV of the game-side scene texture (uisplit.cpp keeps it while the size stays)
+// SRV of the game-side scene texture (hud_layer.cpp keeps it while the size stays)
 ID3D11Texture2D* g_sceneFor;
 ID3D11ShaderResourceView* g_sceneSrv;
 

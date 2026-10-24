@@ -112,8 +112,7 @@ void Release(Feature& f) {
 // Our quality index -> NVSDK_NGX_PerfQuality_Value
 int PerfQuality(int q) {
 	static const int v[] = {5 /*DLAA*/, 2 /*MaxQuality*/, 1 /*Balanced*/, 0 /*MaxPerf*/, 3 /*UltraPerformance*/};
-	return v[q < 0 ? 0 : q > 4 ? 4
-							   : q];
+	return v[q < 0 ? 0 : (q > 4 ? 4 : q)];
 }
 
 // A file in the game's folder (next to its exe: where NGX looks for nvngx_dlss.dll).

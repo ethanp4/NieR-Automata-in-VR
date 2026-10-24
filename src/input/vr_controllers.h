@@ -1,7 +1,7 @@
-// vrinput.h - VR controllers as a gamepad, and motion controls (vrinput.cpp).
+// vr_controllers.h - VR controllers as a gamepad, and motion controls (vr_controllers.cpp).
 #pragma once
 #include <xinput.h>
-#include "xr/xr.h"
+#include "xr/openxr.h"
 
 // Game side (input/gamepad.cpp)
 bool VrInputPad(XINPUT_GAMEPAD* out, bool evenIfOff = false);  // false = no VR gamepad; evenIfOff: for the menu

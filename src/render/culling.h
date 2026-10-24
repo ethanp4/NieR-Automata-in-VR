@@ -1,4 +1,4 @@
-// cull.h - widens the field of view NieR culls its scene with (cull.cpp).
+// culling.h - widens the field of view NieR culls its scene with (culling.cpp).
 #pragma once
 
 void CullingInstallHook();  // from EnsureInit: hooks the game camera's fov setter

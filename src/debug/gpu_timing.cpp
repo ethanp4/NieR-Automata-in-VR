@@ -1,14 +1,4 @@
-// gpuprof.cpp - GPU timing of the game's frame, pass by pass (0.3.29, diagnostic).
-//
-// Every 5 s one frame is measured with D3D11 timestamp queries: a mark at every render-target
-// change of the game (and of the BothEyes replay), at the first UI draw, at Present and around the
-// replay. The results are read back a few frames later (never waiting) and logged: the slowest
-// passes with their size and draw count, and totals for the left eye's scene, the UI, and the
-// right eye's replay. The same summary goes to the Info page of the settings menu.
-//
-// The first time a full-screen depth buffer is seen its format is logged too: the depth-based
-// correction for alternate-eye mode will need to read it.
-#include "debug/gpuprof.h"
+#include "debug/gpu_timing.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "ui/menu.h"
@@ -21,7 +11,7 @@ const int kMax = 320;
 struct Mark {
 	char label[56];
 	unsigned draws;
-	LONGLONG cpu;  // QueryPerformanceCounter when the mark was submitted (0.4.2)
+	LONGLONG cpu;
 };
 struct Frame {
 	ID3D11Query* disjoint;
@@ -107,7 +97,7 @@ void Describe(ID3D11View* v, char* out, size_t n, bool* fullDepth, ID3D11DepthSt
 }  // namespace
 
 // At the start of the game's frame (right after Present).
-void GpuProfFrameStart(ID3D11DeviceContext* c) {
+void GpuTimingFrameStart(ID3D11DeviceContext* c) {
 	if (g_active || g_f.pending || GetTickCount() - g_last < 5000) return;
 	if (!Init(c)) return;
 	g_last = GetTickCount();
@@ -115,10 +105,10 @@ void GpuProfFrameStart(ID3D11DeviceContext* c) {
 	g_f.n = 0;
 	g_lastLabel[0] = 0;
 	c->Begin(g_f.disjoint);
-	GpuProfMark(c, "frame start");
+	GpuTimingMark(c, "frame start");
 }
 
-void GpuProfMark(ID3D11DeviceContext* c, const char* label) {
+void GpuTimingMark(ID3D11DeviceContext* c, const char* label) {
 	if (!g_active || c != g_ctx || g_f.n >= kMax) return;
 	Mark& m = g_f.marks[g_f.n];
 	snprintf(m.label, sizeof(m.label), "%s", label);
@@ -132,8 +122,8 @@ void GpuProfMark(ID3D11DeviceContext* c, const char* label) {
 }
 
 // A render-target change of the game (or of the replay, prefix "R ").
-void GpuProfTargets(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv,
-					const char* prefix) {
+void GpuTimingTargets(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv,
+					  const char* prefix) {
 	if (!g_active || c != g_ctx) return;
 	char a[40] = "", b[40] = "", label[56];
 	ID3D11RenderTargetView* rt0 = (n && rtvs) ? rtvs[0] : nullptr;
@@ -145,33 +135,31 @@ void GpuProfTargets(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* cons
 		snprintf(label, sizeof(label), "%sdepth only %s", prefix, b);
 	else
 		snprintf(label, sizeof(label), "%sno target", prefix);
-	GpuProfMark(c, label);
+	GpuTimingMark(c, label);
 }
 // kind: 1 light lists, 2 GI volumes (probe selection), else another compute pass. Each kind gets its
 // own mark so its time is measured on its own (0.4.2; before, every dispatch was one "compute").
-void GpuProfCompute(ID3D11DeviceContext* c, const char* prefix, int kind) {
+void GpuTimingCompute(ID3D11DeviceContext* c, const char* prefix, int kind) {
 	if (!g_active || c != g_ctx) return;
 	char label[56];
-	snprintf(label, sizeof(label), "%scompute: %s", prefix,
-			 kind == 1 ? "light lists" : kind == 2 ? "GI volumes"
-												   : "other");
-	if (strcmp(label, g_lastLabel) != 0) GpuProfMark(c, label);
+	snprintf(label, sizeof(label), "%scompute: %s", prefix, kind == 1 ? "light lists" : (kind == 2 ? "GI volumes" : "other"));
+	if (strcmp(label, g_lastLabel) != 0) GpuTimingMark(c, label);
 }
-void GpuProfDraw() {
+void GpuTimingDraw() {
 	if (g_active && g_f.n > 0) g_f.marks[g_f.n - 1].draws++;
 }
 
 // At Present, after everything of this frame (including the replay) was submitted.
-void GpuProfFrameEnd(ID3D11DeviceContext* c) {
+void GpuTimingFrameEnd(ID3D11DeviceContext* c) {
 	if (!g_active || c != g_ctx) return;
-	GpuProfMark(c, "end");
+	GpuTimingMark(c, "end");
 	c->End(g_f.disjoint);
 	g_active = false;
 	g_f.pending = true;
 }
 
 // Each frame: once the GPU has the results, log them.
-void GpuProfPoll(ID3D11DeviceContext* c) {
+void GpuTimingPoll(ID3D11DeviceContext* c) {
 	if (!g_f.pending || c != g_ctx) return;
 	D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj;
 	if (c->GetData(g_f.disjoint, &dj, sizeof(dj), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) return;

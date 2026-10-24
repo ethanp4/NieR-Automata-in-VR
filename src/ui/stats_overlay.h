@@ -1,9 +1,9 @@
-// overlay.h - the stats overlay, drawn with Dear ImGui on the VR thread ([Screen] StatsOverlay, overlay.cpp).
+// stats_overlay.h - the stats overlay, drawn with Dear ImGui on the VR thread ([Screen] StatsOverlay, stats_overlay.cpp).
 #pragma once
 #include <d3d11.h>
 
 struct OverlayStats {
-	const char* mode;  // "alternate eyes", "flat screen", ...
+	const char* mode;  // "alternating", "flat screen", ...
 	float headsetFps;
 	float gameFps[3];              // game images per second: left, right, flat
 	unsigned gameW, gameH;         // the game's render size

@@ -1,4 +1,4 @@
-// replay.h - BothEyes: record the left eye's frame, play it back for the right eye at Present (replay.cpp).
+// replay.h - Synchronized: record the left eye's frame, play it back for the right eye at Present (replay.cpp).
 #pragma once
 #include <d3d11.h>
 
@@ -8,7 +8,15 @@ extern ID3D11DeviceContext* g_recCtx;
 extern volatile LONG g_recSuspend;  // mod-internal calls (not recorded)
 inline bool RecOn(ID3D11DeviceContext* c) { return g_recOn && c == g_recCtx && !g_recSuspend && !g_replaying; }
 
-enum RecStage { RS_VS = 0, RS_HS, RS_DS, RS_GS, RS_PS, RS_CS };
+enum RecStage {
+	RS_VS = 0,
+	RS_HS,
+	RS_DS,
+	RS_GS,
+	RS_PS,
+	RS_CS
+};
+
 void RecSetCB(int stage, UINT start, UINT n, ID3D11Buffer* const* b);
 void RecSetSRV(int stage, UINT start, UINT n, ID3D11ShaderResourceView* const* v);
 void RecSetShader(int stage, void* sh, ID3D11ClassInstance* const* ci, UINT n);
@@ -25,7 +33,7 @@ void RecUnsupported(const char* what);
 
 void ReplayInstall(ID3D11DeviceContext* ctx);
 bool ReplayAvailable();
-void ReplayFrameStart(ID3D11DeviceContext* c, bool bothEyes);
+void ReplayFrameStart(ID3D11DeviceContext* c, bool synchronized);
 void ReplayRelease();  // before the swapchain is resized: hold nothing of the game's
 void ReplayStop(bool fromUi);
 void ReplayCaptureFinalPassState(ID3D11DeviceContext* c);

@@ -1,6 +1,6 @@
 #include "core/hook.h"
 #include "core/log.h"
-#include "xr/vrinput.h"
+#include "input/vr_controllers.h"
 #include <string.h>
 #include "input/gamepad.h"
 
@@ -8,7 +8,7 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 // XInput
 // ---------------------------------------------------------------------------------------------
-// The same hooks also hand the VR controllers to the game as the first gamepad (vrinput.cpp,
+// The same hooks also hand the VR controllers to the game as the first gamepad (vr_controllers.cpp,
 // 0.4.0): their state is merged into what pad 0 reports (a real pad keeps working), pad 0 reads as
 // connected while the VR controllers are in use, and the game's rumble goes to them.
 typedef DWORD(WINAPI* PFN_XInputGetState)(DWORD, XINPUT_STATE*);

@@ -1,4 +1,4 @@
-// stereo.cpp - alternate-eye stereo on the game side.
+// camera.cpp - alternating stereo on the game side.
 //
 // NieR uploads its camera once per frame in a 256-byte cbuffer "SceneBuffer" (b0):
 //   +0 g_View, +64 g_Proj, +128 g_ViewProjection (= Proj*View), +192 g_ViewInverseMatrix
@@ -7,11 +7,11 @@
 // g_CameraVec = camera position. On alternate frames we rewrite both for the left or right eye,
 // using the headset's eye pose (relative to the recentred reference) on top of the game camera.
 // See DEVELOPMENT.md and tools/analyze_capture.py for how these were found.
-#include "render/stereo.h"
+#include "render/camera.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "core/pure.h"
-#include "render/cull.h"
+#include "render/culling.h"
 #include "render/frame_share.h"
 #include "render/replay.h"
 #include "render/upscale.h"
@@ -43,7 +43,7 @@ struct Shot {
 	pure::M4 Ce, Pe, E;
 	float localPos[3], localRot[4], halfW, halfH;
 };
-Shot g_shot[2];  // BothEyes: the right eye, same head pose, for the replay at Present
+Shot g_shot[2];  // Synchronized: the right eye, same head pose, for the replay at Present
 // Upscaling (upscale.cpp): each eye's camera this frame [0] and the last frame it was drawn [1], for
 // motion vectors. Pe without the sub-pixel jitter, which is kept apart (render pixels).
 struct UpCam {
@@ -53,13 +53,13 @@ struct UpCam {
 	float jitter[2];
 };
 UpCam g_upCam[2][2];
-bool g_both;          // this frame: left eye live, right eye replayed
+bool g_synchronized;  // this frame: left eye live, right eye replayed
 bool g_secondEye;     // the replay is running (g_frame = the right eye)
 unsigned g_frameNo;
 float g_bbAspect = 16.f / 9.f;
 pure::M4 g_lastCam;      // camera used for the last eye (after levelling), camera-to-world
 pure::M4 g_lastGameCam;  // the game's own camera, camera-to-world
-// Head-direction culling (cull.cpp, logic thread): the eye's pose relative to the game camera,
+// Head-direction culling (culling.cpp, logic thread): the eye's pose relative to the game camera,
 // written by PatchScene, with the tick it was written at.
 SRWLOCK g_relLock = SRWLOCK_INIT;
 pure::M4 g_headRel;
@@ -131,7 +131,7 @@ pure::M4 EyeMatrixScaled() {
 }
 
 // First person: the camera at the point the game camera follows (+ offsets), facing the way it faces
-// with a level horizon. False if the look-at isn't known (head culling's hook in cull.cpp delivers it).
+// with a level horizon. False if the look-at isn't known (head culling's hook in culling.cpp delivers it).
 bool FirstPersonCamera(const pure::M4& C, pure::M4* out) {
 	float cam[3] = {C.at(0, 3), C.at(1, 3), C.at(2, 3)}, eye[3], target[3], p[3];
 	bool matched = false;
@@ -384,10 +384,10 @@ void StereoBeginFrame() {
 	f.observe = on && g_topDownFlat;
 	on = on && !g_topDownFlat;
 	if (on) {
-		bool both = g_cfg.bothEyes && !g_stereo.singleEye && ReplayAvailable();
-		FillEye(f, both ? 0 : (g_stereo.singleEye ? 0 : (int)(g_frameNo & 1)));
-		g_both = both;
-		if (both) {
+		bool synchronized = g_cfg.synchronized && !g_stereo.singleEye && ReplayAvailable();
+		FillEye(f, synchronized ? 0 : (g_stereo.singleEye ? 0 : (int)(g_frameNo & 1)));
+		g_synchronized = synchronized;
+		if (synchronized) {
 			g_frame2 = f;
 			FillEye(g_frame2, 1);
 		}
@@ -395,7 +395,7 @@ void StereoBeginFrame() {
 	ReleaseSRWLockShared(&g_stereo.lock);
 	f.active = on;
 	g_frame = f;
-	if (!on) g_both = false;
+	if (!on) g_synchronized = false;
 	g_frame2.active = on;
 	g_frame2.observe = false;
 	g_secondEye = false;
@@ -435,7 +435,7 @@ void StereoGetFrameTag(FrameTag* tag) {
 }
 
 bool StereoActive() { return g_frame.active; }
-bool StereoBothEyesFrame() { return g_both && g_frame.active; }
+bool StereoSynchronizedFrame() { return g_synchronized && g_frame.active; }
 void StereoBeginSecondEye() {
 	FrameState f = g_frame2;
 	f.patchedScene = f.patchedCam = false;
@@ -479,7 +479,7 @@ bool StereoUpscaleCams(int eye, float T[16], float cur[4], float prev[4], float 
 	const UpCam& c = g_upCam[eye][0];
 	const UpCam& p = g_upCam[eye][1];
 	if (!c.valid || c.frameNo != g_frameNo) return false;
-	*hasPrev = p.valid && c.frameNo - p.frameNo <= 3;  // alternate eyes: 2 frames apart
+	*hasPrev = p.valid && c.frameNo - p.frameNo <= 3;  // alternating mode: 2 frames apart
 	pure::M4 t = pure::m4_mul(pure::m4_rigid_inverse(p.Ce), c.Ce);
 	memcpy(T, t.m, 64);
 	const pure::M4* m[2] = {&c.Pe, &p.Pe};

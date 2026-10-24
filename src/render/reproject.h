@@ -1,4 +1,4 @@
-// reproject.h - depth-based correction of the older eye in alternate-eye mode (reproject.cpp).
+// reproject.h - depth-based correction of the older eye in alternating mode (reproject.cpp).
 #pragma once
 #include <d3d11.h>
 #include "render/frame_share.h"

@@ -1,5 +1,5 @@
-// uisplit.h - separates NieR's 2D UI (HUD, menus) from the 3D scene on the game side, so the HUD can
-// go on its own flat layer (uisplit.cpp).
+// hud_layer.h - separates NieR's 2D UI (HUD, menus) from the 3D scene on the game side, so the HUD can
+// go on its own flat layer (hud_layer.cpp).
 #pragma once
 #include <d3d11.h>
 #include "render/d3d_hooks.h"

@@ -1,5 +1,5 @@
-# fovstubs.S - widened field of view at the places that build the camera's projection and frusta
-# (cull.cpp). Since 0.3.17 the camera object's own fov field (+0x274) keeps the game's value: the
+# culling_stubs.S - widened field of view at the places that build the camera's projection and frusta
+# (culling.cpp). Since 0.3.17 the camera object's own fov field (+0x274) keeps the game's value: the
 # camera controller eases from it, and the model-detail code reads it. Writing 120 there (0.3.11 to
 # 0.3.16) drifted the game's own value towards 120 and gave low-detail models.
 #

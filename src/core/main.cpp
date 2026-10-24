@@ -1,10 +1,10 @@
 // main.cpp - DLL entry, one-time initialisation, crash reporting.
 #include "core/main.h"
 #include "core/config.h"
+#include "core/d3d11_proxy.h"
 #include "core/log.h"
-#include "core/proxy.h"
-#include "render/cull.h"
-#include "render/display.h"
+#include "render/culling.h"
+#include "render/extra_resolutions.h"
 #include "render/frame_share.h"
 #include "xr/xr_main.h"
 #include <stdio.h>
@@ -110,7 +110,7 @@ static void WriteCrashReport(EXCEPTION_POINTERS* ep, DWORD threadId) {
 }
 
 static DWORD WINAPI CrashReporterThread(void*) {
-	for (;;) {
+	while (true) {
 		WaitForSingleObject(g_crashRequest, INFINITE);
 		if (g_crashEp) WriteCrashReport(g_crashEp, g_crashThread);
 		SetEvent(g_crashDone);
@@ -200,9 +200,9 @@ static void LogEnvironment() {
 		g_cfg.enabled, (double)g_cfg.distance, (double)g_cfg.width, (double)g_cfg.heightOffset, Utf8(g_cfg.chainLoad).s,
 		Utf8(g_cfg.loaderPath).s, g_cfg.verbose, g_cfg.probe, (unsigned)g_cfg.keyCapture);
 	Log("config: Stereo=%d WorldScale=%.3f CameraDolly=%.2f LevelCamera=%d Anamorphic=%d VerticalFill=%.2f "
-		"FovScale=%.2f SplitUI=%d ExtraResolutions=%d AmbientOcclusion=%d Shadows=%d Vignette=%d LowHealthEffect=%d DistortionEffects=%d FixLighting=%d CullingFov=%.0f LodFix=%d FlatBelowDraws=%d SteepView=%.0f-%.0f TopDownFlat=%d (%.0f/%.0f)",
+		"FovScale=%.2f ExtraResolutions=%d AmbientOcclusion=%d Shadows=%d Vignette=%d LowHealthEffect=%d DistortionEffects=%d FixLighting=%d CullingFov=%.0f LodFix=%d FlatBelowDraws=%d SteepView=%.0f-%.0f TopDownFlat=%d (%.0f/%.0f)",
 		g_cfg.stereo, (double)g_cfg.worldScale, (double)g_cfg.cameraDolly, g_cfg.levelCamera, g_cfg.anamorphic,
-		(double)g_cfg.verticalFill, (double)g_cfg.fovScale, g_cfg.uiSplit, g_cfg.extraResolutions,
+		(double)g_cfg.verticalFill, (double)g_cfg.fovScale, g_cfg.extraResolutions,
 		g_cfg.ambientOcclusion, g_cfg.shadows, g_cfg.vignette, g_cfg.lowHealthFx, g_cfg.distortionFx, g_cfg.viewFix, (double)g_cfg.cullFov, g_cfg.lodFix, g_cfg.flatBelowDraws,
 		(double)g_cfg.steepFrom, (double)g_cfg.steepFull, g_cfg.topDownFlat,
 		(double)g_cfg.topDownFrom, (double)g_cfg.topDownUntil);
@@ -216,8 +216,8 @@ static void LogEnvironment() {
 		list[0] = 0;
 		for (int i = 0; i < g_cfg.fovRealCount && at + 16 < sizeof(list); i++)
 			at += snprintf(list + at, sizeof(list) - at, "%s0x%x", i ? "," : "", g_cfg.fovRealCallers[i]);
-		Log("config: HeadCullingMargin=%.0f EyeSync=%d BothEyes=%d", (double)g_cfg.headCullMargin, g_cfg.eyeSync,
-			g_cfg.bothEyes);
+		Log("config: HeadCullingMargin=%.0f EyeSync=%d Synchronized=%d", (double)g_cfg.headCullMargin, g_cfg.eyeSync,
+			g_cfg.synchronized);
 		Log("config: HeadCulling=%d WideProjection=%d FovRealCallers=%s FovEasingCaller=0x%x", g_cfg.headCulling,
 			g_cfg.wideProjection, at ? list : "(none)", g_cfg.fovEasingCaller);
 	}
@@ -243,7 +243,7 @@ static BOOL CALLBACK InitOnceCallback(PINIT_ONCE, PVOID, PVOID*) {
 	InitializeCriticalSection(&g_share.cs);
 	InstallCrashHandler();
 	if (!ProxyLoadReal()) Log("FATAL: could not load the real d3d11.dll - the game will not start");
-	DisplayInstallHooks();
+	ExtraResolutionsInstallHooks();
 	CullingInstallHook();
 	g_initDone = true;
 	return TRUE;
@@ -258,7 +258,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID) {
 		// Display hooks must see the game's very first resolution queries, which happen before it
 		// touches D3D11. They only patch code here; everything else waits for the first call into
 		// the DLL (outside the loader lock).
-		DisplayEarlyHooks();
+		ExtraResolutionsEarlyHooks();
 	}
 	return TRUE;
 }

@@ -1,10 +1,10 @@
-// overlay.cpp - the stats overlay: a small see-through panel in the corner of your view with live
+// stats_overlay.cpp - the stats overlay: a small see-through panel in the corner of your view with live
 // numbers (frame rates, resolution, head-pose delay) and a headset frame-time graph.
 // [Screen] StatsOverlay=1, or the Screen page of the settings menu.
 //
 // Drawn with Dear ImGui (ui/imgui_panel.h) on the VR thread: xr_main.cpp hands it a render target
 // the size of the panel and shows the result on a quad layer that moves with your head.
-#include "ui/overlay.h"
+#include "ui/stats_overlay.h"
 #include <stdio.h>
 #include "ui/imgui_panel.h"
 #include "imgui.h"

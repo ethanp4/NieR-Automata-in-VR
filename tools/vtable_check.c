@@ -39,7 +39,7 @@ SLOT(IDXGIFactory, CreateSwapChain, 10)
 SLOT(IDXGIOutput, GetDisplayModeList, 8)
 SLOT(IDXGIOutput, FindClosestMatchingMode, 9)
 SLOT(IDXGIOutput1, GetDisplayModeList1, 19)
-/* replay.cpp (BothEyes recorder) */
+/* replay.cpp (synchronized-mode recorder) */
 SLOT(ID3D11DeviceContext, PSSetSamplers, 10)
 SLOT(ID3D11DeviceContext, IASetInputLayout, 17)
 SLOT(ID3D11DeviceContext, IASetVertexBuffers, 18)
