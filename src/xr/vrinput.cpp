@@ -34,7 +34,8 @@
 namespace {
 #define VR_FUNCS(X)                                                                                                  \
 	X(xrStringToPath)                                                                                                \
-	X(xrCreateActionSet) X(xrDestroyActionSet) X(xrCreateAction)                                                     \
+	X(xrCreateActionSet)                                                                                             \
+	X(xrDestroyActionSet) X(xrCreateAction)                                                                          \
 		X(xrSuggestInteractionProfileBindings) X(xrAttachSessionActionSets) X(xrSyncActions)                         \
 			X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(xrGetActionStateVector2f) X(xrApplyHapticFeedback) \
 				X(xrStopHapticFeedback) X(xrGetCurrentInteractionProfile) X(xrPathToString) X(xrCreateActionSpace)   \

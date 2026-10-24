@@ -1,5 +1,6 @@
 // proxy.cpp - stands in for d3d11.dll: loads the real one and forwards every export to it.
 #include "core/common.h"
+#include "render/d3d_hooks.h"
 
 static const char* const kThunkNames[] = {
 #include "gen/export_names.inc"
@@ -83,7 +84,7 @@ extern "C" HRESULT WINAPI NVR_D3D11CreateDevice(IDXGIAdapter* adapter, D3D_DRIVE
 	Log("game called D3D11CreateDevice(driverType=%d, flags=0x%x) -> 0x%08x", (int)driverType, flags, (unsigned)hr);
 	if (SUCCEEDED(hr) && device && *device && g_cfg.enabled) {
 		HookWithDummySwapChain();
-		ProbeInstall(*device);
+		D3dHooksInstall(*device);
 	}
 	return hr;
 }
@@ -108,7 +109,7 @@ extern "C" HRESULT WINAPI NVR_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapte
 			HookFromSwapChain(*swapChain);
 		else if (device && *device)
 			HookWithDummySwapChain();
-		if (device && *device) ProbeInstall(*device);
+		if (device && *device) D3dHooksInstall(*device);
 	}
 	return hr;
 }

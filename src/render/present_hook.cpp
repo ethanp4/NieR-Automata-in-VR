@@ -1,6 +1,8 @@
 // present_hook.cpp - hooks IDXGISwapChain::Present (inline detour via MinHook) and copies each
 // finished game frame into a texture shared with the VR thread. The game is never made to wait.
 #include "core/common.h"
+#include "debug/frame_capture.h"
+#include "render/d3d_hooks.h"
 #include "MinHook.h"
 
 FrameShare g_share;
@@ -176,7 +178,7 @@ static void OnFirstGameDevice(ID3D11Device* dev) {
 		dxgiDev->Release();
 	}
 	Log("game device feature level 0x%x", (unsigned)dev->GetFeatureLevel());
-	ProbeSetTarget(dev);
+	D3dHooksFollowDevice(dev);
 	ProbeGameDevice(dev);
 	Log("starting VR thread");
 	XrStartThread();
@@ -390,7 +392,7 @@ static HRESULT PresentCommon(int slot, void* retAddr, IDXGISwapChain* self, UINT
 		if (!(flags & DXGI_PRESENT_TEST)) {
 			ReplayStop(false);  // BothEyes: the game's frame is complete
 			if (s_ctx) GpuProfMark(s_ctx, "present");
-			ProbeBeforePresent();
+			CaptureBeforePresent();
 			CaptureFrame(self);
 			if (s_ctx) GpuProfFrameEnd(s_ctx);
 		}
@@ -413,7 +415,7 @@ static HRESULT PresentCommon(int slot, void* retAddr, IDXGISwapChain* self, UINT
 	HRESULT hr = g_origPresent[slot](self, syncInterval, flags);
 	if (depth == 0 && !(flags & DXGI_PRESENT_TEST)) {
 		AfterPresent();
-		ProbeAfterPresent();
+		CaptureAfterPresent();
 	}
 	TlsSetValue(g_tlsDepth, (void*)depth);
 	return hr;

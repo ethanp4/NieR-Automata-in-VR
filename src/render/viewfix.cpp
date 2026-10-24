@@ -20,6 +20,7 @@
 // game's pass gets a view that ends right after the last slot left on. With all volumes kept this
 // only cuts the empty tail of the loop (no visual change).
 #include "core/common.h"
+#include "render/d3d_hooks.h"
 #include <d3dcompiler.h>
 
 namespace {
@@ -359,7 +360,7 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 	c->CSSetShaderResources(0, 1, &src);
 	UINT keepCounts = (UINT)-1;
 	c->CSSetUnorderedAccessViews(0, 1, &f.uav, &keepCounts);
-	ProbeRawDispatch(c, (count + 63) / 64, 1, 1);
+	OriginalDispatch(c, (count + 63) / 64, 1, 1);
 	ID3D11UnorderedAccessView* noUav = nullptr;
 	c->CSSetUnorderedAccessViews(0, 1, &noUav, &keepCounts);
 

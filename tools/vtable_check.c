@@ -1,4 +1,4 @@
-/* Compile-time check that the vtable slots hardcoded in src/probe.cpp match d3d11.h. */
+/* Compile-time check that the vtable slots hardcoded in src/render/d3d_hooks.cpp match d3d11.h. */
 #define CINTERFACE
 #include <windows.h>
 #include <d3d11.h>

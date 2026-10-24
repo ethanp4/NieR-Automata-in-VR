@@ -133,8 +133,7 @@ void GpuProfCompute(ID3D11DeviceContext* c, const char* prefix, int kind);
 void GpuProfDraw();
 void GpuProfFrameEnd(ID3D11DeviceContext* c);
 void GpuProfPoll(ID3D11DeviceContext* c);
-void CapturePollMidFrame();
-void FrameLatencyTick();  // probe.cpp: applies [Render] MaxFrameLatency to the game's device  // present_hook.cpp: publish finished frames without waiting for Present
+void CapturePollMidFrame();  // present_hook.cpp: publish finished frames without waiting for Present
 void MenuTick(bool foreground);
 void MenuSetInfo(int line, const char* text);
 bool MenuIsOpen();
@@ -208,15 +207,7 @@ void ScreenFxBeginFrame();  // screenfx.cpp: low-health grey / distortion
 // An effect-system draw (particles, screen filters) that samples the texture registers in `sampled`:
 // true = skip it (a low-health screen filter while in stereo, LowHealthEffect=0).
 bool ScreenFxSkipEffectDraw(ID3D11DeviceContext* c, uint32_t sampled, uint64_t shaderHash);
-void ProbeReplayDraw(ID3D11DeviceContext* c, const DrawArgs& d);
-void ProbeSetRenderTargets(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* rtvs,
-						   ID3D11DepthStencilView* dsv);
 
-// Camera probe (probe.cpp): records one frame of D3D11 activity on a hotkey, for analysis.
-void ProbeInstall(ID3D11Device* gameDevice);
-void ProbeSetTarget(ID3D11Device* presentingDevice);
-void ProbeBeforePresent();  // end of a frame
-void ProbeAfterPresent();   // start of the next frame
 void HookWithDummySwapChain();
 // Render resolution (display.cpp)
 void DisplayInstallHooks();
@@ -239,9 +230,6 @@ void CullingCycleTest();          // Shift+F5: which reads get the wide fov (tes
 bool StereoGetViewFix(float T[16], float Tinv[16]);  // game view -> eye view (and back), this frame
 void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind);
 void ViewFixAfterDispatch(ID3D11DeviceContext* c);
-void ProbeRawDispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z);
-// Second-eye playback (replay.cpp): a recorded constant-buffer upload, camera patched for this eye.
-const void* ProbePatchForReplay(ID3D11Resource* res, const void* data, UINT size, float* scratch /* 64 floats */);
 
 // replay.cpp - BothEyes: record the left eye's frame, play it back for the right eye at Present.
 extern volatile bool g_replaying;      // playback running: hooks pass calls straight through

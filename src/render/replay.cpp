@@ -22,6 +22,7 @@
 // replay, a buffer too large) cancels the second eye for that frame: it then shows the previous
 // right image, as in alternate-eye mode, and the log says why.
 #include "core/common.h"
+#include "render/d3d_hooks.h"
 #include <smmintrin.h>
 #include <d3d11_1.h>
 
@@ -688,7 +689,7 @@ void RecUpdate(ID3D11Resource* res, UINT sub, const D3D11_BOX* box, const void* 
 }
 
 // ---------------------------------------------------------------------------------------------
-// Hooks for the context methods probe.cpp doesn't hook already
+// Hooks for the context methods d3d_hooks.cpp doesn't hook already
 // ---------------------------------------------------------------------------------------------
 namespace {
 #define CTX_ARGS ID3D11DeviceContext* c
@@ -1664,7 +1665,7 @@ void Play(ID3D11DeviceContext* c) {
 				} u;
 				memcpy(&u, p, sizeof(u));
 				const void* data = p + sizeof(u);
-				if (u.isCB) data = ProbePatchForReplay((ID3D11Resource*)u.res, data, u.bytes, scratch);
+				if (u.isCB) data = PatchConstantBufferForReplay((ID3D11Resource*)u.res, data, u.bytes, scratch);
 				c->UpdateSubresource((ID3D11Resource*)u.res, u.sub, u.hasBox ? &u.box : nullptr, data, u.rp, u.dp);
 				break;
 			}
@@ -1692,7 +1693,7 @@ void Play(ID3D11DeviceContext* c) {
 				} m;
 				memcpy(&m, p, sizeof(m));
 				const void* data = p + sizeof(m);
-				if (m.isCB) data = ProbePatchForReplay((ID3D11Resource*)m.res, data, m.bytes, scratch);
+				if (m.isCB) data = PatchConstantBufferForReplay((ID3D11Resource*)m.res, data, m.bytes, scratch);
 				// A buffer written with NO_OVERWRITE is mapped with DISCARD here and gets its whole
 				// recorded contents (which include everything written before): draws already
 				// submitted keep reading the old copy, so nothing they use is overwritten.

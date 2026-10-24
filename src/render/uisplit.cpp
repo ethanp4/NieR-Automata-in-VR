@@ -24,6 +24,7 @@
 // tinted. On the HUD layer that is a flat copy of the whole screen flashing in front of the 3D view.
 // In stereo those draws are skipped (DistortionEffects=0) or kept in the 3D image (=1).
 #include "core/common.h"
+#include "render/d3d_hooks.h"
 
 namespace {
 ID3D11Texture2D* g_bb;            // the swapchain backbuffer (raw pointer: identity only, never called)
@@ -178,9 +179,9 @@ void ReplayInto(ID3D11DeviceContext* c, ID3D11RenderTargetView* target, const Dr
 	}
 	if (blendMode < 0 || ours) {
 		if (ours) c->OMSetBlendState(ours, factor, mask);
-		ProbeSetRenderTargets(c, 1, &target, dsv);
-		ProbeReplayDraw(c, args);
-		ProbeSetRenderTargets(c, 1, &rtv, dsv);
+		OriginalSetRenderTargets(c, 1, &target, dsv);
+		OriginalDraw(c, args);
+		OriginalSetRenderTargets(c, 1, &rtv, dsv);
 		if (ours) c->OMSetBlendState(bs, factor, mask);
 	}
 	if (bs) bs->Release();
