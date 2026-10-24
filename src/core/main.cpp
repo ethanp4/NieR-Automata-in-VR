@@ -200,10 +200,10 @@ static void LogEnvironment() {
 		g_cfg.enabled, (double)g_cfg.distance, (double)g_cfg.width, (double)g_cfg.heightOffset, Utf8(g_cfg.chainLoad).s,
 		Utf8(g_cfg.loaderPath).s, g_cfg.verbose, g_cfg.probe, (unsigned)g_cfg.keyCapture);
 	Log("config: Stereo=%d WorldScale=%.3f CameraDolly=%.2f LevelCamera=%d Anamorphic=%d VerticalFill=%.2f "
-		"FovScale=%.2f ExtraResolutions=%d AmbientOcclusion=%d Shadows=%d Vignette=%d LowHealthEffect=%d DistortionEffects=%d FixLighting=%d CullingFov=%.0f LodFix=%d FlatBelowDraws=%d SteepView=%.0f-%.0f TopDownFlat=%d (%.0f/%.0f)",
+		"FovScale=%.2f ExtraResolutions=%d AmbientOcclusion=%d Shadows=%d Vignette=%d LowHealthEffect=%d DistortionEffects=%d CullingFov=%.0f FlatBelowDraws=%d SteepView=%.0f-%.0f TopDownFlat=%d (%.0f/%.0f)",
 		g_cfg.stereo, (double)g_cfg.worldScale, (double)g_cfg.cameraDolly, g_cfg.levelCamera, g_cfg.anamorphic,
 		(double)g_cfg.verticalFill, (double)g_cfg.fovScale, g_cfg.extraResolutions,
-		g_cfg.ambientOcclusion, g_cfg.shadows, g_cfg.vignette, g_cfg.lowHealthFx, g_cfg.distortionFx, g_cfg.viewFix, (double)g_cfg.cullFov, g_cfg.lodFix, g_cfg.flatBelowDraws,
+		g_cfg.ambientOcclusion, g_cfg.shadows, g_cfg.vignette, g_cfg.lowHealthFx, g_cfg.distortionFx, (double)g_cfg.cullFov, g_cfg.flatBelowDraws,
 		(double)g_cfg.steepFrom, (double)g_cfg.steepFull, g_cfg.topDownFlat,
 		(double)g_cfg.topDownFrom, (double)g_cfg.topDownUntil);
 	if (g_cfg.iniAdded) Log("config: added %d new settings (with their defaults) to the existing NieRVR.ini", g_cfg.iniAdded);
@@ -218,8 +218,8 @@ static void LogEnvironment() {
 			at += snprintf(list + at, sizeof(list) - at, "%s0x%x", i ? "," : "", g_cfg.fovRealCallers[i]);
 		Log("config: HeadCullingMargin=%.0f Synchronized=%d", (double)g_cfg.headCullMargin,
 			g_cfg.synchronized);
-		Log("config: HeadCulling=%d WideProjection=%d FovRealCallers=%s FovEasingCaller=0x%x", g_cfg.headCulling,
-			g_cfg.wideProjection, at ? list : "(none)", g_cfg.fovEasingCaller);
+		Log("config: HeadCulling=%d FovRealCallers=%s FovEasingCaller=0x%x", g_cfg.headCulling, at ? list : "(none)",
+			g_cfg.fovEasingCaller);
 	}
 }
 

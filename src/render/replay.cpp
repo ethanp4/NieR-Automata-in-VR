@@ -14,22 +14,22 @@
 #include <smmintrin.h>
 #include <d3d11_1.h>
 
-volatile bool g_replaying;      // playback in progress: every hook passes straight through
-volatile LONG g_recOn;          // the recorder is taking calls
-ID3D11DeviceContext* g_recCtx;  // the game's immediate context
-volatile LONG g_recSuspend;     // mod-internal calls in progress (not recorded)
+volatile bool g_replaying;           // playback in progress: every hook passes straight through
+volatile LONG g_recording;           // the recorder is taking calls
+ID3D11DeviceContext* g_gameContext;  // the game's immediate context
+volatile LONG g_modCallsInProgress;  // mod-internal calls in progress (not recorded)
 
 namespace {
 enum Op : uint16_t {
 	OP_SET_CB = 1,
 	OP_SET_SRV,
-	OP_SET_SAMP,
+	OP_SET_SAMPLERS,
 	OP_SET_SHADER,
 	OP_CS_UAV,
 	OP_IA_LAYOUT,
 	OP_IA_VB,
 	OP_IA_IB,
-	OP_IA_TOPO,
+	OP_IA_TOPOLOGY,
 	OP_DRAW,
 	OP_DRAW_AUTO,
 	OP_DRAW_INDIRECT,
@@ -42,24 +42,24 @@ enum Op : uint16_t {
 	OP_RS_STATE,
 	OP_RS_VP,
 	OP_RS_SCISSOR,
-	OP_SO,
+	OP_SO_TARGETS,
 	OP_COPY_REGION,
 	OP_COPY,
 	OP_UPDATE,
 	OP_COPY_COUNT,
 	OP_CLEAR_RTV,
-	OP_CLEAR_UAV_U,
-	OP_CLEAR_UAV_F,
+	OP_CLEAR_UAV_UINT,
+	OP_CLEAR_UAV_FLOAT,
 	OP_CLEAR_DSV,
-	OP_GENMIPS,
-	OP_MINLOD,
+	OP_GENERATE_MIPS,
+	OP_MIN_LOD,
 	OP_RESOLVE,
 	OP_MAP,
 	OP_PREDICATION,
 	OP_CLEAR_STATE,
 	OP_DISCARD_RES,
 	OP_DISCARD_VIEW,
-	OP_GEN,
+	OP_NEW_GENERATION,
 	OP_COUNT
 };
 const char* const kOpNames[OP_COUNT] = {"?", "SetConstantBuffers", "SetShaderResources", "SetSamplers", "SetShader",
@@ -70,110 +70,97 @@ const char* const kOpNames[OP_COUNT] = {"?", "SetConstantBuffers", "SetShaderRes
 										"CopyStructureCount", "ClearRenderTargetView", "ClearUAVUint", "ClearUAVFloat", "ClearDepthStencilView",
 										"GenerateMips", "SetResourceMinLOD", "ResolveSubresource", "Map", "SetPredication", "ClearState",
 										"DiscardResource", "DiscardView", "dynamic buffer refill"};
-enum Stage { S_VS,
-			 S_HS,
-			 S_DS,
-			 S_GS,
-			 S_PS,
-			 S_CS,
-			 S_COUNT };
-
 struct CmdHeader {
 	uint16_t op;
-	uint16_t a;     // small argument (stage, kind, ...)
-	uint32_t size;  // payload bytes after this header
+	uint16_t arg;          // small argument (stage, kind, ...)
+	uint32_t payloadSize;  // payload bytes after this header
 };
 
-const size_t kArenaCap = 192u << 20;  // per frame: commands + uploaded data
+const size_t kArenaBytes = 192u << 20;  // per frame: commands + uploaded data
 const size_t kMaxRefs = 1 << 18;
-const UINT kMaxMapCopy = 16u << 20;   // a single Map/Update larger than this cancels the frame
+const UINT kMaxUploadBytes = 16u << 20;  // a single Map/Update larger than this cancels the frame
 
 uint8_t* s_arena;
-size_t s_len;
+size_t s_arenaUsed;
 IUnknown** s_refs;
 size_t s_refCount;
-SRWLOCK s_lock = SRWLOCK_INIT;
-bool s_ready;            // hooks installed, memory allocated
-bool s_frameValid;       // the recording can be played back
-const char* s_cancelWhy; // why not (logged)
-bool s_stoppedAtUi;      // recording ended at the first UI draw
-unsigned s_counts[OP_COUNT];
-unsigned s_frameCmds;
-double s_copyMs;         // time spent copying upload data while recording (this frame)
+SRWLOCK s_recordLock = SRWLOCK_INIT;
+bool s_hooksReady;           // hooks installed, memory allocated
+bool s_recordingValid;       // the recording can be played back
+const char* s_cancelReason;  // why not (logged)
+bool s_stoppedAtUi;          // recording ended at the first UI draw
+unsigned s_opCounts[OP_COUNT];
+unsigned s_frameCommands;
+double s_uploadCopyMs;  // time spent copying upload data while recording (this frame)
 
 // ---- statistics, logged every 30 s -----------------------------------------------------------
 unsigned s_statFrames, s_statReplayed, s_statCancelled, s_statNoCamera;
-double s_statReplayMs, s_statReplayMaxMs, s_statCopyMs, s_statCmds, s_statBytes, s_statSkipped;
-DWORD s_statTick;
-char s_lastCancel[160];
-bool s_loggedCounts;
+double s_statReplayMs, s_statReplayMaxMs, s_statCopyMs, s_statCommands, s_statBytes, s_statShadowDrawsSkipped;
+DWORD s_lastReportTick;
+char s_lastCancelReason[160];
+bool s_loggedFirstFrame;
 
-LARGE_INTEGER s_qpf;
+LARGE_INTEGER s_qpcFrequency;
 double NowMs() {
-	LARGE_INTEGER t;
-	QueryPerformanceCounter(&t);
-	if (!s_qpf.QuadPart) QueryPerformanceFrequency(&s_qpf);
-	return (double)t.QuadPart * 1000.0 / (double)s_qpf.QuadPart;
+	LARGE_INTEGER now;
+	QueryPerformanceCounter(&now);
+	if (!s_qpcFrequency.QuadPart) QueryPerformanceFrequency(&s_qpcFrequency);
+	return (double)now.QuadPart * 1000.0 / (double)s_qpcFrequency.QuadPart;
 }
 
-void Cancel(const char* why) {
-	if (s_frameValid) {
-		s_frameValid = false;
-		s_cancelWhy = why;
+void CancelRecording(const char* reason) {
+	if (s_recordingValid) {
+		s_recordingValid = false;
+		s_cancelReason = reason;
 	}
-	InterlockedExchange(&g_recOn, 0);
+	InterlockedExchange(&g_recording, 0);
 }
 
 // ---- arena -----------------------------------------------------------------------------------
-uint8_t* Begin(Op op, uint16_t a, size_t payload) {
-	size_t need = sizeof(CmdHeader) + ((payload + 7) & ~(size_t)7);
-	if (s_len + need > kArenaCap) {
-		Cancel("recording memory full");
+uint8_t* AppendCommand(Op op, uint16_t arg, size_t payloadBytes) {
+	size_t total = sizeof(CmdHeader) + ((payloadBytes + 7) & ~(size_t)7);
+	if (s_arenaUsed + total > kArenaBytes) {
+		CancelRecording("recording memory full");
 		return nullptr;
 	}
-	CmdHeader* h = (CmdHeader*)(s_arena + s_len);
-	h->op = op;
-	h->a = a;
-	h->size = (uint32_t)((payload + 7) & ~(size_t)7);
-	uint8_t* p = s_arena + s_len + sizeof(CmdHeader);
-	s_len += need;
-	if (op < OP_COUNT) s_counts[op]++;
-	s_frameCmds++;
-	return p;
+	CmdHeader* header = (CmdHeader*)(s_arena + s_arenaUsed);
+	header->op = op;
+	header->arg = arg;
+	header->payloadSize = (uint32_t)((payloadBytes + 7) & ~(size_t)7);
+	uint8_t* payload = s_arena + s_arenaUsed + sizeof(CmdHeader);
+	s_arenaUsed += total;
+	if (op < OP_COUNT) s_opCounts[op]++;
+	s_frameCommands++;
+	return payload;
 }
-void Ref(IUnknown* u) {
-	if (!u) return;
+void HoldRef(IUnknown* obj) {
+	if (!obj) return;
 	if (s_refCount >= kMaxRefs) {
-		Cancel("too many objects referenced");
+		CancelRecording("too many objects referenced");
 		return;
 	}
-	u->AddRef();
-	s_refs[s_refCount++] = u;
+	obj->AddRef();
+	s_refs[s_refCount++] = obj;
 }
-template <typename T>
-void RefAll(T* const* p, UINT n) {
-	if (p)
-		for (UINT i = 0; i < n; i++) Ref((IUnknown*)p[i]);
-}
-void ReleaseRefs() {
+void ReleaseHeldRefs() {
 	for (size_t i = 0; i < s_refCount; i++) s_refs[i]->Release();
 	s_refCount = 0;
 }
 
 // Takes the lock and checks the recorder is still on (a call may race with ReplayStop).
-struct Rec {
-	bool on;
-	Rec() {
-		AcquireSRWLockExclusive(&s_lock);
-		on = g_recOn && s_frameValid;
+struct RecordLock {
+	bool recording;
+	RecordLock() {
+		AcquireSRWLockExclusive(&s_recordLock);
+		recording = g_recording && s_recordingValid;
 	}
-	~Rec() { ReleaseSRWLockExclusive(&s_lock); }
+	~RecordLock() { ReleaseSRWLockExclusive(&s_recordLock); }
 };
 
 // ---- formats: bytes of a row of `w` texels and number of rows for `h` texel rows ---------------
-bool FormatInfo(DXGI_FORMAT f, UINT* bytesPerBlock, UINT* blockDim) {
+bool FormatInfo(DXGI_FORMAT format, UINT* bytesPerBlock, UINT* blockDim) {
 	*blockDim = 1;
-	switch (f) {
+	switch (format) {
 		case DXGI_FORMAT_R32G32B32A32_TYPELESS:
 		case DXGI_FORMAT_R32G32B32A32_FLOAT:
 		case DXGI_FORMAT_R32G32B32A32_UINT:
@@ -290,97 +277,97 @@ bool FormatInfo(DXGI_FORMAT f, UINT* bytesPerBlock, UINT* blockDim) {
 
 // Extent of a subresource (or a box in it): w x h x d texels, its format, and whether it's a buffer.
 struct Extent {
-	bool buffer;
-	UINT w, h, d;
-	DXGI_FORMAT fmt;
+	bool isBuffer;
+	UINT width, height, depth;
+	DXGI_FORMAT format;
 	UINT byteWidth, bind, usage;
 };
-bool GetExtent(ID3D11Resource* r, UINT sub, Extent* e) {
+bool GetExtent(ID3D11Resource* res, UINT sub, Extent* e) {
 	*e = {};
 	D3D11_RESOURCE_DIMENSION dim;
-	r->GetType(&dim);
+	res->GetType(&dim);
 	switch (dim) {
 		case D3D11_RESOURCE_DIMENSION_BUFFER: {
-			D3D11_BUFFER_DESC d;
-			((ID3D11Buffer*)r)->GetDesc(&d);
-			e->buffer = true;
-			e->w = e->byteWidth = d.ByteWidth;
-			e->h = e->d = 1;
-			e->bind = d.BindFlags;
-			e->usage = d.Usage;
+			D3D11_BUFFER_DESC desc;
+			((ID3D11Buffer*)res)->GetDesc(&desc);
+			e->isBuffer = true;
+			e->width = e->byteWidth = desc.ByteWidth;
+			e->height = e->depth = 1;
+			e->bind = desc.BindFlags;
+			e->usage = desc.Usage;
 			return true;
 		}
 		case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
-			D3D11_TEXTURE1D_DESC d;
-			((ID3D11Texture1D*)r)->GetDesc(&d);
-			UINT mip = sub % (d.MipLevels ? d.MipLevels : 1);
-			e->w = d.Width >> mip ? d.Width >> mip : 1;
-			e->h = e->d = 1;
-			e->fmt = d.Format;
-			e->usage = d.Usage;
+			D3D11_TEXTURE1D_DESC desc;
+			((ID3D11Texture1D*)res)->GetDesc(&desc);
+			UINT mip = sub % (desc.MipLevels ? desc.MipLevels : 1);
+			e->width = desc.Width >> mip ? desc.Width >> mip : 1;
+			e->height = e->depth = 1;
+			e->format = desc.Format;
+			e->usage = desc.Usage;
 			return true;
 		}
 		case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
-			D3D11_TEXTURE2D_DESC d;
-			((ID3D11Texture2D*)r)->GetDesc(&d);
-			UINT mip = sub % (d.MipLevels ? d.MipLevels : 1);
-			e->w = d.Width >> mip ? d.Width >> mip : 1;
-			e->h = d.Height >> mip ? d.Height >> mip : 1;
-			e->d = 1;
-			e->fmt = d.Format;
-			e->usage = d.Usage;
+			D3D11_TEXTURE2D_DESC desc;
+			((ID3D11Texture2D*)res)->GetDesc(&desc);
+			UINT mip = sub % (desc.MipLevels ? desc.MipLevels : 1);
+			e->width = desc.Width >> mip ? desc.Width >> mip : 1;
+			e->height = desc.Height >> mip ? desc.Height >> mip : 1;
+			e->depth = 1;
+			e->format = desc.Format;
+			e->usage = desc.Usage;
 			return true;
 		}
 		case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
-			D3D11_TEXTURE3D_DESC d;
-			((ID3D11Texture3D*)r)->GetDesc(&d);
-			UINT mip = sub % (d.MipLevels ? d.MipLevels : 1);
-			e->w = d.Width >> mip ? d.Width >> mip : 1;
-			e->h = d.Height >> mip ? d.Height >> mip : 1;
-			e->d = d.Depth >> mip ? d.Depth >> mip : 1;
-			e->fmt = d.Format;
-			e->usage = d.Usage;
+			D3D11_TEXTURE3D_DESC desc;
+			((ID3D11Texture3D*)res)->GetDesc(&desc);
+			UINT mip = sub % (desc.MipLevels ? desc.MipLevels : 1);
+			e->width = desc.Width >> mip ? desc.Width >> mip : 1;
+			e->height = desc.Height >> mip ? desc.Height >> mip : 1;
+			e->depth = desc.Depth >> mip ? desc.Depth >> mip : 1;
+			e->format = desc.Format;
+			e->usage = desc.Usage;
 			return true;
 		}
 		default: return false;
 	}
 }
 // Bytes of source data an upload of w x h x d texels reads, with the given pitches.
-bool UploadBytes(const Extent& e, UINT w, UINT h, UINT d, UINT rowPitch, UINT depthPitch, size_t* out) {
-	if (e.buffer) {
-		*out = w;
+bool UploadBytes(const Extent& e, UINT width, UINT height, UINT depth, UINT rowPitch, UINT depthPitch, size_t* out) {
+	if (e.isBuffer) {
+		*out = width;
 		return true;
 	}
-	UINT bpb, bd;
-	if (!FormatInfo(e.fmt, &bpb, &bd)) return false;
-	UINT bw = (w + bd - 1) / bd, bh = (h + bd - 1) / bd;
-	size_t row = (size_t)bw * bpb;
-	size_t slice = bh ? (size_t)rowPitch * (bh - 1) + row : 0;
-	*out = d ? (size_t)depthPitch * (d - 1) + slice : 0;
+	UINT bytesPerBlock, blockDim;
+	if (!FormatInfo(e.format, &bytesPerBlock, &blockDim)) return false;
+	UINT blocksWide = (width + blockDim - 1) / blockDim, blocksHigh = (height + blockDim - 1) / blockDim;
+	size_t rowBytes = (size_t)blocksWide * bytesPerBlock;
+	size_t sliceBytes = blocksHigh ? (size_t)rowPitch * (blocksHigh - 1) + rowBytes : 0;
+	*out = depth ? (size_t)depthPitch * (depth - 1) + sliceBytes : 0;
 	return true;
 }
 
 // Fast copy out of mapped (possibly write-combined) memory.
-__attribute__((target("sse4.1"))) void CopyFromMapped(void* dst, const void* src, size_t n) {
-	const uint8_t* s = (const uint8_t*)src;
-	uint8_t* d = (uint8_t*)dst;
-	if ((((uintptr_t)s) & 15) == 0) {
-		size_t blocks = n / 64;
+__attribute__((target("sse4.1"))) void CopyFromMapped(void* dst, const void* src, size_t bytes) {
+	const uint8_t* from = (const uint8_t*)src;
+	uint8_t* to = (uint8_t*)dst;
+	if ((((uintptr_t)from) & 15) == 0) {
+		size_t blocks = bytes / 64;
 		for (size_t i = 0; i < blocks; i++) {
-			__m128i a = _mm_stream_load_si128((__m128i*)(s + 0));
-			__m128i b = _mm_stream_load_si128((__m128i*)(s + 16));
-			__m128i c = _mm_stream_load_si128((__m128i*)(s + 32));
-			__m128i dd = _mm_stream_load_si128((__m128i*)(s + 48));
-			_mm_storeu_si128((__m128i*)(d + 0), a);
-			_mm_storeu_si128((__m128i*)(d + 16), b);
-			_mm_storeu_si128((__m128i*)(d + 32), c);
-			_mm_storeu_si128((__m128i*)(d + 48), dd);
-			s += 64;
-			d += 64;
+			__m128i q0 = _mm_stream_load_si128((__m128i*)(from + 0));
+			__m128i q1 = _mm_stream_load_si128((__m128i*)(from + 16));
+			__m128i q2 = _mm_stream_load_si128((__m128i*)(from + 32));
+			__m128i q3 = _mm_stream_load_si128((__m128i*)(from + 48));
+			_mm_storeu_si128((__m128i*)(to + 0), q0);
+			_mm_storeu_si128((__m128i*)(to + 16), q1);
+			_mm_storeu_si128((__m128i*)(to + 32), q2);
+			_mm_storeu_si128((__m128i*)(to + 48), q3);
+			from += 64;
+			to += 64;
 		}
-		n -= blocks * 64;
+		bytes -= blocks * 64;
 	}
-	memcpy(d, s, n);
+	memcpy(to, from, bytes);
 }
 
 // ---- open Maps (between Map and Unmap) --------------------------------------------------------
@@ -389,111 +376,123 @@ struct OpenMap {
 	UINT sub;
 	D3D11_MAP type;
 	UINT flags;
-	D3D11_MAPPED_SUBRESOURCE m;
+	D3D11_MAPPED_SUBRESOURCE mapped;
 };
-OpenMap s_open[64];
+OpenMap s_openMaps[64];
+
+// Payloads of OP_MAP and OP_UPDATE; the uploaded bytes follow.
+struct MapCommand {
+	void* res;
+	uint32_t sub, type, flags, rowPitch, depthPitch, bytes, isConstantBuffer, pad;
+};
+struct UpdateCommand {
+	void* res;
+	uint32_t sub, hasBox;
+	D3D11_BOX box;
+	uint32_t rowPitch, depthPitch, bytes, isConstantBuffer;
+};
 }  // namespace
 
 // ---------------------------------------------------------------------------------------------
 // Recorder entry points (called from the hooks before the original call, lock taken inside)
 // ---------------------------------------------------------------------------------------------
-struct RecSlots {  // payload of Set{CB,SRV,Samp} and similar: start, count, then pointers
-	uint32_t start, n;
+struct SlotRange {  // payload of Set{CB,SRV,Samp} and similar: start, count, then pointers
+	uint32_t start, count;
 };
 
-void RecSetSlots(int op, int stage, UINT start, UINT n, void* const* objs) {
-	Rec r;
-	if (!r.on) return;
-	if (n > 128) n = 128;
-	uint8_t* p = Begin((Op)op, (uint16_t)stage, sizeof(RecSlots) + n * 8);
-	if (!p) return;
-	RecSlots s = {start, n};
-	memcpy(p, &s, sizeof(s));
-	for (UINT i = 0; i < n; i++) {
-		void* o = objs ? objs[i] : nullptr;
-		memcpy(p + sizeof(s) + i * 8, &o, 8);
-		Ref((IUnknown*)o);
+void RecSetSlots(int op, int stage, UINT start, UINT count, void* const* objs) {
+	RecordLock lock;
+	if (!lock.recording) return;
+	if (count > 128) count = 128;
+	uint8_t* payload = AppendCommand((Op)op, (uint16_t)stage, sizeof(SlotRange) + count * 8);
+	if (!payload) return;
+	SlotRange range = {start, count};
+	memcpy(payload, &range, sizeof(range));
+	for (UINT i = 0; i < count; i++) {
+		void* obj = objs ? objs[i] : nullptr;
+		memcpy(payload + sizeof(range) + i * 8, &obj, 8);
+		HoldRef((IUnknown*)obj);
 	}
 }
-void RecSetCB(int stage, UINT start, UINT n, ID3D11Buffer* const* b) { RecSetSlots(OP_SET_CB, stage, start, n, (void* const*)b); }
-void RecSetSRV(int stage, UINT start, UINT n, ID3D11ShaderResourceView* const* v) {
-	RecSetSlots(OP_SET_SRV, stage, start, n, (void* const*)v);
+void RecSetCB(int stage, UINT start, UINT count, ID3D11Buffer* const* buffers) { RecSetSlots(OP_SET_CB, stage, start, count, (void* const*)buffers); }
+void RecSetSRV(int stage, UINT start, UINT count, ID3D11ShaderResourceView* const* views) {
+	RecSetSlots(OP_SET_SRV, stage, start, count, (void* const*)views);
 }
-void RecSetSamplers(int stage, UINT start, UINT n, ID3D11SamplerState* const* s) {
-	RecSetSlots(OP_SET_SAMP, stage, start, n, (void* const*)s);
+void RecSetSamplers(int stage, UINT start, UINT count, ID3D11SamplerState* const* samplers) {
+	RecSetSlots(OP_SET_SAMPLERS, stage, start, count, (void* const*)samplers);
 }
-void RecSetShader(int stage, void* sh, ID3D11ClassInstance* const* ci, UINT n) {
-	Rec r;
-	if (!r.on) return;
-	if (n > 16) n = 16;
-	uint8_t* p = Begin(OP_SET_SHADER, (uint16_t)stage, 16 + n * 8);
-	if (!p) return;
-	uint64_t hdr[2] = {(uint64_t)(uintptr_t)sh, n};
-	memcpy(p, hdr, 16);
-	Ref((IUnknown*)sh);
-	for (UINT i = 0; i < n; i++) {
-		void* o = ci ? ci[i] : nullptr;
-		memcpy(p + 16 + i * 8, &o, 8);
-		Ref((IUnknown*)o);
+void RecSetShader(int stage, void* shader, ID3D11ClassInstance* const* classInstances, UINT count) {
+	RecordLock lock;
+	if (!lock.recording) return;
+	if (count > 16) count = 16;
+	uint8_t* payload = AppendCommand(OP_SET_SHADER, (uint16_t)stage, 16 + count * 8);
+	if (!payload) return;
+	uint64_t header[2] = {(uint64_t)(uintptr_t)shader, count};
+	memcpy(payload, header, 16);
+	HoldRef((IUnknown*)shader);
+	for (UINT i = 0; i < count; i++) {
+		void* obj = classInstances ? classInstances[i] : nullptr;
+		memcpy(payload + 16 + i * 8, &obj, 8);
+		HoldRef((IUnknown*)obj);
 	}
 }
-void RecCSSetUAV(UINT start, UINT n, ID3D11UnorderedAccessView* const* v, const UINT* counts) {
-	Rec r;
-	if (!r.on) return;
-	if (n > 64) n = 64;
-	uint8_t* p = Begin(OP_CS_UAV, counts ? 1 : 0, sizeof(RecSlots) + n * 12);
-	if (!p) return;
-	RecSlots s = {start, n};
-	memcpy(p, &s, sizeof(s));
-	for (UINT i = 0; i < n; i++) {
-		void* o = v ? v[i] : nullptr;
-		memcpy(p + sizeof(s) + i * 8, &o, 8);
-		Ref((IUnknown*)o);
-		UINT c = counts ? counts[i] : (UINT)-1;
-		memcpy(p + sizeof(s) + n * 8 + i * 4, &c, 4);
+void RecCSSetUAV(UINT start, UINT count, ID3D11UnorderedAccessView* const* views, const UINT* initialCounts) {
+	RecordLock lock;
+	if (!lock.recording) return;
+	if (count > 64) count = 64;
+	uint8_t* payload = AppendCommand(OP_CS_UAV, initialCounts ? 1 : 0, sizeof(SlotRange) + count * 12);
+	if (!payload) return;
+	SlotRange range = {start, count};
+	memcpy(payload, &range, sizeof(range));
+	for (UINT i = 0; i < count; i++) {
+		void* obj = views ? views[i] : nullptr;
+		memcpy(payload + sizeof(range) + i * 8, &obj, 8);
+		HoldRef((IUnknown*)obj);
+		UINT initialCount = initialCounts ? initialCounts[i] : (UINT)-1;
+		memcpy(payload + sizeof(range) + count * 8 + i * 4, &initialCount, 4);
 	}
 }
-void RecDraw(int kind, UINT a, UINT b, INT c, UINT d, UINT e) {
-	Rec r;
-	if (!r.on) return;
-	uint8_t* p = Begin(OP_DRAW, (uint16_t)kind, 20);
-	if (!p) return;
-	uint32_t v[5] = {a, b, (uint32_t)c, d, e};
-	memcpy(p, v, 20);
+void RecDraw(const DrawArgs& args) {
+	RecordLock lock;
+	if (!lock.recording) return;
+	uint8_t* payload = AppendCommand(OP_DRAW, (uint16_t)args.kind, 20);
+	if (!payload) return;
+	uint32_t fields[5] = {args.arg0, args.arg1, (uint32_t)args.arg2, args.arg3, args.arg4};
+	memcpy(payload, fields, 20);
 }
 void RecDispatch(UINT x, UINT y, UINT z, int viewFixKind) {
-	Rec r;
-	if (!r.on) return;
-	uint8_t* p = Begin(OP_DISPATCH, (uint16_t)viewFixKind, 12);
-	if (!p) return;
-	uint32_t v[3] = {x, y, z};
-	memcpy(p, v, 12);
+	RecordLock lock;
+	if (!lock.recording) return;
+	uint8_t* payload = AppendCommand(OP_DISPATCH, (uint16_t)viewFixKind, 12);
+	if (!payload) return;
+	uint32_t groups[3] = {x, y, z};
+	memcpy(payload, groups, 12);
 }
-void RecOMSetRT(UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {
-	Rec r;
-	if (!r.on) return;
-	if (n > 8) n = 8;
-	uint8_t* p = Begin(OP_OM_RT, (uint16_t)n, 8 + n * 8);
-	if (!p) return;
-	memcpy(p, &dsv, 8);
-	Ref(dsv);
-	for (UINT i = 0; i < n; i++) {
-		void* o = rtvs ? rtvs[i] : nullptr;
-		memcpy(p + 8 + i * 8, &o, 8);
-		Ref((IUnknown*)o);
+void RecSetRenderTargets(UINT count, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {
+	RecordLock lock;
+	if (!lock.recording) return;
+	if (count > 8) count = 8;
+	uint8_t* payload = AppendCommand(OP_OM_RT, (uint16_t)count, 8 + count * 8);
+	if (!payload) return;
+	memcpy(payload, &dsv, 8);
+	HoldRef(dsv);
+	for (UINT i = 0; i < count; i++) {
+		void* obj = rtvs ? rtvs[i] : nullptr;
+		memcpy(payload + 8 + i * 8, &obj, 8);
+		HoldRef((IUnknown*)obj);
 	}
 }
-void RecViewports(UINT n, const D3D11_VIEWPORT* vp) {
-	Rec r;
-	if (!r.on) return;
-	if (n > 16) n = 16;
-	uint8_t* p = Begin(OP_RS_VP, (uint16_t)n, n * sizeof(D3D11_VIEWPORT));
-	if (p && vp) memcpy(p, vp, n * sizeof(D3D11_VIEWPORT));
+void RecSetViewports(UINT count, const D3D11_VIEWPORT* viewports) {
+	RecordLock lock;
+	if (!lock.recording) return;
+	if (count > 16) count = 16;
+	uint8_t* payload = AppendCommand(OP_RS_VP, (uint16_t)count, count * sizeof(D3D11_VIEWPORT));
+	if (payload && viewports) memcpy(payload, viewports, count * sizeof(D3D11_VIEWPORT));
 }
 void RecUnsupported(const char* what) {
-	Rec r;
-	if (!r.on) return;
-	Cancel(what);
+	RecordLock lock;
+	if (!lock.recording) return;
+	CancelRecording(what);
 }
 
 // ---- dynamic vertex/index/structured buffers ------------------------------------------------
@@ -503,64 +502,64 @@ void RecUnsupported(const char* what) {
 // GPU into a snapshot buffer when it ends: NO_OVERWRITE never changes data the GPU still uses, so
 // the final contents serve every draw of that generation. Playback binds the snapshot instead.
 namespace {
-struct Gen {
-	ID3D11Buffer* buf;
-	ID3D11Buffer* snap;
+struct Generation {
+	ID3D11Buffer* buffer;
+	ID3D11Buffer* snapshot;
 	bool open;
 };
-Gen s_gens[1024];
-int s_genCount;
-struct Pooled {
+Generation s_generations[1024];
+int s_generationCount;
+struct PooledBuffer {
 	UINT byteWidth, bind, misc, stride;
-	ID3D11Buffer* b;
-	bool used;
+	ID3D11Buffer* buffer;
+	bool inUse;
 };
-Pooled s_pool[1024];
+PooledBuffer s_pool[1024];
 int s_poolCount;
 size_t s_poolBytes;
-const size_t kPoolCap = 768u << 20;
+const size_t kPoolMaxBytes = 768u << 20;
 
-bool IsDynBuffer(ID3D11Resource* r, D3D11_BUFFER_DESC* d) {
+bool IsDynamicBuffer(ID3D11Resource* res, D3D11_BUFFER_DESC* desc) {
 	D3D11_RESOURCE_DIMENSION dim;
-	r->GetType(&dim);
+	res->GetType(&dim);
 	if (dim != D3D11_RESOURCE_DIMENSION_BUFFER) return false;
-	((ID3D11Buffer*)r)->GetDesc(d);
-	return d->Usage == D3D11_USAGE_DYNAMIC && !(d->BindFlags & D3D11_BIND_CONSTANT_BUFFER);
+	((ID3D11Buffer*)res)->GetDesc(desc);
+	return desc->Usage == D3D11_USAGE_DYNAMIC && !(desc->BindFlags & D3D11_BIND_CONSTANT_BUFFER);
 }
-ID3D11Buffer* PoolGet(const D3D11_BUFFER_DESC& d) {
+ID3D11Buffer* TakePooledBuffer(const D3D11_BUFFER_DESC& desc) {
 	for (int i = 0; i < s_poolCount; i++) {
-		Pooled& p = s_pool[i];
-		if (!p.used && p.byteWidth == d.ByteWidth && p.bind == d.BindFlags && p.misc == d.MiscFlags &&
-			p.stride == d.StructureByteStride) {
-			p.used = true;
-			return p.b;
+		PooledBuffer& pooled = s_pool[i];
+		if (!pooled.inUse && pooled.byteWidth == desc.ByteWidth && pooled.bind == desc.BindFlags && pooled.misc == desc.MiscFlags &&
+			pooled.stride == desc.StructureByteStride) {
+			pooled.inUse = true;
+			return pooled.buffer;
 		}
 	}
-	if (s_poolCount >= 1024 || s_poolBytes + d.ByteWidth > kPoolCap) return nullptr;
-	D3D11_BUFFER_DESC nd = d;
-	nd.Usage = D3D11_USAGE_DEFAULT;
-	nd.CPUAccessFlags = 0;
-	ID3D11Device* dev = nullptr;
-	g_recCtx->GetDevice(&dev);
-	ID3D11Buffer* b = nullptr;
-	HRESULT hr = dev ? dev->CreateBuffer(&nd, nullptr, &b) : E_FAIL;
-	if (dev) dev->Release();
-	if (FAILED(hr) || !b) return nullptr;
-	s_pool[s_poolCount++] = {d.ByteWidth, d.BindFlags, d.MiscFlags, d.StructureByteStride, b, true};
-	s_poolBytes += d.ByteWidth;
-	return b;
+	if (s_poolCount >= 1024 || s_poolBytes + desc.ByteWidth > kPoolMaxBytes) return nullptr;
+	D3D11_BUFFER_DESC defaultDesc = desc;
+	defaultDesc.Usage = D3D11_USAGE_DEFAULT;
+	defaultDesc.CPUAccessFlags = 0;
+	ID3D11Device* device = nullptr;
+	g_gameContext->GetDevice(&device);
+	ID3D11Buffer* buffer = nullptr;
+	HRESULT hr = device ? device->CreateBuffer(&defaultDesc, nullptr, &buffer) : E_FAIL;
+	if (device) device->Release();
+	if (FAILED(hr) || !buffer) return nullptr;
+	s_pool[s_poolCount++] = {desc.ByteWidth, desc.BindFlags, desc.MiscFlags, desc.StructureByteStride, buffer, true};
+	s_poolBytes += desc.ByteWidth;
+	return buffer;
 }
 // GPU copy of the generation's final contents (recorder off or suspended while issuing it).
-void CloseGen(Gen& g) {
-	if (!g.open) return;
-	g.open = false;
-	InterlockedIncrement(&g_recSuspend);
-	g_recCtx->CopyResource(g.snap, g.buf);
-	InterlockedDecrement(&g_recSuspend);
+void CloseGeneration(Generation& gen) {
+	if (!gen.open) return;
+	gen.open = false;
+	InterlockedIncrement(&g_modCallsInProgress);
+	g_gameContext->CopyResource(gen.snapshot, gen.buffer);
+	InterlockedDecrement(&g_modCallsInProgress);
 }
-Gen* OpenGenOf(ID3D11Resource* r) {
-	for (int i = s_genCount - 1; i >= 0; i--)
-		if (s_gens[i].buf == (ID3D11Buffer*)r) return s_gens[i].open ? &s_gens[i] : nullptr;
+Generation* OpenGenerationOf(ID3D11Resource* res) {
+	for (int i = s_generationCount - 1; i >= 0; i--)
+		if (s_generations[i].buffer == (ID3D11Buffer*)res) return s_generations[i].open ? &s_generations[i] : nullptr;
 	return nullptr;
 }
 }  // namespace
@@ -568,123 +567,112 @@ Gen* OpenGenOf(ID3D11Resource* r) {
 // Before the game's Map: a DISCARD ends the buffer's current generation.
 void RecBeforeMap(ID3D11Resource* res, D3D11_MAP type) {
 	if (type != D3D11_MAP_WRITE_DISCARD) return;
-	Rec r;
-	if (!r.on) return;
-	D3D11_BUFFER_DESC d;
-	if (!IsDynBuffer(res, &d)) return;
-	if (Gen* g = OpenGenOf(res)) CloseGen(*g);
+	RecordLock lock;
+	if (!lock.recording) return;
+	D3D11_BUFFER_DESC desc;
+	if (!IsDynamicBuffer(res, &desc)) return;
+	if (Generation* gen = OpenGenerationOf(res)) CloseGeneration(*gen);
 }
 
 // Map: remember where the game writes; Unmap copies what it wrote (before any patching).
-void RecMap(ID3D11Resource* res, UINT sub, D3D11_MAP type, UINT flags, const D3D11_MAPPED_SUBRESOURCE* m) {
-	if (type == D3D11_MAP_READ || !m || !m->pData) return;
-	Rec r;
-	if (!r.on) return;
-	D3D11_BUFFER_DESC d;
-	if (IsDynBuffer(res, &d)) {
-		if (OpenGenOf(res)) return;  // NO_OVERWRITE into the current generation
-		if (s_genCount >= 1024) {
-			Cancel("too many dynamic buffer refills");
+void RecMap(ID3D11Resource* res, UINT sub, D3D11_MAP type, UINT flags, const D3D11_MAPPED_SUBRESOURCE* mapped) {
+	if (type == D3D11_MAP_READ || !mapped || !mapped->pData) return;
+	RecordLock lock;
+	if (!lock.recording) return;
+	D3D11_BUFFER_DESC desc;
+	if (IsDynamicBuffer(res, &desc)) {
+		if (OpenGenerationOf(res)) return;  // NO_OVERWRITE into the current generation
+		if (s_generationCount >= 1024) {
+			CancelRecording("too many dynamic buffer refills");
 			return;
 		}
-		ID3D11Buffer* snap = PoolGet(d);
-		if (!snap) {
-			Cancel("out of snapshot buffers for dynamic buffers");
+		ID3D11Buffer* snapshot = TakePooledBuffer(desc);
+		if (!snapshot) {
+			CancelRecording("out of snapshot buffers for dynamic buffers");
 			return;
 		}
-		int idx = s_genCount++;
-		s_gens[idx] = {(ID3D11Buffer*)res, snap, true};
-		uint8_t* p = Begin(OP_GEN, 0, 16);
-		if (!p) return;
-		uint64_t v[2] = {(uint64_t)(uintptr_t)res, (uint64_t)idx};
-		memcpy(p, v, 16);
-		Ref(res);
+		int genIndex = s_generationCount++;
+		s_generations[genIndex] = {(ID3D11Buffer*)res, snapshot, true};
+		uint8_t* payload = AppendCommand(OP_NEW_GENERATION, 0, 16);
+		if (!payload) return;
+		uint64_t ids[2] = {(uint64_t)(uintptr_t)res, (uint64_t)genIndex};
+		memcpy(payload, ids, 16);
+		HoldRef(res);
 		return;
 	}
-	for (auto& o : s_open)
-		if (!o.res) {
-			o = {res, sub, type, flags, *m};
+	for (auto& open : s_openMaps)
+		if (!open.res) {
+			open = {res, sub, type, flags, *mapped};
 			return;
 		}
-	Cancel("too many buffers mapped at once");
+	CancelRecording("too many buffers mapped at once");
 }
 void RecUnmap(ID3D11Resource* res, UINT sub) {
-	Rec r;
-	if (!r.on) return;
-	OpenMap om = {};
-	for (auto& o : s_open)
-		if (o.res == res && o.sub == sub) {
-			om = o;
-			o.res = nullptr;
+	RecordLock lock;
+	if (!lock.recording) return;
+	OpenMap entry = {};
+	for (auto& open : s_openMaps)
+		if (open.res == res && open.sub == sub) {
+			entry = open;
+			open.res = nullptr;
 			break;
 		}
-	if (!om.res) return;  // a READ map, or mapped before the recording started
-	Extent e;
+	if (!entry.res) return;  // a READ map, or mapped before the recording started
+	Extent extent;
 	size_t bytes = 0;
-	if (!GetExtent(res, sub, &e) || !UploadBytes(e, e.w, e.h, e.d, om.m.RowPitch, om.m.DepthPitch, &bytes)) {
-		Cancel("a mapped texture has a format the recorder doesn't know");
+	if (!GetExtent(res, sub, &extent) || !UploadBytes(extent, extent.width, extent.height, extent.depth, entry.mapped.RowPitch, entry.mapped.DepthPitch, &bytes)) {
+		CancelRecording("a mapped texture has a format the recorder doesn't know");
 		return;
 	}
-	if (bytes > kMaxMapCopy) {
-		Cancel("a mapped resource is too large to record");
+	if (bytes > kMaxUploadBytes) {
+		CancelRecording("a mapped resource is too large to record");
 		return;
 	}
-	struct Hdr {
-		void* res;
-		uint32_t sub, type, flags, rowPitch, depthPitch, bytes, isCB, pad;
-	} h = {res, sub, (uint32_t)om.type, om.flags, om.m.RowPitch, om.m.DepthPitch, (uint32_t)bytes,
-		   (uint32_t)(e.buffer && (e.bind & D3D11_BIND_CONSTANT_BUFFER) ? 1 : 0), 0};
-	uint8_t* p = Begin(OP_MAP, 0, sizeof(h) + bytes);
-	if (!p) return;
-	memcpy(p, &h, sizeof(h));
-	double t0 = NowMs();
-	CopyFromMapped(p + sizeof(h), om.m.pData, bytes);
-	s_copyMs += NowMs() - t0;
-	Ref(res);
+	MapCommand cmd = {res, sub, (uint32_t)entry.type, entry.flags, entry.mapped.RowPitch, entry.mapped.DepthPitch, (uint32_t)bytes,
+					  (uint32_t)(extent.isBuffer && (extent.bind & D3D11_BIND_CONSTANT_BUFFER) ? 1 : 0), 0};
+	uint8_t* payload = AppendCommand(OP_MAP, 0, sizeof(cmd) + bytes);
+	if (!payload) return;
+	memcpy(payload, &cmd, sizeof(cmd));
+	double startMs = NowMs();
+	CopyFromMapped(payload + sizeof(cmd), entry.mapped.pData, bytes);
+	s_uploadCopyMs += NowMs() - startMs;
+	HoldRef(res);
 }
-void RecUpdate(ID3D11Resource* res, UINT sub, const D3D11_BOX* box, const void* data, UINT rp, UINT dp) {
-	Rec r;
-	if (!r.on || !res || !data) return;
-	Extent e;
-	if (!GetExtent(res, sub, &e)) {
-		Cancel("UpdateSubresource on an unknown resource type");
+void RecUpdate(ID3D11Resource* res, UINT sub, const D3D11_BOX* box, const void* data, UINT rowPitch, UINT depthPitch) {
+	RecordLock lock;
+	if (!lock.recording || !res || !data) return;
+	Extent extent;
+	if (!GetExtent(res, sub, &extent)) {
+		CancelRecording("UpdateSubresource on an unknown resource type");
 		return;
 	}
-	UINT w = box ? box->right - box->left : e.w, h = box ? box->bottom - box->top : e.h,
-		 d = box ? box->back - box->front : e.d;
+	UINT width = box ? box->right - box->left : extent.width, height = box ? box->bottom - box->top : extent.height,
+		 depth = box ? box->back - box->front : extent.depth;
 	if (box && (box->right <= box->left || box->bottom <= box->top || box->back <= box->front)) return;  // no-op
 	size_t bytes = 0;
-	if (!UploadBytes(e, w, h, d, rp, dp, &bytes)) {
-		Cancel("UpdateSubresource on a texture format the recorder doesn't know");
+	if (!UploadBytes(extent, width, height, depth, rowPitch, depthPitch, &bytes)) {
+		CancelRecording("UpdateSubresource on a texture format the recorder doesn't know");
 		return;
 	}
-	if (bytes > kMaxMapCopy) {
-		Cancel("an UpdateSubresource too large to record");
+	if (bytes > kMaxUploadBytes) {
+		CancelRecording("an UpdateSubresource too large to record");
 		return;
 	}
-	struct Hdr {
-		void* res;
-		uint32_t sub, hasBox;
-		D3D11_BOX box;
-		uint32_t rp, dp, bytes, isCB;
-	} hd = {res, sub, box ? 1u : 0u, box ? *box : D3D11_BOX{}, rp, dp, (uint32_t)bytes,
-			(uint32_t)(e.buffer && (e.bind & D3D11_BIND_CONSTANT_BUFFER) && !box ? 1 : 0)};
-	uint8_t* p = Begin(OP_UPDATE, 0, sizeof(hd) + bytes);
-	if (!p) return;
-	memcpy(p, &hd, sizeof(hd));
-	memcpy(p + sizeof(hd), data, bytes);
-	Ref(res);
+	UpdateCommand cmd = {res, sub, box ? 1u : 0u, box ? *box : D3D11_BOX{}, rowPitch, depthPitch, (uint32_t)bytes,
+						 (uint32_t)(extent.isBuffer && (extent.bind & D3D11_BIND_CONSTANT_BUFFER) && !box ? 1 : 0)};
+	uint8_t* payload = AppendCommand(OP_UPDATE, 0, sizeof(cmd) + bytes);
+	if (!payload) return;
+	memcpy(payload, &cmd, sizeof(cmd));
+	memcpy(payload + sizeof(cmd), data, bytes);
+	HoldRef(res);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Hooks for the context methods d3d_hooks.cpp doesn't hook already
 // ---------------------------------------------------------------------------------------------
 namespace {
-#define CTX_ARGS ID3D11DeviceContext* c
-inline bool On(ID3D11DeviceContext* c) { return RecOn(c); }
-
-typedef void(STDMETHODCALLTYPE* PFN_SetSlots)(CTX_ARGS, UINT, UINT, void* const*);
-typedef void(STDMETHODCALLTYPE* PFN_SetShaderX)(CTX_ARGS, void*, ID3D11ClassInstance* const*, UINT);
+typedef void(STDMETHODCALLTYPE* PFN_SetSlots)(ID3D11DeviceContext* c, UINT, UINT, void* const*);
+typedef void(STDMETHODCALLTYPE* PFN_SetShader)(ID3D11DeviceContext* c, void*, ID3D11ClassInstance* const*, UINT);
 // slot setters: op, stage, vtable index
 struct SlotHook {
 	int op, stage, index;
@@ -692,66 +680,66 @@ struct SlotHook {
 	PFN_SetSlots orig;
 };
 SlotHook s_slotHooks[] = {
-	{OP_SET_SAMP, S_PS, 10, "PSSetSamplers", nullptr},
-	{OP_SET_SRV, S_VS, 25, "VSSetShaderResources", nullptr},
-	{OP_SET_SAMP, S_VS, 26, "VSSetSamplers", nullptr},
-	{OP_SET_SRV, S_GS, 31, "GSSetShaderResources", nullptr},
-	{OP_SET_SAMP, S_GS, 32, "GSSetSamplers", nullptr},
-	{OP_SET_SRV, S_HS, 59, "HSSetShaderResources", nullptr},
-	{OP_SET_SAMP, S_HS, 61, "HSSetSamplers", nullptr},
-	{OP_SET_CB, S_HS, 62, "HSSetConstantBuffers", nullptr},
-	{OP_SET_SRV, S_DS, 63, "DSSetShaderResources", nullptr},
-	{OP_SET_SAMP, S_DS, 65, "DSSetSamplers", nullptr},
-	{OP_SET_CB, S_DS, 66, "DSSetConstantBuffers", nullptr},
-	{OP_SET_SAMP, S_CS, 70, "CSSetSamplers", nullptr},
+	{OP_SET_SAMPLERS, RS_PS, 10, "PSSetSamplers", nullptr},
+	{OP_SET_SRV, RS_VS, 25, "VSSetShaderResources", nullptr},
+	{OP_SET_SAMPLERS, RS_VS, 26, "VSSetSamplers", nullptr},
+	{OP_SET_SRV, RS_GS, 31, "GSSetShaderResources", nullptr},
+	{OP_SET_SAMPLERS, RS_GS, 32, "GSSetSamplers", nullptr},
+	{OP_SET_SRV, RS_HS, 59, "HSSetShaderResources", nullptr},
+	{OP_SET_SAMPLERS, RS_HS, 61, "HSSetSamplers", nullptr},
+	{OP_SET_CB, RS_HS, 62, "HSSetConstantBuffers", nullptr},
+	{OP_SET_SRV, RS_DS, 63, "DSSetShaderResources", nullptr},
+	{OP_SET_SAMPLERS, RS_DS, 65, "DSSetSamplers", nullptr},
+	{OP_SET_CB, RS_DS, 66, "DSSetConstantBuffers", nullptr},
+	{OP_SET_SAMPLERS, RS_CS, 70, "CSSetSamplers", nullptr},
 };
 static_assert(sizeof(s_slotHooks) / sizeof(s_slotHooks[0]) == 12, "H_Slots<0..11> below");
 template <int I>
-void STDMETHODCALLTYPE H_Slots(CTX_ARGS, UINT s, UINT n, void* const* v) {
-	if (On(c)) RecSetSlots(s_slotHooks[I].op, s_slotHooks[I].stage, s, n, v);
-	s_slotHooks[I].orig(c, s, n, v);
+void STDMETHODCALLTYPE H_Slots(ID3D11DeviceContext* c, UINT startSlot, UINT count, void* const* objs) {
+	if (ShouldRecord(c)) RecSetSlots(s_slotHooks[I].op, s_slotHooks[I].stage, startSlot, count, objs);
+	s_slotHooks[I].orig(c, startSlot, count, objs);
 }
 struct ShaderHook {
 	int stage, index;
 	const char* name;
-	PFN_SetShaderX orig;
+	PFN_SetShader orig;
 };
-ShaderHook s_shaderHooks[] = {{S_GS, 23, "GSSetShader", nullptr}, {S_HS, 60, "HSSetShader", nullptr}, {S_DS, 64, "DSSetShader", nullptr}};
+ShaderHook s_shaderHooks[] = {{RS_GS, 23, "GSSetShader", nullptr}, {RS_HS, 60, "HSSetShader", nullptr}, {RS_DS, 64, "DSSetShader", nullptr}};
 template <int I>
-void STDMETHODCALLTYPE H_Shader(CTX_ARGS, void* sh, ID3D11ClassInstance* const* ci, UINT n) {
-	if (On(c)) RecSetShader(s_shaderHooks[I].stage, sh, ci, n);
-	s_shaderHooks[I].orig(c, sh, ci, n);
+void STDMETHODCALLTYPE H_Shader(ID3D11DeviceContext* c, void* shader, ID3D11ClassInstance* const* classInstances, UINT count) {
+	if (ShouldRecord(c)) RecSetShader(s_shaderHooks[I].stage, shader, classInstances, count);
+	s_shaderHooks[I].orig(c, shader, classInstances, count);
 }
 
 // The rest, one by one.
-typedef void(STDMETHODCALLTYPE* PFN_IASetInputLayout)(CTX_ARGS, ID3D11InputLayout*);
-typedef void(STDMETHODCALLTYPE* PFN_IASetVertexBuffers)(CTX_ARGS, UINT, UINT, ID3D11Buffer* const*, const UINT*, const UINT*);
-typedef void(STDMETHODCALLTYPE* PFN_IASetIndexBuffer)(CTX_ARGS, ID3D11Buffer*, DXGI_FORMAT, UINT);
-typedef void(STDMETHODCALLTYPE* PFN_IASetPrimitiveTopology)(CTX_ARGS, D3D11_PRIMITIVE_TOPOLOGY);
-typedef void(STDMETHODCALLTYPE* PFN_SetPredication)(CTX_ARGS, ID3D11Predicate*, BOOL);
-typedef void(STDMETHODCALLTYPE* PFN_OMSetRTUAV)(CTX_ARGS, UINT, ID3D11RenderTargetView* const*, ID3D11DepthStencilView*,
+typedef void(STDMETHODCALLTYPE* PFN_IASetInputLayout)(ID3D11DeviceContext* c, ID3D11InputLayout*);
+typedef void(STDMETHODCALLTYPE* PFN_IASetVertexBuffers)(ID3D11DeviceContext* c, UINT, UINT, ID3D11Buffer* const*, const UINT*, const UINT*);
+typedef void(STDMETHODCALLTYPE* PFN_IASetIndexBuffer)(ID3D11DeviceContext* c, ID3D11Buffer*, DXGI_FORMAT, UINT);
+typedef void(STDMETHODCALLTYPE* PFN_IASetPrimitiveTopology)(ID3D11DeviceContext* c, D3D11_PRIMITIVE_TOPOLOGY);
+typedef void(STDMETHODCALLTYPE* PFN_SetPredication)(ID3D11DeviceContext* c, ID3D11Predicate*, BOOL);
+typedef void(STDMETHODCALLTYPE* PFN_OMSetRTUAV)(ID3D11DeviceContext* c, UINT, ID3D11RenderTargetView* const*, ID3D11DepthStencilView*,
 												UINT, UINT, ID3D11UnorderedAccessView* const*, const UINT*);
-typedef void(STDMETHODCALLTYPE* PFN_OMSetBlendState)(CTX_ARGS, ID3D11BlendState*, const FLOAT[4], UINT);
-typedef void(STDMETHODCALLTYPE* PFN_OMSetDepthStencilState)(CTX_ARGS, ID3D11DepthStencilState*, UINT);
-typedef void(STDMETHODCALLTYPE* PFN_SOSetTargets)(CTX_ARGS, UINT, ID3D11Buffer* const*, const UINT*);
-typedef void(STDMETHODCALLTYPE* PFN_DrawAuto)(CTX_ARGS);
-typedef void(STDMETHODCALLTYPE* PFN_DrawIndirect)(CTX_ARGS, ID3D11Buffer*, UINT);
-typedef void(STDMETHODCALLTYPE* PFN_RSSetState)(CTX_ARGS, ID3D11RasterizerState*);
-typedef void(STDMETHODCALLTYPE* PFN_RSSetScissorRects)(CTX_ARGS, UINT, const D3D11_RECT*);
-typedef void(STDMETHODCALLTYPE* PFN_CopySubresourceRegion)(CTX_ARGS, ID3D11Resource*, UINT, UINT, UINT, UINT,
+typedef void(STDMETHODCALLTYPE* PFN_OMSetBlendState)(ID3D11DeviceContext* c, ID3D11BlendState*, const FLOAT[4], UINT);
+typedef void(STDMETHODCALLTYPE* PFN_OMSetDepthStencilState)(ID3D11DeviceContext* c, ID3D11DepthStencilState*, UINT);
+typedef void(STDMETHODCALLTYPE* PFN_SOSetTargets)(ID3D11DeviceContext* c, UINT, ID3D11Buffer* const*, const UINT*);
+typedef void(STDMETHODCALLTYPE* PFN_DrawAuto)(ID3D11DeviceContext* c);
+typedef void(STDMETHODCALLTYPE* PFN_DrawIndirect)(ID3D11DeviceContext* c, ID3D11Buffer*, UINT);
+typedef void(STDMETHODCALLTYPE* PFN_RSSetState)(ID3D11DeviceContext* c, ID3D11RasterizerState*);
+typedef void(STDMETHODCALLTYPE* PFN_RSSetScissorRects)(ID3D11DeviceContext* c, UINT, const D3D11_RECT*);
+typedef void(STDMETHODCALLTYPE* PFN_CopySubresourceRegion)(ID3D11DeviceContext* c, ID3D11Resource*, UINT, UINT, UINT, UINT,
 														   ID3D11Resource*, UINT, const D3D11_BOX*);
-typedef void(STDMETHODCALLTYPE* PFN_CopyResource)(CTX_ARGS, ID3D11Resource*, ID3D11Resource*);
-typedef void(STDMETHODCALLTYPE* PFN_CopyStructureCount)(CTX_ARGS, ID3D11Buffer*, UINT, ID3D11UnorderedAccessView*);
-typedef void(STDMETHODCALLTYPE* PFN_ClearRTV)(CTX_ARGS, ID3D11RenderTargetView*, const FLOAT[4]);
-typedef void(STDMETHODCALLTYPE* PFN_ClearUAVUint)(CTX_ARGS, ID3D11UnorderedAccessView*, const UINT[4]);
-typedef void(STDMETHODCALLTYPE* PFN_ClearUAVFloat)(CTX_ARGS, ID3D11UnorderedAccessView*, const FLOAT[4]);
-typedef void(STDMETHODCALLTYPE* PFN_ClearDSV)(CTX_ARGS, ID3D11DepthStencilView*, UINT, FLOAT, UINT8);
-typedef void(STDMETHODCALLTYPE* PFN_GenerateMips)(CTX_ARGS, ID3D11ShaderResourceView*);
-typedef void(STDMETHODCALLTYPE* PFN_SetResourceMinLOD)(CTX_ARGS, ID3D11Resource*, FLOAT);
-typedef void(STDMETHODCALLTYPE* PFN_Resolve)(CTX_ARGS, ID3D11Resource*, UINT, ID3D11Resource*, UINT, DXGI_FORMAT);
-typedef void(STDMETHODCALLTYPE* PFN_ClearState)(CTX_ARGS);
-typedef void(STDMETHODCALLTYPE* PFN_DiscardResource)(CTX_ARGS, ID3D11Resource*);
-typedef void(STDMETHODCALLTYPE* PFN_DiscardView)(CTX_ARGS, ID3D11View*);
+typedef void(STDMETHODCALLTYPE* PFN_CopyResource)(ID3D11DeviceContext* c, ID3D11Resource*, ID3D11Resource*);
+typedef void(STDMETHODCALLTYPE* PFN_CopyStructureCount)(ID3D11DeviceContext* c, ID3D11Buffer*, UINT, ID3D11UnorderedAccessView*);
+typedef void(STDMETHODCALLTYPE* PFN_ClearRTV)(ID3D11DeviceContext* c, ID3D11RenderTargetView*, const FLOAT[4]);
+typedef void(STDMETHODCALLTYPE* PFN_ClearUAVUint)(ID3D11DeviceContext* c, ID3D11UnorderedAccessView*, const UINT[4]);
+typedef void(STDMETHODCALLTYPE* PFN_ClearUAVFloat)(ID3D11DeviceContext* c, ID3D11UnorderedAccessView*, const FLOAT[4]);
+typedef void(STDMETHODCALLTYPE* PFN_ClearDSV)(ID3D11DeviceContext* c, ID3D11DepthStencilView*, UINT, FLOAT, UINT8);
+typedef void(STDMETHODCALLTYPE* PFN_GenerateMips)(ID3D11DeviceContext* c, ID3D11ShaderResourceView*);
+typedef void(STDMETHODCALLTYPE* PFN_SetResourceMinLOD)(ID3D11DeviceContext* c, ID3D11Resource*, FLOAT);
+typedef void(STDMETHODCALLTYPE* PFN_Resolve)(ID3D11DeviceContext* c, ID3D11Resource*, UINT, ID3D11Resource*, UINT, DXGI_FORMAT);
+typedef void(STDMETHODCALLTYPE* PFN_ClearState)(ID3D11DeviceContext* c);
+typedef void(STDMETHODCALLTYPE* PFN_DiscardResource)(ID3D11DeviceContext* c, ID3D11Resource*);
+typedef void(STDMETHODCALLTYPE* PFN_DiscardView)(ID3D11DeviceContext* c, ID3D11View*);
 typedef void(STDMETHODCALLTYPE* PFN_Any)();
 
 PFN_IASetInputLayout o_IASetInputLayout;
@@ -782,347 +770,347 @@ PFN_DiscardResource o_DiscardResource;
 PFN_DiscardView o_DiscardView;
 PFN_Any o_Ctx1[8];
 
-void STDMETHODCALLTYPE H_IASetInputLayout(CTX_ARGS, ID3D11InputLayout* l) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_IA_LAYOUT, 0, 8) : nullptr;
-		if (p) {
-			memcpy(p, &l, 8);
-			Ref(l);
+void STDMETHODCALLTYPE H_IASetInputLayout(ID3D11DeviceContext* c, ID3D11InputLayout* layout) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_IA_LAYOUT, 0, 8) : nullptr;
+		if (payload) {
+			memcpy(payload, &layout, 8);
+			HoldRef(layout);
 		}
 	}
-	o_IASetInputLayout(c, l);
+	o_IASetInputLayout(c, layout);
 }
-void STDMETHODCALLTYPE H_IASetVertexBuffers(CTX_ARGS, UINT s, UINT n, ID3D11Buffer* const* b, const UINT* st, const UINT* of) {
-	if (On(c)) {
-		Rec r;
-		UINT k = n > 32 ? 32 : n;
-		uint8_t* p = r.on ? Begin(OP_IA_VB, 0, 8 + k * 16) : nullptr;
-		if (p) {
-			uint32_t h[2] = {s, k};
-			memcpy(p, h, 8);
-			for (UINT i = 0; i < k; i++) {
-				void* o = b ? b[i] : nullptr;
-				UINT sv = st ? st[i] : 0, ov = of ? of[i] : 0;
-				memcpy(p + 8 + i * 8, &o, 8);
-				memcpy(p + 8 + k * 8 + i * 4, &sv, 4);
-				memcpy(p + 8 + k * 12 + i * 4, &ov, 4);
-				Ref((IUnknown*)o);
+void STDMETHODCALLTYPE H_IASetVertexBuffers(ID3D11DeviceContext* c, UINT startSlot, UINT count, ID3D11Buffer* const* buffers, const UINT* strides, const UINT* offsets) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		UINT kept = count > 32 ? 32 : count;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_IA_VB, 0, 8 + kept * 16) : nullptr;
+		if (payload) {
+			uint32_t head[2] = {startSlot, kept};
+			memcpy(payload, head, 8);
+			for (UINT i = 0; i < kept; i++) {
+				void* obj = buffers ? buffers[i] : nullptr;
+				UINT stride = strides ? strides[i] : 0, offset = offsets ? offsets[i] : 0;
+				memcpy(payload + 8 + i * 8, &obj, 8);
+				memcpy(payload + 8 + kept * 8 + i * 4, &stride, 4);
+				memcpy(payload + 8 + kept * 12 + i * 4, &offset, 4);
+				HoldRef((IUnknown*)obj);
 			}
 		}
 	}
-	o_IASetVertexBuffers(c, s, n, b, st, of);
+	o_IASetVertexBuffers(c, startSlot, count, buffers, strides, offsets);
 }
-void STDMETHODCALLTYPE H_IASetIndexBuffer(CTX_ARGS, ID3D11Buffer* b, DXGI_FORMAT f, UINT o) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_IA_IB, 0, 16) : nullptr;
-		if (p) {
-			uint32_t v[2] = {(uint32_t)f, o};
-			memcpy(p, &b, 8);
-			memcpy(p + 8, v, 8);
-			Ref(b);
+void STDMETHODCALLTYPE H_IASetIndexBuffer(ID3D11DeviceContext* c, ID3D11Buffer* buffer, DXGI_FORMAT format, UINT offset) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_IA_IB, 0, 16) : nullptr;
+		if (payload) {
+			uint32_t fields[2] = {(uint32_t)format, offset};
+			memcpy(payload, &buffer, 8);
+			memcpy(payload + 8, fields, 8);
+			HoldRef(buffer);
 		}
 	}
-	o_IASetIndexBuffer(c, b, f, o);
+	o_IASetIndexBuffer(c, buffer, format, offset);
 }
-void STDMETHODCALLTYPE H_IASetPrimitiveTopology(CTX_ARGS, D3D11_PRIMITIVE_TOPOLOGY t) {
-	if (On(c)) {
-		Rec r;
-		if (r.on) Begin(OP_IA_TOPO, (uint16_t)t, 0);
+void STDMETHODCALLTYPE H_IASetPrimitiveTopology(ID3D11DeviceContext* c, D3D11_PRIMITIVE_TOPOLOGY topology) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		if (lock.recording) AppendCommand(OP_IA_TOPOLOGY, (uint16_t)topology, 0);
 	}
-	o_IASetPrimitiveTopology(c, t);
+	o_IASetPrimitiveTopology(c, topology);
 }
-void STDMETHODCALLTYPE H_SetPredication(CTX_ARGS, ID3D11Predicate* pr, BOOL v) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_PREDICATION, (uint16_t)(v ? 1 : 0), 8) : nullptr;
-		if (p) {
-			memcpy(p, &pr, 8);
-			Ref(pr);
+void STDMETHODCALLTYPE H_SetPredication(ID3D11DeviceContext* c, ID3D11Predicate* predicate, BOOL value) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_PREDICATION, (uint16_t)(value ? 1 : 0), 8) : nullptr;
+		if (payload) {
+			memcpy(payload, &predicate, 8);
+			HoldRef(predicate);
 		}
 	}
-	o_SetPredication(c, pr, v);
+	o_SetPredication(c, predicate, value);
 }
-void STDMETHODCALLTYPE H_OMSetRTUAV(CTX_ARGS, UINT nrt, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv,
-									UINT us, UINT nu, ID3D11UnorderedAccessView* const* uavs, const UINT* counts) {
-	if (On(c)) {
-		Rec r;
-		UINT kr = nrt == D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL ? 0 : (nrt > 8 ? 8 : nrt);
-		UINT ku = nu == D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? 0 : (nu > 8 ? 8 : nu);
-		uint8_t* p = r.on ? Begin(OP_OM_RT_UAV, 0, 24 + kr * 8 + ku * 12) : nullptr;
-		if (p) {
-			uint32_t h[4] = {nrt, us, nu, counts ? 1u : 0u};
-			memcpy(p, h, 16);
-			memcpy(p + 16, &dsv, 8);
-			if (nrt != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) Ref(dsv);
-			for (UINT i = 0; i < kr; i++) {
-				void* o = rtvs ? rtvs[i] : nullptr;
-				memcpy(p + 24 + i * 8, &o, 8);
-				Ref((IUnknown*)o);
+void STDMETHODCALLTYPE H_OMSetRTUAV(ID3D11DeviceContext* c, UINT rtvCount, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv,
+									UINT uavStart, UINT uavCount, ID3D11UnorderedAccessView* const* uavs, const UINT* initialCounts) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		UINT rtvsKept = rtvCount == D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL ? 0 : (rtvCount > 8 ? 8 : rtvCount);
+		UINT uavsKept = uavCount == D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? 0 : (uavCount > 8 ? 8 : uavCount);
+		uint8_t* payload = lock.recording ? AppendCommand(OP_OM_RT_UAV, 0, 24 + rtvsKept * 8 + uavsKept * 12) : nullptr;
+		if (payload) {
+			uint32_t head[4] = {rtvCount, uavStart, uavCount, initialCounts ? 1u : 0u};
+			memcpy(payload, head, 16);
+			memcpy(payload + 16, &dsv, 8);
+			if (rtvCount != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) HoldRef(dsv);
+			for (UINT i = 0; i < rtvsKept; i++) {
+				void* obj = rtvs ? rtvs[i] : nullptr;
+				memcpy(payload + 24 + i * 8, &obj, 8);
+				HoldRef((IUnknown*)obj);
 			}
-			for (UINT i = 0; i < ku; i++) {
-				void* o = uavs ? uavs[i] : nullptr;
-				UINT cnt = counts ? counts[i] : (UINT)-1;
-				memcpy(p + 24 + kr * 8 + i * 8, &o, 8);
-				memcpy(p + 24 + kr * 8 + ku * 8 + i * 4, &cnt, 4);
-				Ref((IUnknown*)o);
+			for (UINT i = 0; i < uavsKept; i++) {
+				void* obj = uavs ? uavs[i] : nullptr;
+				UINT initialCount = initialCounts ? initialCounts[i] : (UINT)-1;
+				memcpy(payload + 24 + rtvsKept * 8 + i * 8, &obj, 8);
+				memcpy(payload + 24 + rtvsKept * 8 + uavsKept * 8 + i * 4, &initialCount, 4);
+				HoldRef((IUnknown*)obj);
 			}
 		}
 	}
-	if (c == g_recCtx && !g_replaying && nrt != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
-		GpuTimingTargets(c, nrt, rtvs, dsv, "");
-	o_OMSetRTUAV(c, nrt, rtvs, dsv, us, nu, uavs, counts);
+	if (c == g_gameContext && !g_replaying && rtvCount != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
+		GpuTimingTargets(c, rtvCount, rtvs, dsv, "");
+	o_OMSetRTUAV(c, rtvCount, rtvs, dsv, uavStart, uavCount, uavs, initialCounts);
 }
-void STDMETHODCALLTYPE H_OMSetBlendState(CTX_ARGS, ID3D11BlendState* bs, const FLOAT f[4], UINT mask) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_OM_BLEND, (uint16_t)(f ? 1 : 0), 8 + 16 + 4) : nullptr;
-		if (p) {
-			memcpy(p, &bs, 8);
-			if (f) memcpy(p + 8, f, 16);
-			memcpy(p + 24, &mask, 4);
-			Ref(bs);
+void STDMETHODCALLTYPE H_OMSetBlendState(ID3D11DeviceContext* c, ID3D11BlendState* blendState, const FLOAT blendFactor[4], UINT sampleMask) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_OM_BLEND, (uint16_t)(blendFactor ? 1 : 0), 8 + 16 + 4) : nullptr;
+		if (payload) {
+			memcpy(payload, &blendState, 8);
+			if (blendFactor) memcpy(payload + 8, blendFactor, 16);
+			memcpy(payload + 24, &sampleMask, 4);
+			HoldRef(blendState);
 		}
 	}
-	o_OMSetBlendState(c, bs, f, mask);
+	o_OMSetBlendState(c, blendState, blendFactor, sampleMask);
 }
-void STDMETHODCALLTYPE H_OMSetDepthStencilState(CTX_ARGS, ID3D11DepthStencilState* ds, UINT ref) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_OM_DS, 0, 12) : nullptr;
-		if (p) {
-			memcpy(p, &ds, 8);
-			memcpy(p + 8, &ref, 4);
-			Ref(ds);
+void STDMETHODCALLTYPE H_OMSetDepthStencilState(ID3D11DeviceContext* c, ID3D11DepthStencilState* depthState, UINT stencilRef) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_OM_DS, 0, 12) : nullptr;
+		if (payload) {
+			memcpy(payload, &depthState, 8);
+			memcpy(payload + 8, &stencilRef, 4);
+			HoldRef(depthState);
 		}
 	}
-	o_OMSetDepthStencilState(c, ds, ref);
+	o_OMSetDepthStencilState(c, depthState, stencilRef);
 }
-void STDMETHODCALLTYPE H_SOSetTargets(CTX_ARGS, UINT n, ID3D11Buffer* const* b, const UINT* off) {
-	if (On(c)) {
-		Rec r;
-		UINT k = n > 4 ? 4 : n;
-		uint8_t* p = r.on ? Begin(OP_SO, (uint16_t)k, k * 12) : nullptr;
-		if (p)
-			for (UINT i = 0; i < k; i++) {
-				void* o = b ? b[i] : nullptr;
-				UINT ov = off ? off[i] : 0;
-				memcpy(p + i * 8, &o, 8);
-				memcpy(p + k * 8 + i * 4, &ov, 4);
-				Ref((IUnknown*)o);
+void STDMETHODCALLTYPE H_SOSetTargets(ID3D11DeviceContext* c, UINT count, ID3D11Buffer* const* buffers, const UINT* offsets) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		UINT kept = count > 4 ? 4 : count;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_SO_TARGETS, (uint16_t)kept, kept * 12) : nullptr;
+		if (payload)
+			for (UINT i = 0; i < kept; i++) {
+				void* obj = buffers ? buffers[i] : nullptr;
+				UINT offset = offsets ? offsets[i] : 0;
+				memcpy(payload + i * 8, &obj, 8);
+				memcpy(payload + kept * 8 + i * 4, &offset, 4);
+				HoldRef((IUnknown*)obj);
 			}
 	}
-	o_SOSetTargets(c, n, b, off);
+	o_SOSetTargets(c, count, buffers, offsets);
 }
-void STDMETHODCALLTYPE H_DrawAuto(CTX_ARGS) {
-	if (On(c)) {
-		Rec r;
-		if (r.on) Begin(OP_DRAW_AUTO, 0, 0);
+void STDMETHODCALLTYPE H_DrawAuto(ID3D11DeviceContext* c) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		if (lock.recording) AppendCommand(OP_DRAW_AUTO, 0, 0);
 	}
 	o_DrawAuto(c);
 }
-void RecIndirect(Op op, uint16_t kind, ID3D11Buffer* b, UINT off) {
-	Rec r;
-	uint8_t* p = r.on ? Begin(op, kind, 12) : nullptr;
-	if (p) {
-		memcpy(p, &b, 8);
-		memcpy(p + 8, &off, 4);
-		Ref(b);
+void RecIndirect(Op op, uint16_t indexed, ID3D11Buffer* args, UINT alignedOffset) {
+	RecordLock lock;
+	uint8_t* payload = lock.recording ? AppendCommand(op, indexed, 12) : nullptr;
+	if (payload) {
+		memcpy(payload, &args, 8);
+		memcpy(payload + 8, &alignedOffset, 4);
+		HoldRef(args);
 	}
 }
-void STDMETHODCALLTYPE H_DrawIndexedInstancedIndirect(CTX_ARGS, ID3D11Buffer* b, UINT off) {
-	if (On(c)) RecIndirect(OP_DRAW_INDIRECT, 1, b, off);
-	o_DrawIndexedInstancedIndirect(c, b, off);
+void STDMETHODCALLTYPE H_DrawIndexedInstancedIndirect(ID3D11DeviceContext* c, ID3D11Buffer* args, UINT alignedOffset) {
+	if (ShouldRecord(c)) RecIndirect(OP_DRAW_INDIRECT, 1, args, alignedOffset);
+	o_DrawIndexedInstancedIndirect(c, args, alignedOffset);
 }
-void STDMETHODCALLTYPE H_DrawInstancedIndirect(CTX_ARGS, ID3D11Buffer* b, UINT off) {
-	if (On(c)) RecIndirect(OP_DRAW_INDIRECT, 0, b, off);
-	o_DrawInstancedIndirect(c, b, off);
+void STDMETHODCALLTYPE H_DrawInstancedIndirect(ID3D11DeviceContext* c, ID3D11Buffer* args, UINT alignedOffset) {
+	if (ShouldRecord(c)) RecIndirect(OP_DRAW_INDIRECT, 0, args, alignedOffset);
+	o_DrawInstancedIndirect(c, args, alignedOffset);
 }
-void STDMETHODCALLTYPE H_DispatchIndirect(CTX_ARGS, ID3D11Buffer* b, UINT off) {
-	if (On(c)) RecIndirect(OP_DISPATCH_INDIRECT, 0, b, off);
-	o_DispatchIndirect(c, b, off);
+void STDMETHODCALLTYPE H_DispatchIndirect(ID3D11DeviceContext* c, ID3D11Buffer* args, UINT alignedOffset) {
+	if (ShouldRecord(c)) RecIndirect(OP_DISPATCH_INDIRECT, 0, args, alignedOffset);
+	o_DispatchIndirect(c, args, alignedOffset);
 }
-void STDMETHODCALLTYPE H_RSSetState(CTX_ARGS, ID3D11RasterizerState* s) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_RS_STATE, 0, 8) : nullptr;
-		if (p) {
-			memcpy(p, &s, 8);
-			Ref(s);
+void STDMETHODCALLTYPE H_RSSetState(ID3D11DeviceContext* c, ID3D11RasterizerState* state) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_RS_STATE, 0, 8) : nullptr;
+		if (payload) {
+			memcpy(payload, &state, 8);
+			HoldRef(state);
 		}
 	}
-	o_RSSetState(c, s);
+	o_RSSetState(c, state);
 }
-void STDMETHODCALLTYPE H_RSSetScissorRects(CTX_ARGS, UINT n, const D3D11_RECT* rc) {
-	if (On(c)) {
-		Rec r;
-		UINT k = n > 16 ? 16 : n;
-		uint8_t* p = r.on ? Begin(OP_RS_SCISSOR, (uint16_t)k, k * sizeof(D3D11_RECT)) : nullptr;
-		if (p && rc) memcpy(p, rc, k * sizeof(D3D11_RECT));
+void STDMETHODCALLTYPE H_RSSetScissorRects(ID3D11DeviceContext* c, UINT count, const D3D11_RECT* rects) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		UINT kept = count > 16 ? 16 : count;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_RS_SCISSOR, (uint16_t)kept, kept * sizeof(D3D11_RECT)) : nullptr;
+		if (payload && rects) memcpy(payload, rects, kept * sizeof(D3D11_RECT));
 	}
-	o_RSSetScissorRects(c, n, rc);
+	o_RSSetScissorRects(c, count, rects);
 }
-void STDMETHODCALLTYPE H_CopySubresourceRegion(CTX_ARGS, ID3D11Resource* dst, UINT ds, UINT x, UINT y, UINT z,
-											   ID3D11Resource* src, UINT ss, const D3D11_BOX* box) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_COPY_REGION, (uint16_t)(box ? 1 : 0), 16 + 20 + sizeof(D3D11_BOX)) : nullptr;
-		if (p) {
-			memcpy(p, &dst, 8);
-			memcpy(p + 8, &src, 8);
-			uint32_t v[5] = {ds, x, y, z, ss};
-			memcpy(p + 16, v, 20);
-			if (box) memcpy(p + 36, box, sizeof(*box));
-			Ref(dst);
-			Ref(src);
+void STDMETHODCALLTYPE H_CopySubresourceRegion(ID3D11DeviceContext* c, ID3D11Resource* dst, UINT dstSub, UINT x, UINT y, UINT z,
+											   ID3D11Resource* src, UINT srcSub, const D3D11_BOX* box) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_COPY_REGION, (uint16_t)(box ? 1 : 0), 16 + 20 + sizeof(D3D11_BOX)) : nullptr;
+		if (payload) {
+			memcpy(payload, &dst, 8);
+			memcpy(payload + 8, &src, 8);
+			uint32_t fields[5] = {dstSub, x, y, z, srcSub};
+			memcpy(payload + 16, fields, 20);
+			if (box) memcpy(payload + 36, box, sizeof(*box));
+			HoldRef(dst);
+			HoldRef(src);
 		}
 	}
-	o_CopySubresourceRegion(c, dst, ds, x, y, z, src, ss, box);
+	o_CopySubresourceRegion(c, dst, dstSub, x, y, z, src, srcSub, box);
 }
-void STDMETHODCALLTYPE H_CopyResource(CTX_ARGS, ID3D11Resource* dst, ID3D11Resource* src) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_COPY, 0, 16) : nullptr;
-		if (p) {
-			memcpy(p, &dst, 8);
-			memcpy(p + 8, &src, 8);
-			Ref(dst);
-			Ref(src);
+void STDMETHODCALLTYPE H_CopyResource(ID3D11DeviceContext* c, ID3D11Resource* dst, ID3D11Resource* src) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_COPY, 0, 16) : nullptr;
+		if (payload) {
+			memcpy(payload, &dst, 8);
+			memcpy(payload + 8, &src, 8);
+			HoldRef(dst);
+			HoldRef(src);
 		}
 	}
 	o_CopyResource(c, dst, src);
 }
-void STDMETHODCALLTYPE H_CopyStructureCount(CTX_ARGS, ID3D11Buffer* b, UINT off, ID3D11UnorderedAccessView* v) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_COPY_COUNT, 0, 20) : nullptr;
-		if (p) {
-			memcpy(p, &b, 8);
-			memcpy(p + 8, &v, 8);
-			memcpy(p + 16, &off, 4);
-			Ref(b);
-			Ref(v);
+void STDMETHODCALLTYPE H_CopyStructureCount(ID3D11DeviceContext* c, ID3D11Buffer* dst, UINT dstOffset, ID3D11UnorderedAccessView* uav) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_COPY_COUNT, 0, 20) : nullptr;
+		if (payload) {
+			memcpy(payload, &dst, 8);
+			memcpy(payload + 8, &uav, 8);
+			memcpy(payload + 16, &dstOffset, 4);
+			HoldRef(dst);
+			HoldRef(uav);
 		}
 	}
-	o_CopyStructureCount(c, b, off, v);
+	o_CopyStructureCount(c, dst, dstOffset, uav);
 }
-void RecClear(Op op, IUnknown* view, const void* v16) {
-	Rec r;
-	uint8_t* p = r.on ? Begin(op, 0, 24) : nullptr;
-	if (p) {
-		memcpy(p, &view, 8);
-		memcpy(p + 8, v16, 16);
-		Ref(view);
+void RecClear(Op op, IUnknown* view, const void* values16) {
+	RecordLock lock;
+	uint8_t* payload = lock.recording ? AppendCommand(op, 0, 24) : nullptr;
+	if (payload) {
+		memcpy(payload, &view, 8);
+		memcpy(payload + 8, values16, 16);
+		HoldRef(view);
 	}
 }
-void STDMETHODCALLTYPE H_ClearRTV(CTX_ARGS, ID3D11RenderTargetView* v, const FLOAT col[4]) {
-	if (On(c)) RecClear(OP_CLEAR_RTV, v, col);
-	o_ClearRTV(c, v, col);
+void STDMETHODCALLTYPE H_ClearRTV(ID3D11DeviceContext* c, ID3D11RenderTargetView* rtv, const FLOAT color[4]) {
+	if (ShouldRecord(c)) RecClear(OP_CLEAR_RTV, rtv, color);
+	o_ClearRTV(c, rtv, color);
 }
-void STDMETHODCALLTYPE H_ClearUAVUint(CTX_ARGS, ID3D11UnorderedAccessView* v, const UINT val[4]) {
-	if (On(c)) RecClear(OP_CLEAR_UAV_U, v, val);
-	o_ClearUAVUint(c, v, val);
+void STDMETHODCALLTYPE H_ClearUAVUint(ID3D11DeviceContext* c, ID3D11UnorderedAccessView* uav, const UINT values[4]) {
+	if (ShouldRecord(c)) RecClear(OP_CLEAR_UAV_UINT, uav, values);
+	o_ClearUAVUint(c, uav, values);
 }
-void STDMETHODCALLTYPE H_ClearUAVFloat(CTX_ARGS, ID3D11UnorderedAccessView* v, const FLOAT val[4]) {
-	if (On(c)) RecClear(OP_CLEAR_UAV_F, v, val);
-	o_ClearUAVFloat(c, v, val);
+void STDMETHODCALLTYPE H_ClearUAVFloat(ID3D11DeviceContext* c, ID3D11UnorderedAccessView* uav, const FLOAT values[4]) {
+	if (ShouldRecord(c)) RecClear(OP_CLEAR_UAV_FLOAT, uav, values);
+	o_ClearUAVFloat(c, uav, values);
 }
-void STDMETHODCALLTYPE H_ClearDSV(CTX_ARGS, ID3D11DepthStencilView* v, UINT flags, FLOAT d, UINT8 s) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_CLEAR_DSV, 0, 20) : nullptr;
-		if (p) {
-			memcpy(p, &v, 8);
-			uint32_t sv = s;
-			memcpy(p + 8, &flags, 4);
-			memcpy(p + 12, &d, 4);
-			memcpy(p + 16, &sv, 4);
-			Ref(v);
+void STDMETHODCALLTYPE H_ClearDSV(ID3D11DeviceContext* c, ID3D11DepthStencilView* dsv, UINT flags, FLOAT depth, UINT8 stencil) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_CLEAR_DSV, 0, 20) : nullptr;
+		if (payload) {
+			memcpy(payload, &dsv, 8);
+			uint32_t stencil32 = stencil;
+			memcpy(payload + 8, &flags, 4);
+			memcpy(payload + 12, &depth, 4);
+			memcpy(payload + 16, &stencil32, 4);
+			HoldRef(dsv);
 		}
 	}
-	o_ClearDSV(c, v, flags, d, s);
+	o_ClearDSV(c, dsv, flags, depth, stencil);
 }
-void STDMETHODCALLTYPE H_GenerateMips(CTX_ARGS, ID3D11ShaderResourceView* v) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_GENMIPS, 0, 8) : nullptr;
-		if (p) {
-			memcpy(p, &v, 8);
-			Ref(v);
+void STDMETHODCALLTYPE H_GenerateMips(ID3D11DeviceContext* c, ID3D11ShaderResourceView* srv) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_GENERATE_MIPS, 0, 8) : nullptr;
+		if (payload) {
+			memcpy(payload, &srv, 8);
+			HoldRef(srv);
 		}
 	}
-	o_GenerateMips(c, v);
+	o_GenerateMips(c, srv);
 }
-void STDMETHODCALLTYPE H_SetResourceMinLOD(CTX_ARGS, ID3D11Resource* res, FLOAT lod) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_MINLOD, 0, 12) : nullptr;
-		if (p) {
-			memcpy(p, &res, 8);
-			memcpy(p + 8, &lod, 4);
-			Ref(res);
+void STDMETHODCALLTYPE H_SetResourceMinLOD(ID3D11DeviceContext* c, ID3D11Resource* res, FLOAT minLod) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_MIN_LOD, 0, 12) : nullptr;
+		if (payload) {
+			memcpy(payload, &res, 8);
+			memcpy(payload + 8, &minLod, 4);
+			HoldRef(res);
 		}
 	}
-	o_SetResourceMinLOD(c, res, lod);
+	o_SetResourceMinLOD(c, res, minLod);
 }
-void STDMETHODCALLTYPE H_Resolve(CTX_ARGS, ID3D11Resource* dst, UINT ds, ID3D11Resource* src, UINT ss, DXGI_FORMAT f) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_RESOLVE, 0, 28) : nullptr;
-		if (p) {
-			memcpy(p, &dst, 8);
-			memcpy(p + 8, &src, 8);
-			uint32_t v[3] = {ds, ss, (uint32_t)f};
-			memcpy(p + 16, v, 12);
-			Ref(dst);
-			Ref(src);
+void STDMETHODCALLTYPE H_Resolve(ID3D11DeviceContext* c, ID3D11Resource* dst, UINT dstSub, ID3D11Resource* src, UINT srcSub, DXGI_FORMAT format) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_RESOLVE, 0, 28) : nullptr;
+		if (payload) {
+			memcpy(payload, &dst, 8);
+			memcpy(payload + 8, &src, 8);
+			uint32_t fields[3] = {dstSub, srcSub, (uint32_t)format};
+			memcpy(payload + 16, fields, 12);
+			HoldRef(dst);
+			HoldRef(src);
 		}
 	}
-	o_Resolve(c, dst, ds, src, ss, f);
+	o_Resolve(c, dst, dstSub, src, srcSub, format);
 }
-void STDMETHODCALLTYPE H_ClearState(CTX_ARGS) {
-	if (On(c)) {
-		Rec r;
-		if (r.on) Begin(OP_CLEAR_STATE, 0, 0);
+void STDMETHODCALLTYPE H_ClearState(ID3D11DeviceContext* c) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		if (lock.recording) AppendCommand(OP_CLEAR_STATE, 0, 0);
 	}
 	o_ClearState(c);
 }
-void STDMETHODCALLTYPE H_DiscardResource(CTX_ARGS, ID3D11Resource* res) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_DISCARD_RES, 0, 8) : nullptr;
-		if (p) {
-			memcpy(p, &res, 8);
-			Ref(res);
+void STDMETHODCALLTYPE H_DiscardResource(ID3D11DeviceContext* c, ID3D11Resource* res) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_DISCARD_RES, 0, 8) : nullptr;
+		if (payload) {
+			memcpy(payload, &res, 8);
+			HoldRef(res);
 		}
 	}
 	o_DiscardResource(c, res);
 }
-void STDMETHODCALLTYPE H_DiscardView(CTX_ARGS, ID3D11View* v) {
-	if (On(c)) {
-		Rec r;
-		uint8_t* p = r.on ? Begin(OP_DISCARD_VIEW, 0, 8) : nullptr;
-		if (p) {
-			memcpy(p, &v, 8);
-			Ref(v);
+void STDMETHODCALLTYPE H_DiscardView(ID3D11DeviceContext* c, ID3D11View* view) {
+	if (ShouldRecord(c)) {
+		RecordLock lock;
+		uint8_t* payload = lock.recording ? AppendCommand(OP_DISCARD_VIEW, 0, 8) : nullptr;
+		if (payload) {
+			memcpy(payload, &view, 8);
+			HoldRef(view);
 		}
 	}
-	o_DiscardView(c, v);
+	o_DiscardView(c, view);
 }
 // D3D11.1 calls the recorder can't replay: seeing one in the window cancels the second eye.
 // (Pass-through trampolines: all of these take only integer/pointer arguments, so forwarding ten
 // pointer-sized arguments hands each original exactly what it was called with.)
 template <int I>
-void STDMETHODCALLTYPE H_Ctx1(CTX_ARGS, void* a, void* b, void* d, void* e, void* f, void* g, void* h, void* i,
-							  void* j, void* k) {
-	static const char* const names[8] = {"CopySubresourceRegion1", "UpdateSubresource1", "VSSetConstantBuffers1",
-										 "PSSetConstantBuffers1", "CSSetConstantBuffers1", "ClearView",
-										 "SwapDeviceContextState", "GSSetConstantBuffers1"};
-	if (On(c)) RecUnsupported(names[I]);
+void STDMETHODCALLTYPE H_Ctx1(ID3D11DeviceContext* c, void* a0, void* a1, void* a2, void* a3, void* a4, void* a5, void* a6, void* a7,
+							  void* a8, void* a9) {
+	static const char* const kNames[8] = {"CopySubresourceRegion1", "UpdateSubresource1", "VSSetConstantBuffers1",
+										  "PSSetConstantBuffers1", "CSSetConstantBuffers1", "ClearView",
+										  "SwapDeviceContextState", "GSSetConstantBuffers1"};
+	if (ShouldRecord(c)) RecUnsupported(kNames[I]);
 	// (CopySubresourceRegion1 has 9 arguments after the context; the extra ones are ignored)
-	((void(STDMETHODCALLTYPE*)(CTX_ARGS, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*))o_Ctx1[I])(
-		c, a, b, d, e, f, g, h, i, j, k);
+	((void(STDMETHODCALLTYPE*)(ID3D11DeviceContext * c, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*)) o_Ctx1[I])(
+		c, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
 }
 }  // namespace
 
@@ -1130,597 +1118,589 @@ void STDMETHODCALLTYPE H_Ctx1(CTX_ARGS, void* a, void* b, void* d, void* e, void
 // Pipeline state snapshot
 // ---------------------------------------------------------------------------------------------
 namespace {
-const UINT kSrvSlots = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;   // 128
+const UINT kSrvSlots = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;      // 128
 const UINT kCbSlots = D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT;  // 14
-const UINT kSampSlots = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;          // 16
-const UINT kUavSlots = D3D11_PS_CS_UAV_REGISTER_COUNT;                  // 8 (feature level 11.0)
+const UINT kSamplerSlots = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;         // 16
+const UINT kUavSlots = D3D11_PS_CS_UAV_REGISTER_COUNT;                    // 8 (feature level 11.0)
 struct StageState {
-	ID3D11DeviceChild* sh;
-	ID3D11ClassInstance* inst[16];
-	UINT ninst;
-	ID3D11Buffer* cb[kCbSlots];
-	ID3D11ShaderResourceView* srv[kSrvSlots];
-	ID3D11SamplerState* samp[kSampSlots];
+	ID3D11DeviceChild* shader;
+	ID3D11ClassInstance* classInstances[16];
+	UINT classInstanceCount;
+	ID3D11Buffer* constantBuffers[kCbSlots];
+	ID3D11ShaderResourceView* srvs[kSrvSlots];
+	ID3D11SamplerState* samplers[kSamplerSlots];
 };
-struct StateBlock {
+struct PipelineState {
 	bool valid;
-	ID3D11InputLayout* il;
-	ID3D11Buffer* vb[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
-	UINT stride[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT], off[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
-	ID3D11Buffer* ib;
-	DXGI_FORMAT ibFmt;
-	UINT ibOff;
-	D3D11_PRIMITIVE_TOPOLOGY topo;
-	StageState st[S_COUNT];
-	ID3D11UnorderedAccessView* csUav[kUavSlots];
-	ID3D11RasterizerState* rs;
-	D3D11_VIEWPORT vp[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-	UINT nvp;
-	D3D11_RECT sc[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-	UINT nsc;
-	ID3D11RenderTargetView* rtv[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
+	ID3D11InputLayout* inputLayout;
+	ID3D11Buffer* vertexBuffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+	UINT strides[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT], offsets[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+	ID3D11Buffer* indexBuffer;
+	DXGI_FORMAT indexFormat;
+	UINT indexOffset;
+	D3D11_PRIMITIVE_TOPOLOGY topology;
+	StageState stages[RS_COUNT];
+	ID3D11UnorderedAccessView* csUavs[kUavSlots];
+	ID3D11RasterizerState* rasterizer;
+	D3D11_VIEWPORT viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+	UINT viewportCount;
+	D3D11_RECT scissors[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+	UINT scissorCount;
+	ID3D11RenderTargetView* rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
 	ID3D11DepthStencilView* dsv;
-	ID3D11UnorderedAccessView* omUav[kUavSlots];
-	ID3D11BlendState* bs;
-	FLOAT bf[4];
-	UINT mask;
-	ID3D11DepthStencilState* dss;
-	UINT sref;
-	ID3D11Buffer* so[D3D11_SO_BUFFER_SLOT_COUNT];
-	ID3D11Predicate* pred;
-	BOOL predVal;
+	ID3D11UnorderedAccessView* omUavs[kUavSlots];
+	ID3D11BlendState* blendState;
+	FLOAT blendFactor[4];
+	UINT sampleMask;
+	ID3D11DepthStencilState* depthState;
+	UINT stencilRef;
+	ID3D11Buffer* soTargets[D3D11_SO_BUFFER_SLOT_COUNT];
+	ID3D11Predicate* predicate;
+	BOOL predicateValue;
 };
-StateBlock s_startState, s_endState, s_finalState;
+PipelineState s_recordStartState, s_presentState, s_finalPassState;
 
 template <typename T>
-void RelArr(T** a, UINT n) {
-	for (UINT i = 0; i < n; i++)
-		if (a[i]) {
-			a[i]->Release();
-			a[i] = nullptr;
+void ReleaseAll(T** arr, UINT count) {
+	for (UINT i = 0; i < count; i++)
+		if (arr[i]) {
+			arr[i]->Release();
+			arr[i] = nullptr;
 		}
 }
 template <typename T>
-void Rel1(T*& p) {
+void SafeRelease(T*& p) {
 	if (p) p->Release();
 	p = nullptr;
 }
-void ReleaseState(StateBlock& s) {
-	if (!s.valid) return;
-	Rel1(s.il);
-	RelArr(s.vb, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT);
-	Rel1(s.ib);
-	for (auto& st : s.st) {
-		Rel1(st.sh);
-		RelArr(st.inst, 16);
-		RelArr(st.cb, kCbSlots);
-		RelArr(st.srv, kSrvSlots);
-		RelArr(st.samp, kSampSlots);
+void ReleasePipelineState(PipelineState& state) {
+	if (!state.valid) return;
+	SafeRelease(state.inputLayout);
+	ReleaseAll(state.vertexBuffers, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT);
+	SafeRelease(state.indexBuffer);
+	for (auto& stage : state.stages) {
+		SafeRelease(stage.shader);
+		ReleaseAll(stage.classInstances, 16);
+		ReleaseAll(stage.constantBuffers, kCbSlots);
+		ReleaseAll(stage.srvs, kSrvSlots);
+		ReleaseAll(stage.samplers, kSamplerSlots);
 	}
-	RelArr(s.csUav, kUavSlots);
-	Rel1(s.rs);
-	RelArr(s.rtv, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT);
-	Rel1(s.dsv);
-	RelArr(s.omUav, kUavSlots);
-	Rel1(s.bs);
-	Rel1(s.dss);
-	RelArr(s.so, D3D11_SO_BUFFER_SLOT_COUNT);
-	Rel1(s.pred);
-	s.valid = false;
+	ReleaseAll(state.csUavs, kUavSlots);
+	SafeRelease(state.rasterizer);
+	ReleaseAll(state.rtvs, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT);
+	SafeRelease(state.dsv);
+	ReleaseAll(state.omUavs, kUavSlots);
+	SafeRelease(state.blendState);
+	SafeRelease(state.depthState);
+	ReleaseAll(state.soTargets, D3D11_SO_BUFFER_SLOT_COUNT);
+	SafeRelease(state.predicate);
+	state.valid = false;
 }
 
-void CaptureState(ID3D11DeviceContext* c, StateBlock& s) {
-	ReleaseState(s);
-	memset(&s, 0, sizeof(s));
-	c->IAGetInputLayout(&s.il);
-	c->IAGetVertexBuffers(0, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, s.vb, s.stride, s.off);
-	c->IAGetIndexBuffer(&s.ib, &s.ibFmt, &s.ibOff);
-	c->IAGetPrimitiveTopology(&s.topo);
-	StageState* t = s.st;
-	t[S_VS].ninst = t[S_HS].ninst = t[S_DS].ninst = t[S_GS].ninst = t[S_PS].ninst = t[S_CS].ninst = 16;
-	c->VSGetShader((ID3D11VertexShader**)&t[S_VS].sh, t[S_VS].inst, &t[S_VS].ninst);
-	c->HSGetShader((ID3D11HullShader**)&t[S_HS].sh, t[S_HS].inst, &t[S_HS].ninst);
-	c->DSGetShader((ID3D11DomainShader**)&t[S_DS].sh, t[S_DS].inst, &t[S_DS].ninst);
-	c->GSGetShader((ID3D11GeometryShader**)&t[S_GS].sh, t[S_GS].inst, &t[S_GS].ninst);
-	c->PSGetShader((ID3D11PixelShader**)&t[S_PS].sh, t[S_PS].inst, &t[S_PS].ninst);
-	c->CSGetShader((ID3D11ComputeShader**)&t[S_CS].sh, t[S_CS].inst, &t[S_CS].ninst);
-	c->VSGetConstantBuffers(0, kCbSlots, t[S_VS].cb);
-	c->HSGetConstantBuffers(0, kCbSlots, t[S_HS].cb);
-	c->DSGetConstantBuffers(0, kCbSlots, t[S_DS].cb);
-	c->GSGetConstantBuffers(0, kCbSlots, t[S_GS].cb);
-	c->PSGetConstantBuffers(0, kCbSlots, t[S_PS].cb);
-	c->CSGetConstantBuffers(0, kCbSlots, t[S_CS].cb);
-	c->VSGetShaderResources(0, kSrvSlots, t[S_VS].srv);
-	c->HSGetShaderResources(0, kSrvSlots, t[S_HS].srv);
-	c->DSGetShaderResources(0, kSrvSlots, t[S_DS].srv);
-	c->GSGetShaderResources(0, kSrvSlots, t[S_GS].srv);
-	c->PSGetShaderResources(0, kSrvSlots, t[S_PS].srv);
-	c->CSGetShaderResources(0, kSrvSlots, t[S_CS].srv);
-	c->VSGetSamplers(0, kSampSlots, t[S_VS].samp);
-	c->HSGetSamplers(0, kSampSlots, t[S_HS].samp);
-	c->DSGetSamplers(0, kSampSlots, t[S_DS].samp);
-	c->GSGetSamplers(0, kSampSlots, t[S_GS].samp);
-	c->PSGetSamplers(0, kSampSlots, t[S_PS].samp);
-	c->CSGetSamplers(0, kSampSlots, t[S_CS].samp);
-	c->CSGetUnorderedAccessViews(0, kUavSlots, s.csUav);
-	c->RSGetState(&s.rs);
-	s.nvp = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
-	c->RSGetViewports(&s.nvp, s.vp);
-	s.nsc = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
-	c->RSGetScissorRects(&s.nsc, s.sc);
-	c->OMGetRenderTargetsAndUnorderedAccessViews(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, s.rtv, &s.dsv, 0, kUavSlots,
-												 s.omUav);
-	c->OMGetBlendState(&s.bs, s.bf, &s.mask);
-	c->OMGetDepthStencilState(&s.dss, &s.sref);
-	c->SOGetTargets(D3D11_SO_BUFFER_SLOT_COUNT, s.so);
-	c->GetPredication(&s.pred, &s.predVal);
-	s.valid = true;
+void CapturePipelineState(ID3D11DeviceContext* c, PipelineState& state) {
+	ReleasePipelineState(state);
+	memset(&state, 0, sizeof(state));
+	c->IAGetInputLayout(&state.inputLayout);
+	c->IAGetVertexBuffers(0, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, state.vertexBuffers, state.strides, state.offsets);
+	c->IAGetIndexBuffer(&state.indexBuffer, &state.indexFormat, &state.indexOffset);
+	c->IAGetPrimitiveTopology(&state.topology);
+	StageState* stages = state.stages;
+	stages[RS_VS].classInstanceCount = stages[RS_HS].classInstanceCount = stages[RS_DS].classInstanceCount = stages[RS_GS].classInstanceCount = stages[RS_PS].classInstanceCount = stages[RS_CS].classInstanceCount = 16;
+	c->VSGetShader((ID3D11VertexShader**)&stages[RS_VS].shader, stages[RS_VS].classInstances, &stages[RS_VS].classInstanceCount);
+	c->HSGetShader((ID3D11HullShader**)&stages[RS_HS].shader, stages[RS_HS].classInstances, &stages[RS_HS].classInstanceCount);
+	c->DSGetShader((ID3D11DomainShader**)&stages[RS_DS].shader, stages[RS_DS].classInstances, &stages[RS_DS].classInstanceCount);
+	c->GSGetShader((ID3D11GeometryShader**)&stages[RS_GS].shader, stages[RS_GS].classInstances, &stages[RS_GS].classInstanceCount);
+	c->PSGetShader((ID3D11PixelShader**)&stages[RS_PS].shader, stages[RS_PS].classInstances, &stages[RS_PS].classInstanceCount);
+	c->CSGetShader((ID3D11ComputeShader**)&stages[RS_CS].shader, stages[RS_CS].classInstances, &stages[RS_CS].classInstanceCount);
+	c->VSGetConstantBuffers(0, kCbSlots, stages[RS_VS].constantBuffers);
+	c->HSGetConstantBuffers(0, kCbSlots, stages[RS_HS].constantBuffers);
+	c->DSGetConstantBuffers(0, kCbSlots, stages[RS_DS].constantBuffers);
+	c->GSGetConstantBuffers(0, kCbSlots, stages[RS_GS].constantBuffers);
+	c->PSGetConstantBuffers(0, kCbSlots, stages[RS_PS].constantBuffers);
+	c->CSGetConstantBuffers(0, kCbSlots, stages[RS_CS].constantBuffers);
+	c->VSGetShaderResources(0, kSrvSlots, stages[RS_VS].srvs);
+	c->HSGetShaderResources(0, kSrvSlots, stages[RS_HS].srvs);
+	c->DSGetShaderResources(0, kSrvSlots, stages[RS_DS].srvs);
+	c->GSGetShaderResources(0, kSrvSlots, stages[RS_GS].srvs);
+	c->PSGetShaderResources(0, kSrvSlots, stages[RS_PS].srvs);
+	c->CSGetShaderResources(0, kSrvSlots, stages[RS_CS].srvs);
+	c->VSGetSamplers(0, kSamplerSlots, stages[RS_VS].samplers);
+	c->HSGetSamplers(0, kSamplerSlots, stages[RS_HS].samplers);
+	c->DSGetSamplers(0, kSamplerSlots, stages[RS_DS].samplers);
+	c->GSGetSamplers(0, kSamplerSlots, stages[RS_GS].samplers);
+	c->PSGetSamplers(0, kSamplerSlots, stages[RS_PS].samplers);
+	c->CSGetSamplers(0, kSamplerSlots, stages[RS_CS].samplers);
+	c->CSGetUnorderedAccessViews(0, kUavSlots, state.csUavs);
+	c->RSGetState(&state.rasterizer);
+	state.viewportCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+	c->RSGetViewports(&state.viewportCount, state.viewports);
+	state.scissorCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+	c->RSGetScissorRects(&state.scissorCount, state.scissors);
+	c->OMGetRenderTargetsAndUnorderedAccessViews(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, state.rtvs, &state.dsv, 0, kUavSlots,
+												 state.omUavs);
+	c->OMGetBlendState(&state.blendState, state.blendFactor, &state.sampleMask);
+	c->OMGetDepthStencilState(&state.depthState, &state.stencilRef);
+	c->SOGetTargets(D3D11_SO_BUFFER_SLOT_COUNT, state.soTargets);
+	c->GetPredication(&state.predicate, &state.predicateValue);
+	state.valid = true;
 }
 
-void ApplyState(ID3D11DeviceContext* c, const StateBlock& s) {
-	if (!s.valid) return;
-	c->IASetInputLayout(s.il);
-	c->IASetVertexBuffers(0, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, s.vb, s.stride, s.off);
-	c->IASetIndexBuffer(s.ib, s.ibFmt, s.ibOff);
-	c->IASetPrimitiveTopology(s.topo);
-	const StageState* t = s.st;
-	c->VSSetShader((ID3D11VertexShader*)t[S_VS].sh, t[S_VS].inst, t[S_VS].ninst);
-	c->HSSetShader((ID3D11HullShader*)t[S_HS].sh, t[S_HS].inst, t[S_HS].ninst);
-	c->DSSetShader((ID3D11DomainShader*)t[S_DS].sh, t[S_DS].inst, t[S_DS].ninst);
-	c->GSSetShader((ID3D11GeometryShader*)t[S_GS].sh, t[S_GS].inst, t[S_GS].ninst);
-	c->PSSetShader((ID3D11PixelShader*)t[S_PS].sh, t[S_PS].inst, t[S_PS].ninst);
-	c->CSSetShader((ID3D11ComputeShader*)t[S_CS].sh, t[S_CS].inst, t[S_CS].ninst);
-	c->VSSetConstantBuffers(0, kCbSlots, t[S_VS].cb);
-	c->HSSetConstantBuffers(0, kCbSlots, t[S_HS].cb);
-	c->DSSetConstantBuffers(0, kCbSlots, t[S_DS].cb);
-	c->GSSetConstantBuffers(0, kCbSlots, t[S_GS].cb);
-	c->PSSetConstantBuffers(0, kCbSlots, t[S_PS].cb);
-	c->CSSetConstantBuffers(0, kCbSlots, t[S_CS].cb);
+void ApplyPipelineState(ID3D11DeviceContext* c, const PipelineState& state) {
+	if (!state.valid) return;
+	c->IASetInputLayout(state.inputLayout);
+	c->IASetVertexBuffers(0, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, state.vertexBuffers, state.strides, state.offsets);
+	c->IASetIndexBuffer(state.indexBuffer, state.indexFormat, state.indexOffset);
+	c->IASetPrimitiveTopology(state.topology);
+	const StageState* stages = state.stages;
+	c->VSSetShader((ID3D11VertexShader*)stages[RS_VS].shader, stages[RS_VS].classInstances, stages[RS_VS].classInstanceCount);
+	c->HSSetShader((ID3D11HullShader*)stages[RS_HS].shader, stages[RS_HS].classInstances, stages[RS_HS].classInstanceCount);
+	c->DSSetShader((ID3D11DomainShader*)stages[RS_DS].shader, stages[RS_DS].classInstances, stages[RS_DS].classInstanceCount);
+	c->GSSetShader((ID3D11GeometryShader*)stages[RS_GS].shader, stages[RS_GS].classInstances, stages[RS_GS].classInstanceCount);
+	c->PSSetShader((ID3D11PixelShader*)stages[RS_PS].shader, stages[RS_PS].classInstances, stages[RS_PS].classInstanceCount);
+	c->CSSetShader((ID3D11ComputeShader*)stages[RS_CS].shader, stages[RS_CS].classInstances, stages[RS_CS].classInstanceCount);
+	c->VSSetConstantBuffers(0, kCbSlots, stages[RS_VS].constantBuffers);
+	c->HSSetConstantBuffers(0, kCbSlots, stages[RS_HS].constantBuffers);
+	c->DSSetConstantBuffers(0, kCbSlots, stages[RS_DS].constantBuffers);
+	c->GSSetConstantBuffers(0, kCbSlots, stages[RS_GS].constantBuffers);
+	c->PSSetConstantBuffers(0, kCbSlots, stages[RS_PS].constantBuffers);
+	c->CSSetConstantBuffers(0, kCbSlots, stages[RS_CS].constantBuffers);
 	// Outputs first (a resource bound as output is unbound from inputs, and the reverse), then
 	// the inputs, so each ends up exactly as captured.
 	{
 		UINT firstUav = kUavSlots;
 		for (UINT i = 0; i < kUavSlots; i++)
-			if (s.omUav[i]) {
+			if (state.omUavs[i]) {
 				firstUav = i;
 				break;
 			}
-		UINT keep[kUavSlots];
-		for (auto& k : keep) k = (UINT)-1;
+		UINT keepCounts[kUavSlots];
+		for (auto& count : keepCounts) count = (UINT)-1;
 		if (firstUav < kUavSlots)
-			c->OMSetRenderTargetsAndUnorderedAccessViews(firstUav, s.rtv, s.dsv, firstUav, kUavSlots - firstUav,
-														 s.omUav + firstUav, keep);
+			c->OMSetRenderTargetsAndUnorderedAccessViews(firstUav, state.rtvs, state.dsv, firstUav, kUavSlots - firstUav,
+														 state.omUavs + firstUav, keepCounts);
 		else
-			c->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, s.rtv, s.dsv);
-		c->CSSetUnorderedAccessViews(0, kUavSlots, s.csUav, keep);
+			c->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, state.rtvs, state.dsv);
+		c->CSSetUnorderedAccessViews(0, kUavSlots, state.csUavs, keepCounts);
 	}
-	c->SOSetTargets(D3D11_SO_BUFFER_SLOT_COUNT, s.so, nullptr);
-	c->VSSetShaderResources(0, kSrvSlots, t[S_VS].srv);
-	c->HSSetShaderResources(0, kSrvSlots, t[S_HS].srv);
-	c->DSSetShaderResources(0, kSrvSlots, t[S_DS].srv);
-	c->GSSetShaderResources(0, kSrvSlots, t[S_GS].srv);
-	c->PSSetShaderResources(0, kSrvSlots, t[S_PS].srv);
-	c->CSSetShaderResources(0, kSrvSlots, t[S_CS].srv);
-	c->VSSetSamplers(0, kSampSlots, t[S_VS].samp);
-	c->HSSetSamplers(0, kSampSlots, t[S_HS].samp);
-	c->DSSetSamplers(0, kSampSlots, t[S_DS].samp);
-	c->GSSetSamplers(0, kSampSlots, t[S_GS].samp);
-	c->PSSetSamplers(0, kSampSlots, t[S_PS].samp);
-	c->CSSetSamplers(0, kSampSlots, t[S_CS].samp);
-	c->RSSetState(s.rs);
-	c->RSSetViewports(s.nvp, s.vp);
-	c->RSSetScissorRects(s.nsc, s.sc);
-	c->OMSetBlendState(s.bs, s.bf, s.mask);
-	c->OMSetDepthStencilState(s.dss, s.sref);
-	c->SetPredication(s.pred, s.predVal);
+	c->SOSetTargets(D3D11_SO_BUFFER_SLOT_COUNT, state.soTargets, nullptr);
+	c->VSSetShaderResources(0, kSrvSlots, stages[RS_VS].srvs);
+	c->HSSetShaderResources(0, kSrvSlots, stages[RS_HS].srvs);
+	c->DSSetShaderResources(0, kSrvSlots, stages[RS_DS].srvs);
+	c->GSSetShaderResources(0, kSrvSlots, stages[RS_GS].srvs);
+	c->PSSetShaderResources(0, kSrvSlots, stages[RS_PS].srvs);
+	c->CSSetShaderResources(0, kSrvSlots, stages[RS_CS].srvs);
+	c->VSSetSamplers(0, kSamplerSlots, stages[RS_VS].samplers);
+	c->HSSetSamplers(0, kSamplerSlots, stages[RS_HS].samplers);
+	c->DSSetSamplers(0, kSamplerSlots, stages[RS_DS].samplers);
+	c->GSSetSamplers(0, kSamplerSlots, stages[RS_GS].samplers);
+	c->PSSetSamplers(0, kSamplerSlots, stages[RS_PS].samplers);
+	c->CSSetSamplers(0, kSamplerSlots, stages[RS_CS].samplers);
+	c->RSSetState(state.rasterizer);
+	c->RSSetViewports(state.viewportCount, state.viewports);
+	c->RSSetScissorRects(state.scissorCount, state.scissors);
+	c->OMSetBlendState(state.blendState, state.blendFactor, state.sampleMask);
+	c->OMSetDepthStencilState(state.depthState, state.stencilRef);
+	c->SetPredication(state.predicate, state.predicateValue);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Playback
 // ---------------------------------------------------------------------------------------------
 template <typename T>
-T Get(const uint8_t* p, size_t off) {
-	T v;
-	memcpy(&v, p + off, sizeof(T));
-	return v;
+T Read(const uint8_t* payload, size_t offset) {
+	T value;
+	memcpy(&value, payload + offset, sizeof(T));
+	return value;
 }
 
 // Playback bindings of dynamic buffers: the game's own buffer is replaced by the snapshot of the
 // generation the recording was in at that point. The game's bindings are tracked so a new
 // generation can rebind the slots that use the buffer.
-struct Subst {
-	ID3D11Buffer* buf;
-	ID3D11Buffer* snap;
+struct Substitute {
+	ID3D11Buffer* gameBuffer;
+	ID3D11Buffer* snapshot;
 };
-Subst s_subst[256];
-int s_substCount;
-struct ViewCache {
-	ID3D11ShaderResourceView* game;
-	ID3D11Buffer* snap;
-	ID3D11ShaderResourceView* ours;
+Substitute s_substitutes[256];
+int s_substituteCount;
+struct SnapshotView {
+	ID3D11ShaderResourceView* gameView;
+	ID3D11Buffer* snapshot;
+	ID3D11ShaderResourceView* view;
 };
-ViewCache s_views[256];
-int s_viewCount;
-struct Track {
-	ID3D11Buffer* vb[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
-	UINT stride[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT], off[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
-	ID3D11Buffer* ib;
-	DXGI_FORMAT ibFmt;
-	UINT ibOff;
-	ID3D11ShaderResourceView* srv[S_COUNT][kSrvSlots];
+SnapshotView s_snapshotViews[256];
+int s_snapshotViewCount;
+struct GameBindings {
+	ID3D11Buffer* vertexBuffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+	UINT strides[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT], offsets[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+	ID3D11Buffer* indexBuffer;
+	DXGI_FORMAT indexFormat;
+	UINT indexOffset;
+	ID3D11ShaderResourceView* srvs[RS_COUNT][kSrvSlots];
 };
-Track s_track;
+GameBindings s_gameBindings;
 
-ID3D11Buffer* SubBuf(ID3D11Buffer* b) {
-	if (!b) return b;
-	for (int i = 0; i < s_substCount; i++)
-		if (s_subst[i].buf == b) return s_subst[i].snap;
-	return b;
+ID3D11Buffer* SubstituteBuffer(ID3D11Buffer* buffer) {
+	if (!buffer) return buffer;
+	for (int i = 0; i < s_substituteCount; i++)
+		if (s_substitutes[i].gameBuffer == buffer) return s_substitutes[i].snapshot;
+	return buffer;
 }
-ID3D11ShaderResourceView* SubView(ID3D11ShaderResourceView* v) {
-	if (!v || !s_substCount) return v;
-	ID3D11Resource* r = nullptr;
-	v->GetResource(&r);
-	if (r) r->Release();  // the view keeps it alive
-	ID3D11Buffer* snap = SubBuf((ID3D11Buffer*)r);
-	if (snap == (ID3D11Buffer*)r) return v;
-	for (int i = 0; i < s_viewCount; i++)
-		if (s_views[i].game == v && s_views[i].snap == snap) return s_views[i].ours;
-	if (s_viewCount >= 256) return v;
-	D3D11_SHADER_RESOURCE_VIEW_DESC d;
-	v->GetDesc(&d);
-	ID3D11Device* dev = nullptr;
-	g_recCtx->GetDevice(&dev);
-	ID3D11ShaderResourceView* ours = nullptr;
-	if (!dev || FAILED(dev->CreateShaderResourceView(snap, &d, &ours))) ours = nullptr;
-	if (dev) dev->Release();
-	if (!ours) return v;
-	s_views[s_viewCount++] = {v, snap, ours};
-	return ours;
+ID3D11ShaderResourceView* SubstituteView(ID3D11ShaderResourceView* view) {
+	if (!view || !s_substituteCount) return view;
+	ID3D11Resource* res = nullptr;
+	view->GetResource(&res);
+	if (res) res->Release();  // the view keeps it alive
+	ID3D11Buffer* snapshot = SubstituteBuffer((ID3D11Buffer*)res);
+	if (snapshot == (ID3D11Buffer*)res) return view;
+	for (int i = 0; i < s_snapshotViewCount; i++)
+		if (s_snapshotViews[i].gameView == view && s_snapshotViews[i].snapshot == snapshot) return s_snapshotViews[i].view;
+	if (s_snapshotViewCount >= 256) return view;
+	D3D11_SHADER_RESOURCE_VIEW_DESC desc;
+	view->GetDesc(&desc);
+	ID3D11Device* device = nullptr;
+	g_gameContext->GetDevice(&device);
+	ID3D11ShaderResourceView* own = nullptr;
+	if (!device || FAILED(device->CreateShaderResourceView(snapshot, &desc, &own))) own = nullptr;
+	if (device) device->Release();
+	if (!own) return view;
+	s_snapshotViews[s_snapshotViewCount++] = {view, snapshot, own};
+	return own;
 }
-void ReleaseViewCache() {
-	for (int i = 0; i < s_viewCount; i++) s_views[i].ours->Release();
-	s_viewCount = 0;
+void ReleaseSnapshotViews() {
+	for (int i = 0; i < s_snapshotViewCount; i++) s_snapshotViews[i].view->Release();
+	s_snapshotViewCount = 0;
 }
-void SetSrvs(ID3D11DeviceContext* c, int stage, UINT st, UINT n, ID3D11ShaderResourceView* const* b) {
+void SetShaderResources(ID3D11DeviceContext* c, int stage, UINT start, UINT count, ID3D11ShaderResourceView* const* views) {
 	switch (stage) {
-		case S_VS: c->VSSetShaderResources(st, n, b); break;
-		case S_HS: c->HSSetShaderResources(st, n, b); break;
-		case S_DS: c->DSSetShaderResources(st, n, b); break;
-		case S_GS: c->GSSetShaderResources(st, n, b); break;
-		case S_PS: c->PSSetShaderResources(st, n, b); break;
-		case S_CS: c->CSSetShaderResources(st, n, b); break;
+		case RS_VS: c->VSSetShaderResources(start, count, views); break;
+		case RS_HS: c->HSSetShaderResources(start, count, views); break;
+		case RS_DS: c->DSSetShaderResources(start, count, views); break;
+		case RS_GS: c->GSSetShaderResources(start, count, views); break;
+		case RS_PS: c->PSSetShaderResources(start, count, views); break;
+		case RS_CS: c->CSSetShaderResources(start, count, views); break;
 	}
 }
 // A new generation of `buf`: rebind every slot that uses it.
-void Rebind(ID3D11DeviceContext* c, ID3D11Buffer* buf) {
+void RebindBuffer(ID3D11DeviceContext* c, ID3D11Buffer* buffer) {
 	for (UINT i = 0; i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++)
-		if (s_track.vb[i] == buf) {
-			ID3D11Buffer* s = SubBuf(buf);
-			c->IASetVertexBuffers(i, 1, &s, &s_track.stride[i], &s_track.off[i]);
+		if (s_gameBindings.vertexBuffers[i] == buffer) {
+			ID3D11Buffer* snapshot = SubstituteBuffer(buffer);
+			c->IASetVertexBuffers(i, 1, &snapshot, &s_gameBindings.strides[i], &s_gameBindings.offsets[i]);
 		}
-	if (s_track.ib == buf) c->IASetIndexBuffer(SubBuf(buf), s_track.ibFmt, s_track.ibOff);
-	for (int s = 0; s < S_COUNT; s++)
+	if (s_gameBindings.indexBuffer == buffer) c->IASetIndexBuffer(SubstituteBuffer(buffer), s_gameBindings.indexFormat, s_gameBindings.indexOffset);
+	for (int stage = 0; stage < RS_COUNT; stage++)
 		for (UINT i = 0; i < kSrvSlots; i++) {
-			ID3D11ShaderResourceView* v = s_track.srv[s][i];
-			if (!v) continue;
-			ID3D11Resource* r = nullptr;
-			v->GetResource(&r);
-			if (r) r->Release();
-			if ((ID3D11Buffer*)r != buf) continue;
-			ID3D11ShaderResourceView* t = SubView(v);
-			SetSrvs(c, s, i, 1, &t);
+			ID3D11ShaderResourceView* view = s_gameBindings.srvs[stage][i];
+			if (!view) continue;
+			ID3D11Resource* res = nullptr;
+			view->GetResource(&res);
+			if (res) res->Release();
+			if ((ID3D11Buffer*)res != buffer) continue;
+			ID3D11ShaderResourceView* substituted = SubstituteView(view);
+			SetShaderResources(c, stage, i, 1, &substituted);
 		}
 }
 
 // Reused shadow maps (ReuseShadows=1): depth-only passes into a square depth texture (the shadow
 // map is drawn from the light, not from the eye, so the left eye's one is right for the right eye
 // too). The right eye's replay skips their draws and clears; the texture still holds the left's.
-struct DsvClass {
-	ID3D11DepthStencilView* v;
-	bool shadow;
+struct DsvKind {
+	ID3D11DepthStencilView* view;
+	bool isShadowMap;
 };
-DsvClass s_dsvCache[32];
+DsvKind s_dsvCache[32];
 int s_dsvCount;
-unsigned s_skippedDraws;
-bool s_loggedShadow;
-bool IsShadowDsv(ID3D11DepthStencilView* v) {
-	if (!v) return false;
+unsigned s_skippedShadowDraws;
+bool s_loggedShadowReuse;
+bool IsShadowDsv(ID3D11DepthStencilView* view) {
+	if (!view) return false;
 	for (int i = 0; i < s_dsvCount; i++)
-		if (s_dsvCache[i].v == v) return s_dsvCache[i].shadow;
-	bool s = false;
-	ID3D11Resource* r = nullptr;
-	v->GetResource(&r);
-	if (r) {
+		if (s_dsvCache[i].view == view) return s_dsvCache[i].isShadowMap;
+	bool isShadow = false;
+	ID3D11Resource* res = nullptr;
+	view->GetResource(&res);
+	if (res) {
 		D3D11_RESOURCE_DIMENSION dim;
-		r->GetType(&dim);
+		res->GetType(&dim);
 		if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
-			D3D11_TEXTURE2D_DESC d;
-			((ID3D11Texture2D*)r)->GetDesc(&d);
-			s = d.Width == d.Height && d.Width >= 512;
-			if (s && !s_loggedShadow) {
-				s_loggedShadow = true;
-				Log("synchronized: the right eye reuses the shadow map (%ux%u, format %d) drawn for the left eye", d.Width,
-					d.Height, (int)d.Format);
+			D3D11_TEXTURE2D_DESC desc;
+			((ID3D11Texture2D*)res)->GetDesc(&desc);
+			isShadow = desc.Width == desc.Height && desc.Width >= 512;
+			if (isShadow && !s_loggedShadowReuse) {
+				s_loggedShadowReuse = true;
+				Log("synchronized: the right eye reuses the shadow map (%ux%u, format %d) drawn for the left eye", desc.Width,
+					desc.Height, (int)desc.Format);
 			}
 		}
-		r->Release();
+		res->Release();
 	}
-	if (s_dsvCount < 32) s_dsvCache[s_dsvCount++] = {v, s};
-	return s;
+	if (s_dsvCount < 32) s_dsvCache[s_dsvCount++] = {view, isShadow};
+	return isShadow;
 }
-bool AllNull(ID3D11RenderTargetView* const* r, UINT n) {
-	for (UINT i = 0; i < n; i++)
-		if (r && r[i]) return false;
+bool AllNull(ID3D11RenderTargetView* const* rtvs, UINT count) {
+	for (UINT i = 0; i < count; i++)
+		if (rtvs && rtvs[i]) return false;
 	return true;
 }
 
-void Play(ID3D11DeviceContext* c) {
-	float scratch[64];
-	bool skipping = false;  // inside a reused shadow pass
+void PlayRecording(ID3D11DeviceContext* c) {
+	float patchedConstants[64];
+	bool inShadowPass = false;  // inside a reused shadow pass
 	s_dsvCount = 0;
-	s_skippedDraws = 0;
-	s_substCount = 0;
-	memset(&s_track, 0, sizeof(s_track));
-	memcpy(s_track.vb, s_startState.vb, sizeof(s_track.vb));
-	memcpy(s_track.stride, s_startState.stride, sizeof(s_track.stride));
-	memcpy(s_track.off, s_startState.off, sizeof(s_track.off));
-	s_track.ib = s_startState.ib;
-	s_track.ibFmt = s_startState.ibFmt;
-	s_track.ibOff = s_startState.ibOff;
-	for (int s = 0; s < S_COUNT; s++) memcpy(s_track.srv[s], s_startState.st[s].srv, sizeof(s_track.srv[s]));
-	for (size_t off = 0; off < s_len;) {
-		CmdHeader h;
-		memcpy(&h, s_arena + off, sizeof(h));
-		const uint8_t* p = s_arena + off + sizeof(h);
-		off += sizeof(h) + h.size;
-		switch (h.op) {
+	s_skippedShadowDraws = 0;
+	s_substituteCount = 0;
+	memset(&s_gameBindings, 0, sizeof(s_gameBindings));
+	memcpy(s_gameBindings.vertexBuffers, s_recordStartState.vertexBuffers, sizeof(s_gameBindings.vertexBuffers));
+	memcpy(s_gameBindings.strides, s_recordStartState.strides, sizeof(s_gameBindings.strides));
+	memcpy(s_gameBindings.offsets, s_recordStartState.offsets, sizeof(s_gameBindings.offsets));
+	s_gameBindings.indexBuffer = s_recordStartState.indexBuffer;
+	s_gameBindings.indexFormat = s_recordStartState.indexFormat;
+	s_gameBindings.indexOffset = s_recordStartState.indexOffset;
+	for (int stage = 0; stage < RS_COUNT; stage++) memcpy(s_gameBindings.srvs[stage], s_recordStartState.stages[stage].srvs, sizeof(s_gameBindings.srvs[stage]));
+	for (size_t pos = 0; pos < s_arenaUsed;) {
+		CmdHeader header;
+		memcpy(&header, s_arena + pos, sizeof(header));
+		const uint8_t* payload = s_arena + pos + sizeof(header);
+		pos += sizeof(header) + header.payloadSize;
+		switch (header.op) {
 			case OP_SET_CB:
 			case OP_SET_SRV:
-			case OP_SET_SAMP: {
-				RecSlots s = Get<RecSlots>(p, 0);
-				void* const* v = (void* const*)(p + sizeof(RecSlots));
-				UINT st = s.start, n = s.n;
-				if (h.op == OP_SET_CB) {
-					ID3D11Buffer* const* b = (ID3D11Buffer* const*)v;
-					switch (h.a) {
-						case S_VS: c->VSSetConstantBuffers(st, n, b); break;
-						case S_HS: c->HSSetConstantBuffers(st, n, b); break;
-						case S_DS: c->DSSetConstantBuffers(st, n, b); break;
-						case S_GS: c->GSSetConstantBuffers(st, n, b); break;
-						case S_PS: c->PSSetConstantBuffers(st, n, b); break;
-						case S_CS: c->CSSetConstantBuffers(st, n, b); break;
+			case OP_SET_SAMPLERS: {
+				SlotRange range = Read<SlotRange>(payload, 0);
+				void* const* objs = (void* const*)(payload + sizeof(SlotRange));
+				UINT start = range.start, count = range.count;
+				if (header.op == OP_SET_CB) {
+					ID3D11Buffer* const* buffers = (ID3D11Buffer* const*)objs;
+					switch (header.arg) {
+						case RS_VS: c->VSSetConstantBuffers(start, count, buffers); break;
+						case RS_HS: c->HSSetConstantBuffers(start, count, buffers); break;
+						case RS_DS: c->DSSetConstantBuffers(start, count, buffers); break;
+						case RS_GS: c->GSSetConstantBuffers(start, count, buffers); break;
+						case RS_PS: c->PSSetConstantBuffers(start, count, buffers); break;
+						case RS_CS: c->CSSetConstantBuffers(start, count, buffers); break;
 					}
-				} else if (h.op == OP_SET_SRV) {
-					ID3D11ShaderResourceView* const* b = (ID3D11ShaderResourceView* const*)v;
-					ID3D11ShaderResourceView* t[kSrvSlots];
-					for (UINT i = 0; i < n && st + i < kSrvSlots && h.a < S_COUNT; i++) {
-						s_track.srv[h.a][st + i] = b[i];
-						t[i] = SubView(b[i]);
+				} else if (header.op == OP_SET_SRV) {
+					ID3D11ShaderResourceView* const* views = (ID3D11ShaderResourceView* const*)objs;
+					ID3D11ShaderResourceView* substituted[kSrvSlots];
+					for (UINT i = 0; i < count && start + i < kSrvSlots && header.arg < RS_COUNT; i++) {
+						s_gameBindings.srvs[header.arg][start + i] = views[i];
+						substituted[i] = SubstituteView(views[i]);
 					}
-					if (n <= kSrvSlots) SetSrvs(c, h.a, st, n, t);
+					if (count <= kSrvSlots) SetShaderResources(c, header.arg, start, count, substituted);
 				} else {
-					ID3D11SamplerState* const* b = (ID3D11SamplerState* const*)v;
-					switch (h.a) {
-						case S_VS: c->VSSetSamplers(st, n, b); break;
-						case S_HS: c->HSSetSamplers(st, n, b); break;
-						case S_DS: c->DSSetSamplers(st, n, b); break;
-						case S_GS: c->GSSetSamplers(st, n, b); break;
-						case S_PS: c->PSSetSamplers(st, n, b); break;
-						case S_CS: c->CSSetSamplers(st, n, b); break;
+					ID3D11SamplerState* const* samplers = (ID3D11SamplerState* const*)objs;
+					switch (header.arg) {
+						case RS_VS: c->VSSetSamplers(start, count, samplers); break;
+						case RS_HS: c->HSSetSamplers(start, count, samplers); break;
+						case RS_DS: c->DSSetSamplers(start, count, samplers); break;
+						case RS_GS: c->GSSetSamplers(start, count, samplers); break;
+						case RS_PS: c->PSSetSamplers(start, count, samplers); break;
+						case RS_CS: c->CSSetSamplers(start, count, samplers); break;
 					}
 				}
 				break;
 			}
 			case OP_SET_SHADER: {
-				void* sh = Get<void*>(p, 0);
-				UINT n = (UINT)Get<uint64_t>(p, 8);
-				ID3D11ClassInstance* const* ci = n ? (ID3D11ClassInstance* const*)(p + 16) : nullptr;
-				switch (h.a) {
-					case S_VS: c->VSSetShader((ID3D11VertexShader*)sh, ci, n); break;
-					case S_HS: c->HSSetShader((ID3D11HullShader*)sh, ci, n); break;
-					case S_DS: c->DSSetShader((ID3D11DomainShader*)sh, ci, n); break;
-					case S_GS: c->GSSetShader((ID3D11GeometryShader*)sh, ci, n); break;
-					case S_PS: c->PSSetShader((ID3D11PixelShader*)sh, ci, n); break;
-					case S_CS: c->CSSetShader((ID3D11ComputeShader*)sh, ci, n); break;
+				void* shader = Read<void*>(payload, 0);
+				UINT count = (UINT)Read<uint64_t>(payload, 8);
+				ID3D11ClassInstance* const* classInstances = count ? (ID3D11ClassInstance* const*)(payload + 16) : nullptr;
+				switch (header.arg) {
+					case RS_VS: c->VSSetShader((ID3D11VertexShader*)shader, classInstances, count); break;
+					case RS_HS: c->HSSetShader((ID3D11HullShader*)shader, classInstances, count); break;
+					case RS_DS: c->DSSetShader((ID3D11DomainShader*)shader, classInstances, count); break;
+					case RS_GS: c->GSSetShader((ID3D11GeometryShader*)shader, classInstances, count); break;
+					case RS_PS: c->PSSetShader((ID3D11PixelShader*)shader, classInstances, count); break;
+					case RS_CS: c->CSSetShader((ID3D11ComputeShader*)shader, classInstances, count); break;
 				}
 				break;
 			}
 			case OP_CS_UAV: {
-				RecSlots s = Get<RecSlots>(p, 0);
-				const UINT* counts = (const UINT*)(p + sizeof(RecSlots) + s.n * 8);
-				c->CSSetUnorderedAccessViews(s.start, s.n, (ID3D11UnorderedAccessView* const*)(p + sizeof(RecSlots)),
-											 h.a ? counts : nullptr);
+				SlotRange range = Read<SlotRange>(payload, 0);
+				const UINT* initialCounts = (const UINT*)(payload + sizeof(SlotRange) + range.count * 8);
+				c->CSSetUnorderedAccessViews(range.start, range.count, (ID3D11UnorderedAccessView* const*)(payload + sizeof(SlotRange)),
+											 header.arg ? initialCounts : nullptr);
 				break;
 			}
-			case OP_IA_LAYOUT: c->IASetInputLayout(Get<ID3D11InputLayout*>(p, 0)); break;
+			case OP_IA_LAYOUT: c->IASetInputLayout(Read<ID3D11InputLayout*>(payload, 0)); break;
 			case OP_IA_VB: {
-				UINT s = Get<uint32_t>(p, 0), k = Get<uint32_t>(p, 4);
-				ID3D11Buffer* const* b = (ID3D11Buffer* const*)(p + 8);
-				const UINT* strides = (const UINT*)(p + 8 + k * 8);
-				const UINT* offs = (const UINT*)(p + 8 + k * 12);
-				ID3D11Buffer* t[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
-				for (UINT i = 0; i < k && s + i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
-					s_track.vb[s + i] = b[i];
-					s_track.stride[s + i] = strides[i];
-					s_track.off[s + i] = offs[i];
-					t[i] = SubBuf(b[i]);
+				UINT startSlot = Read<uint32_t>(payload, 0), count = Read<uint32_t>(payload, 4);
+				ID3D11Buffer* const* buffers = (ID3D11Buffer* const*)(payload + 8);
+				const UINT* strides = (const UINT*)(payload + 8 + count * 8);
+				const UINT* offsets = (const UINT*)(payload + 8 + count * 12);
+				ID3D11Buffer* substituted[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+				for (UINT i = 0; i < count && startSlot + i < D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; i++) {
+					s_gameBindings.vertexBuffers[startSlot + i] = buffers[i];
+					s_gameBindings.strides[startSlot + i] = strides[i];
+					s_gameBindings.offsets[startSlot + i] = offsets[i];
+					substituted[i] = SubstituteBuffer(buffers[i]);
 				}
-				c->IASetVertexBuffers(s, k, t, strides, offs);
+				c->IASetVertexBuffers(startSlot, count, substituted, strides, offsets);
 				break;
 			}
 			case OP_IA_IB:
-				s_track.ib = Get<ID3D11Buffer*>(p, 0);
-				s_track.ibFmt = (DXGI_FORMAT)Get<uint32_t>(p, 8);
-				s_track.ibOff = Get<uint32_t>(p, 12);
-				c->IASetIndexBuffer(SubBuf(s_track.ib), s_track.ibFmt, s_track.ibOff);
+				s_gameBindings.indexBuffer = Read<ID3D11Buffer*>(payload, 0);
+				s_gameBindings.indexFormat = (DXGI_FORMAT)Read<uint32_t>(payload, 8);
+				s_gameBindings.indexOffset = Read<uint32_t>(payload, 12);
+				c->IASetIndexBuffer(SubstituteBuffer(s_gameBindings.indexBuffer), s_gameBindings.indexFormat, s_gameBindings.indexOffset);
 				break;
-			case OP_GEN: {
-				ID3D11Buffer* b = (ID3D11Buffer*)(uintptr_t)Get<uint64_t>(p, 0);
-				int idx = (int)Get<uint64_t>(p, 8);
-				if (idx < 0 || idx >= s_genCount) break;
-				int k = 0;
-				while (k < s_substCount && s_subst[k].buf != b) k++;
-				if (k == s_substCount) {
-					if (s_substCount >= 256) break;
-					s_substCount++;
+			case OP_NEW_GENERATION: {
+				ID3D11Buffer* buffer = (ID3D11Buffer*)(uintptr_t)Read<uint64_t>(payload, 0);
+				int genIndex = (int)Read<uint64_t>(payload, 8);
+				if (genIndex < 0 || genIndex >= s_generationCount) break;
+				int slot = 0;
+				while (slot < s_substituteCount && s_substitutes[slot].gameBuffer != buffer) slot++;
+				if (slot == s_substituteCount) {
+					if (s_substituteCount >= 256) break;
+					s_substituteCount++;
 				}
-				s_subst[k] = {b, s_gens[idx].snap};
-				Rebind(c, b);
+				s_substitutes[slot] = {buffer, s_generations[genIndex].snapshot};
+				RebindBuffer(c, buffer);
 				break;
 			}
-			case OP_IA_TOPO: c->IASetPrimitiveTopology((D3D11_PRIMITIVE_TOPOLOGY)h.a); break;
+			case OP_IA_TOPOLOGY: c->IASetPrimitiveTopology((D3D11_PRIMITIVE_TOPOLOGY)header.arg); break;
 			case OP_DRAW: {
-				if (skipping) {
-					s_skippedDraws++;
+				if (inShadowPass) {
+					s_skippedShadowDraws++;
 					break;
 				}
 				GpuTimingDraw();
-				const uint32_t* v = (const uint32_t*)p;
-				switch (h.a) {
-					case 0: c->Draw(v[0], v[1]); break;
-					case 1: c->DrawIndexed(v[0], v[1], (INT)v[2]); break;
-					case 2: c->DrawInstanced(v[0], v[1], v[2], v[3]); break;
-					case 3: c->DrawIndexedInstanced(v[0], v[1], v[2], (INT)v[3], v[4]); break;
+				const uint32_t* args = (const uint32_t*)payload;
+				switch (header.arg) {
+					case DRAW: c->Draw(args[0], args[1]); break;
+					case DRAW_INDEXED: c->DrawIndexed(args[0], args[1], (INT)args[2]); break;
+					case DRAW_INSTANCED: c->DrawInstanced(args[0], args[1], args[2], args[3]); break;
+					case DRAW_INDEXED_INSTANCED: c->DrawIndexedInstanced(args[0], args[1], args[2], (INT)args[3], args[4]); break;
 				}
 				break;
 			}
 			case OP_DRAW_AUTO: c->DrawAuto(); break;
 			case OP_DRAW_INDIRECT:
-				if (h.a)
-					c->DrawIndexedInstancedIndirect(SubBuf(Get<ID3D11Buffer*>(p, 0)), Get<uint32_t>(p, 8));
+				if (header.arg)
+					c->DrawIndexedInstancedIndirect(SubstituteBuffer(Read<ID3D11Buffer*>(payload, 0)), Read<uint32_t>(payload, 8));
 				else
-					c->DrawInstancedIndirect(SubBuf(Get<ID3D11Buffer*>(p, 0)), Get<uint32_t>(p, 8));
+					c->DrawInstancedIndirect(SubstituteBuffer(Read<ID3D11Buffer*>(payload, 0)), Read<uint32_t>(payload, 8));
 				break;
 			case OP_DISPATCH: {
-				GpuTimingCompute(c, "R ", h.a);
-				const uint32_t* v = (const uint32_t*)p;
-				if (h.a) ViewFixBeforeDispatch(c, h.a);
-				c->Dispatch(v[0], v[1], v[2]);
-				if (h.a) ViewFixAfterDispatch(c);
+				GpuTimingCompute(c, "R ", header.arg);
+				const uint32_t* groups = (const uint32_t*)payload;
+				if (header.arg) ViewFixBeforeDispatch(c, header.arg);
+				c->Dispatch(groups[0], groups[1], groups[2]);
+				if (header.arg) ViewFixAfterDispatch(c);
 				break;
 			}
-			case OP_DISPATCH_INDIRECT: c->DispatchIndirect(SubBuf(Get<ID3D11Buffer*>(p, 0)), Get<uint32_t>(p, 8)); break;
+			case OP_DISPATCH_INDIRECT: c->DispatchIndirect(SubstituteBuffer(Read<ID3D11Buffer*>(payload, 0)), Read<uint32_t>(payload, 8)); break;
 			case OP_OM_RT: {
-				ID3D11RenderTargetView* const* rtvs = (ID3D11RenderTargetView* const*)(p + 8);
-				ID3D11DepthStencilView* dsv = Get<ID3D11DepthStencilView*>(p, 0);
-				skipping = g_cfg.reuseShadows && AllNull(rtvs, h.a) && IsShadowDsv(dsv);
-				c->OMSetRenderTargets(h.a, rtvs, dsv);
-				GpuTimingTargets(c, h.a, rtvs, dsv, skipping ? "R reused " : "R ");
+				ID3D11RenderTargetView* const* rtvs = (ID3D11RenderTargetView* const*)(payload + 8);
+				ID3D11DepthStencilView* dsv = Read<ID3D11DepthStencilView*>(payload, 0);
+				inShadowPass = g_cfg.reuseShadows && AllNull(rtvs, header.arg) && IsShadowDsv(dsv);
+				c->OMSetRenderTargets(header.arg, rtvs, dsv);
+				GpuTimingTargets(c, header.arg, rtvs, dsv, inShadowPass ? "R reused " : "R ");
 				break;
 			}
 			case OP_OM_RT_UAV: {
-				UINT nrt = Get<uint32_t>(p, 0), us = Get<uint32_t>(p, 4), nu = Get<uint32_t>(p, 8),
-					 hasCounts = Get<uint32_t>(p, 12);
-				UINT kr = nrt == D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL ? 0 : (nrt > 8 ? 8 : nrt);
-				UINT ku = nu == D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? 0 : (nu > 8 ? 8 : nu);
-				if (nrt != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
-					skipping = g_cfg.reuseShadows && AllNull((ID3D11RenderTargetView* const*)(p + 24), kr) && nu == 0 &&
-							   IsShadowDsv(Get<ID3D11DepthStencilView*>(p, 16));
-					GpuTimingTargets(c, kr, (ID3D11RenderTargetView* const*)(p + 24), Get<ID3D11DepthStencilView*>(p, 16),
-									 skipping ? "R reused " : "R ");
+				UINT rtvCount = Read<uint32_t>(payload, 0), uavStart = Read<uint32_t>(payload, 4), uavCount = Read<uint32_t>(payload, 8),
+					 hasCounts = Read<uint32_t>(payload, 12);
+				UINT rtvsKept = rtvCount == D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL ? 0 : (rtvCount > 8 ? 8 : rtvCount);
+				UINT uavsKept = uavCount == D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? 0 : (uavCount > 8 ? 8 : uavCount);
+				if (rtvCount != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
+					inShadowPass = g_cfg.reuseShadows && AllNull((ID3D11RenderTargetView* const*)(payload + 24), rtvsKept) && uavCount == 0 &&
+								   IsShadowDsv(Read<ID3D11DepthStencilView*>(payload, 16));
+					GpuTimingTargets(c, rtvsKept, (ID3D11RenderTargetView* const*)(payload + 24), Read<ID3D11DepthStencilView*>(payload, 16),
+									 inShadowPass ? "R reused " : "R ");
 				}
 				c->OMSetRenderTargetsAndUnorderedAccessViews(
-					nrt, kr ? (ID3D11RenderTargetView* const*)(p + 24) : nullptr, Get<ID3D11DepthStencilView*>(p, 16), us, nu,
-					ku ? (ID3D11UnorderedAccessView* const*)(p + 24 + kr * 8) : nullptr,
-					hasCounts && ku ? (const UINT*)(p + 24 + kr * 8 + ku * 8) : nullptr);
+					rtvCount, rtvsKept ? (ID3D11RenderTargetView* const*)(payload + 24) : nullptr, Read<ID3D11DepthStencilView*>(payload, 16), uavStart, uavCount,
+					uavsKept ? (ID3D11UnorderedAccessView* const*)(payload + 24 + rtvsKept * 8) : nullptr,
+					hasCounts && uavsKept ? (const UINT*)(payload + 24 + rtvsKept * 8 + uavsKept * 8) : nullptr);
 				break;
 			}
 			case OP_OM_BLEND:
-				c->OMSetBlendState(Get<ID3D11BlendState*>(p, 0), h.a ? (const FLOAT*)(p + 8) : nullptr, Get<uint32_t>(p, 24));
+				c->OMSetBlendState(Read<ID3D11BlendState*>(payload, 0), header.arg ? (const FLOAT*)(payload + 8) : nullptr, Read<uint32_t>(payload, 24));
 				break;
-			case OP_OM_DS: c->OMSetDepthStencilState(Get<ID3D11DepthStencilState*>(p, 0), Get<uint32_t>(p, 8)); break;
-			case OP_RS_STATE: c->RSSetState(Get<ID3D11RasterizerState*>(p, 0)); break;
-			case OP_RS_VP: c->RSSetViewports(h.a, (const D3D11_VIEWPORT*)p); break;
-			case OP_RS_SCISSOR: c->RSSetScissorRects(h.a, (const D3D11_RECT*)p); break;
-			case OP_SO: c->SOSetTargets(h.a, (ID3D11Buffer* const*)p, (const UINT*)(p + h.a * 8)); break;
+			case OP_OM_DS: c->OMSetDepthStencilState(Read<ID3D11DepthStencilState*>(payload, 0), Read<uint32_t>(payload, 8)); break;
+			case OP_RS_STATE: c->RSSetState(Read<ID3D11RasterizerState*>(payload, 0)); break;
+			case OP_RS_VP: c->RSSetViewports(header.arg, (const D3D11_VIEWPORT*)payload); break;
+			case OP_RS_SCISSOR: c->RSSetScissorRects(header.arg, (const D3D11_RECT*)payload); break;
+			case OP_SO_TARGETS: c->SOSetTargets(header.arg, (ID3D11Buffer* const*)payload, (const UINT*)(payload + header.arg * 8)); break;
 			case OP_COPY_REGION: {
-				const uint32_t* v = (const uint32_t*)(p + 16);
-				c->CopySubresourceRegion(Get<ID3D11Resource*>(p, 0), v[0], v[1], v[2], v[3],
-										 (ID3D11Resource*)SubBuf((ID3D11Buffer*)Get<ID3D11Resource*>(p, 8)), v[4],
-										 h.a ? (const D3D11_BOX*)(p + 36) : nullptr);
+				const uint32_t* fields = (const uint32_t*)(payload + 16);
+				c->CopySubresourceRegion(Read<ID3D11Resource*>(payload, 0), fields[0], fields[1], fields[2], fields[3],
+										 (ID3D11Resource*)SubstituteBuffer((ID3D11Buffer*)Read<ID3D11Resource*>(payload, 8)), fields[4],
+										 header.arg ? (const D3D11_BOX*)(payload + 36) : nullptr);
 				break;
 			}
 			case OP_COPY:
-				c->CopyResource(Get<ID3D11Resource*>(p, 0), (ID3D11Resource*)SubBuf((ID3D11Buffer*)Get<ID3D11Resource*>(p, 8)));
+				c->CopyResource(Read<ID3D11Resource*>(payload, 0), (ID3D11Resource*)SubstituteBuffer((ID3D11Buffer*)Read<ID3D11Resource*>(payload, 8)));
 				break;
 			case OP_UPDATE: {
-				struct Hdr {
-					void* res;
-					uint32_t sub, hasBox;
-					D3D11_BOX box;
-					uint32_t rp, dp, bytes, isCB;
-				} u;
-				memcpy(&u, p, sizeof(u));
-				const void* data = p + sizeof(u);
-				if (u.isCB) data = PatchConstantBufferForReplay((ID3D11Resource*)u.res, data, u.bytes, scratch);
-				c->UpdateSubresource((ID3D11Resource*)u.res, u.sub, u.hasBox ? &u.box : nullptr, data, u.rp, u.dp);
+				UpdateCommand cmd;
+				memcpy(&cmd, payload, sizeof(cmd));
+				const void* data = payload + sizeof(cmd);
+				if (cmd.isConstantBuffer) data = PatchConstantBufferForReplay((ID3D11Resource*)cmd.res, data, cmd.bytes, patchedConstants);
+				c->UpdateSubresource((ID3D11Resource*)cmd.res, cmd.sub, cmd.hasBox ? &cmd.box : nullptr, data, cmd.rowPitch, cmd.depthPitch);
 				break;
 			}
 			case OP_COPY_COUNT:
-				c->CopyStructureCount(Get<ID3D11Buffer*>(p, 0), Get<uint32_t>(p, 16), Get<ID3D11UnorderedAccessView*>(p, 8));
+				c->CopyStructureCount(Read<ID3D11Buffer*>(payload, 0), Read<uint32_t>(payload, 16), Read<ID3D11UnorderedAccessView*>(payload, 8));
 				break;
-			case OP_CLEAR_RTV: c->ClearRenderTargetView(Get<ID3D11RenderTargetView*>(p, 0), (const FLOAT*)(p + 8)); break;
-			case OP_CLEAR_UAV_U: c->ClearUnorderedAccessViewUint(Get<ID3D11UnorderedAccessView*>(p, 0), (const UINT*)(p + 8)); break;
-			case OP_CLEAR_UAV_F: c->ClearUnorderedAccessViewFloat(Get<ID3D11UnorderedAccessView*>(p, 0), (const FLOAT*)(p + 8)); break;
+			case OP_CLEAR_RTV: c->ClearRenderTargetView(Read<ID3D11RenderTargetView*>(payload, 0), (const FLOAT*)(payload + 8)); break;
+			case OP_CLEAR_UAV_UINT: c->ClearUnorderedAccessViewUint(Read<ID3D11UnorderedAccessView*>(payload, 0), (const UINT*)(payload + 8)); break;
+			case OP_CLEAR_UAV_FLOAT: c->ClearUnorderedAccessViewFloat(Read<ID3D11UnorderedAccessView*>(payload, 0), (const FLOAT*)(payload + 8)); break;
 			case OP_CLEAR_DSV:
-				if (g_cfg.reuseShadows && IsShadowDsv(Get<ID3D11DepthStencilView*>(p, 0))) break;
-				c->ClearDepthStencilView(Get<ID3D11DepthStencilView*>(p, 0), Get<uint32_t>(p, 8), Get<float>(p, 12),
-										 (UINT8)Get<uint32_t>(p, 16));
+				if (g_cfg.reuseShadows && IsShadowDsv(Read<ID3D11DepthStencilView*>(payload, 0))) break;
+				c->ClearDepthStencilView(Read<ID3D11DepthStencilView*>(payload, 0), Read<uint32_t>(payload, 8), Read<float>(payload, 12),
+										 (UINT8)Read<uint32_t>(payload, 16));
 				break;
-			case OP_GENMIPS: c->GenerateMips(Get<ID3D11ShaderResourceView*>(p, 0)); break;
-			case OP_MINLOD: c->SetResourceMinLOD(Get<ID3D11Resource*>(p, 0), Get<float>(p, 8)); break;
+			case OP_GENERATE_MIPS: c->GenerateMips(Read<ID3D11ShaderResourceView*>(payload, 0)); break;
+			case OP_MIN_LOD: c->SetResourceMinLOD(Read<ID3D11Resource*>(payload, 0), Read<float>(payload, 8)); break;
 			case OP_RESOLVE:
-				c->ResolveSubresource(Get<ID3D11Resource*>(p, 0), Get<uint32_t>(p, 16), Get<ID3D11Resource*>(p, 8),
-									  Get<uint32_t>(p, 20), (DXGI_FORMAT)Get<uint32_t>(p, 24));
+				c->ResolveSubresource(Read<ID3D11Resource*>(payload, 0), Read<uint32_t>(payload, 16), Read<ID3D11Resource*>(payload, 8),
+									  Read<uint32_t>(payload, 20), (DXGI_FORMAT)Read<uint32_t>(payload, 24));
 				break;
 			case OP_MAP: {
-				struct Hdr {
-					void* res;
-					uint32_t sub, type, flags, rowPitch, depthPitch, bytes, isCB, pad;
-				} m;
-				memcpy(&m, p, sizeof(m));
-				const void* data = p + sizeof(m);
-				if (m.isCB) data = PatchConstantBufferForReplay((ID3D11Resource*)m.res, data, m.bytes, scratch);
+				MapCommand cmd;
+				memcpy(&cmd, payload, sizeof(cmd));
+				const void* data = payload + sizeof(cmd);
+				if (cmd.isConstantBuffer) data = PatchConstantBufferForReplay((ID3D11Resource*)cmd.res, data, cmd.bytes, patchedConstants);
 				// A buffer written with NO_OVERWRITE is mapped with DISCARD here and gets its whole
 				// recorded contents (which include everything written before): draws already
 				// submitted keep reading the old copy, so nothing they use is overwritten.
-				D3D11_MAP type = (D3D11_MAP)m.type;
+				D3D11_MAP type = (D3D11_MAP)cmd.type;
 				if (type == D3D11_MAP_WRITE_NO_OVERWRITE) type = D3D11_MAP_WRITE_DISCARD;
-				D3D11_MAPPED_SUBRESOURCE ms;
-				if (SUCCEEDED(c->Map((ID3D11Resource*)m.res, m.sub, type, 0, &ms))) {
-					if (ms.RowPitch == m.rowPitch && ms.DepthPitch == m.depthPitch) {
-						memcpy(ms.pData, data, m.bytes);
+				D3D11_MAPPED_SUBRESOURCE mapped;
+				if (SUCCEEDED(c->Map((ID3D11Resource*)cmd.res, cmd.sub, type, 0, &mapped))) {
+					if (mapped.RowPitch == cmd.rowPitch && mapped.DepthPitch == cmd.depthPitch) {
+						memcpy(mapped.pData, data, cmd.bytes);
 					} else {  // a different row pitch this time: copy row by row
-						Extent e;
-						if (GetExtent((ID3D11Resource*)m.res, m.sub, &e)) {
-							UINT bpb = 1, bd = 1;
-							FormatInfo(e.fmt, &bpb, &bd);
-							UINT rows = (e.h + bd - 1) / bd, row = ((e.w + bd - 1) / bd) * bpb;
-							for (UINT z = 0; z < e.d; z++)
+						Extent extent;
+						if (GetExtent((ID3D11Resource*)cmd.res, cmd.sub, &extent)) {
+							UINT bytesPerBlock = 1, blockDim = 1;
+							FormatInfo(extent.format, &bytesPerBlock, &blockDim);
+							UINT rows = (extent.height + blockDim - 1) / blockDim, rowBytes = ((extent.width + blockDim - 1) / blockDim) * bytesPerBlock;
+							for (UINT z = 0; z < extent.depth; z++)
 								for (UINT y = 0; y < rows; y++)
-									memcpy((uint8_t*)ms.pData + (size_t)z * ms.DepthPitch + (size_t)y * ms.RowPitch,
-										   (const uint8_t*)data + (size_t)z * m.depthPitch + (size_t)y * m.rowPitch, row);
+									memcpy((uint8_t*)mapped.pData + (size_t)z * mapped.DepthPitch + (size_t)y * mapped.RowPitch,
+										   (const uint8_t*)data + (size_t)z * cmd.depthPitch + (size_t)y * cmd.rowPitch, rowBytes);
 						}
 					}
-					c->Unmap((ID3D11Resource*)m.res, m.sub);
+					c->Unmap((ID3D11Resource*)cmd.res, cmd.sub);
 				}
 				break;
 			}
-			case OP_PREDICATION: c->SetPredication(Get<ID3D11Predicate*>(p, 0), h.a ? TRUE : FALSE); break;
+			case OP_PREDICATION: c->SetPredication(Read<ID3D11Predicate*>(payload, 0), header.arg ? TRUE : FALSE); break;
 			case OP_CLEAR_STATE:
 				c->ClearState();
-				memset(&s_track, 0, sizeof(s_track));
+				memset(&s_gameBindings, 0, sizeof(s_gameBindings));
 				break;
 			case OP_DISCARD_RES:
 			case OP_DISCARD_VIEW: {
-				ID3D11DeviceContext1* c1 = nullptr;
-				if (SUCCEEDED(c->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&c1))) {
-					if (h.op == OP_DISCARD_RES)
-						c1->DiscardResource(Get<ID3D11Resource*>(p, 0));
+				ID3D11DeviceContext1* context1 = nullptr;
+				if (SUCCEEDED(c->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&context1))) {
+					if (header.op == OP_DISCARD_RES)
+						context1->DiscardResource(Read<ID3D11Resource*>(payload, 0));
 					else
-						c1->DiscardView(Get<ID3D11View*>(p, 0));
-					c1->Release();
+						context1->DiscardView(Read<ID3D11View*>(payload, 0));
+					context1->Release();
 				}
 				break;
 			}
@@ -1734,219 +1714,218 @@ void Play(ID3D11DeviceContext* c) {
 // Public API
 // ---------------------------------------------------------------------------------------------
 void ReplayInstall(ID3D11DeviceContext* ctx) {
-	static bool done;
-	if (done) return;
-	done = true;
-	g_recCtx = ctx;
-	s_arena = (uint8_t*)VirtualAlloc(nullptr, kArenaCap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	static bool installed;
+	if (installed) return;
+	installed = true;
+	g_gameContext = ctx;
+	s_arena = (uint8_t*)VirtualAlloc(nullptr, kArenaBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	s_refs = (IUnknown**)VirtualAlloc(nullptr, kMaxRefs * sizeof(IUnknown*), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	if (!s_arena || !s_refs) {
 		Log("synchronized: could not reserve recording memory; synchronized mode unavailable");
 		return;
 	}
-	void** v = *(void***)ctx;
-	int ok = 0, want = 0;
-#define HK(idx, fn, orig, name) \
-	want++;                     \
-	ok += HookFunction(v[idx], (void*)&fn, (void**)&orig, name)
-	HK(10, H_Slots<0>, s_slotHooks[0].orig, s_slotHooks[0].name);
-	HK(25, H_Slots<1>, s_slotHooks[1].orig, s_slotHooks[1].name);
-	HK(26, H_Slots<2>, s_slotHooks[2].orig, s_slotHooks[2].name);
-	HK(31, H_Slots<3>, s_slotHooks[3].orig, s_slotHooks[3].name);
-	HK(32, H_Slots<4>, s_slotHooks[4].orig, s_slotHooks[4].name);
-	HK(59, H_Slots<5>, s_slotHooks[5].orig, s_slotHooks[5].name);
-	HK(61, H_Slots<6>, s_slotHooks[6].orig, s_slotHooks[6].name);
-	HK(62, H_Slots<7>, s_slotHooks[7].orig, s_slotHooks[7].name);
-	HK(63, H_Slots<8>, s_slotHooks[8].orig, s_slotHooks[8].name);
-	HK(65, H_Slots<9>, s_slotHooks[9].orig, s_slotHooks[9].name);
-	HK(66, H_Slots<10>, s_slotHooks[10].orig, s_slotHooks[10].name);
-	HK(70, H_Slots<11>, s_slotHooks[11].orig, s_slotHooks[11].name);
-	HK(23, H_Shader<0>, s_shaderHooks[0].orig, s_shaderHooks[0].name);
-	HK(60, H_Shader<1>, s_shaderHooks[1].orig, s_shaderHooks[1].name);
-	HK(64, H_Shader<2>, s_shaderHooks[2].orig, s_shaderHooks[2].name);
-	HK(17, H_IASetInputLayout, o_IASetInputLayout, "IASetInputLayout");
-	HK(18, H_IASetVertexBuffers, o_IASetVertexBuffers, "IASetVertexBuffers");
-	HK(19, H_IASetIndexBuffer, o_IASetIndexBuffer, "IASetIndexBuffer");
-	HK(24, H_IASetPrimitiveTopology, o_IASetPrimitiveTopology, "IASetPrimitiveTopology");
-	HK(30, H_SetPredication, o_SetPredication, "SetPredication");
-	HK(34, H_OMSetRTUAV, o_OMSetRTUAV, "OMSetRenderTargetsAndUnorderedAccessViews");
-	HK(35, H_OMSetBlendState, o_OMSetBlendState, "OMSetBlendState");
-	HK(36, H_OMSetDepthStencilState, o_OMSetDepthStencilState, "OMSetDepthStencilState");
-	HK(37, H_SOSetTargets, o_SOSetTargets, "SOSetTargets");
-	HK(38, H_DrawAuto, o_DrawAuto, "DrawAuto");
-	HK(39, H_DrawIndexedInstancedIndirect, o_DrawIndexedInstancedIndirect, "DrawIndexedInstancedIndirect");
-	HK(40, H_DrawInstancedIndirect, o_DrawInstancedIndirect, "DrawInstancedIndirect");
-	HK(42, H_DispatchIndirect, o_DispatchIndirect, "DispatchIndirect");
-	HK(43, H_RSSetState, o_RSSetState, "RSSetState");
-	HK(45, H_RSSetScissorRects, o_RSSetScissorRects, "RSSetScissorRects");
-	HK(46, H_CopySubresourceRegion, o_CopySubresourceRegion, "CopySubresourceRegion");
-	HK(47, H_CopyResource, o_CopyResource, "CopyResource");
-	HK(49, H_CopyStructureCount, o_CopyStructureCount, "CopyStructureCount");
-	HK(50, H_ClearRTV, o_ClearRTV, "ClearRenderTargetView");
-	HK(51, H_ClearUAVUint, o_ClearUAVUint, "ClearUnorderedAccessViewUint");
-	HK(52, H_ClearUAVFloat, o_ClearUAVFloat, "ClearUnorderedAccessViewFloat");
-	HK(53, H_ClearDSV, o_ClearDSV, "ClearDepthStencilView");
-	HK(54, H_GenerateMips, o_GenerateMips, "GenerateMips");
-	HK(55, H_SetResourceMinLOD, o_SetResourceMinLOD, "SetResourceMinLOD");
-	HK(57, H_Resolve, o_Resolve, "ResolveSubresource");
-	HK(110, H_ClearState, o_ClearState, "ClearState");
-	ID3D11DeviceContext1* c1 = nullptr;
-	if (SUCCEEDED(ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&c1)) && c1) {
-		void** v1 = *(void***)c1;
-#define HK1(idx, fn, orig, name) \
-	want++;                      \
-	ok += HookFunction(v1[idx], (void*)&fn, (void**)&orig, name)
-		HK1(117, H_DiscardResource, o_DiscardResource, "DiscardResource");
-		HK1(118, H_DiscardView, o_DiscardView, "DiscardView");
-		HK1(115, H_Ctx1<0>, o_Ctx1[0], "CopySubresourceRegion1");
-		HK1(116, H_Ctx1<1>, o_Ctx1[1], "UpdateSubresource1");
-		HK1(119, H_Ctx1<2>, o_Ctx1[2], "VSSetConstantBuffers1");
-		HK1(123, H_Ctx1<3>, o_Ctx1[3], "PSSetConstantBuffers1");
-		HK1(124, H_Ctx1<4>, o_Ctx1[4], "CSSetConstantBuffers1");
-		HK1(132, H_Ctx1<5>, o_Ctx1[5], "ClearView");
-		HK1(131, H_Ctx1<6>, o_Ctx1[6], "SwapDeviceContextState");
-		HK1(122, H_Ctx1<7>, o_Ctx1[7], "GSSetConstantBuffers1");
-#undef HK1
-		c1->Release();
+	void** vtable = *(void***)ctx;
+	int hooked = 0, total = 0;
+#define HOOK(index, hook, original, name) \
+	total++;                              \
+	hooked += HookFunction(vtable[index], (void*)&hook, (void**)&original, name)
+	HOOK(10, H_Slots<0>, s_slotHooks[0].orig, s_slotHooks[0].name);
+	HOOK(25, H_Slots<1>, s_slotHooks[1].orig, s_slotHooks[1].name);
+	HOOK(26, H_Slots<2>, s_slotHooks[2].orig, s_slotHooks[2].name);
+	HOOK(31, H_Slots<3>, s_slotHooks[3].orig, s_slotHooks[3].name);
+	HOOK(32, H_Slots<4>, s_slotHooks[4].orig, s_slotHooks[4].name);
+	HOOK(59, H_Slots<5>, s_slotHooks[5].orig, s_slotHooks[5].name);
+	HOOK(61, H_Slots<6>, s_slotHooks[6].orig, s_slotHooks[6].name);
+	HOOK(62, H_Slots<7>, s_slotHooks[7].orig, s_slotHooks[7].name);
+	HOOK(63, H_Slots<8>, s_slotHooks[8].orig, s_slotHooks[8].name);
+	HOOK(65, H_Slots<9>, s_slotHooks[9].orig, s_slotHooks[9].name);
+	HOOK(66, H_Slots<10>, s_slotHooks[10].orig, s_slotHooks[10].name);
+	HOOK(70, H_Slots<11>, s_slotHooks[11].orig, s_slotHooks[11].name);
+	HOOK(23, H_Shader<0>, s_shaderHooks[0].orig, s_shaderHooks[0].name);
+	HOOK(60, H_Shader<1>, s_shaderHooks[1].orig, s_shaderHooks[1].name);
+	HOOK(64, H_Shader<2>, s_shaderHooks[2].orig, s_shaderHooks[2].name);
+	HOOK(17, H_IASetInputLayout, o_IASetInputLayout, "IASetInputLayout");
+	HOOK(18, H_IASetVertexBuffers, o_IASetVertexBuffers, "IASetVertexBuffers");
+	HOOK(19, H_IASetIndexBuffer, o_IASetIndexBuffer, "IASetIndexBuffer");
+	HOOK(24, H_IASetPrimitiveTopology, o_IASetPrimitiveTopology, "IASetPrimitiveTopology");
+	HOOK(30, H_SetPredication, o_SetPredication, "SetPredication");
+	HOOK(34, H_OMSetRTUAV, o_OMSetRTUAV, "OMSetRenderTargetsAndUnorderedAccessViews");
+	HOOK(35, H_OMSetBlendState, o_OMSetBlendState, "OMSetBlendState");
+	HOOK(36, H_OMSetDepthStencilState, o_OMSetDepthStencilState, "OMSetDepthStencilState");
+	HOOK(37, H_SOSetTargets, o_SOSetTargets, "SOSetTargets");
+	HOOK(38, H_DrawAuto, o_DrawAuto, "DrawAuto");
+	HOOK(39, H_DrawIndexedInstancedIndirect, o_DrawIndexedInstancedIndirect, "DrawIndexedInstancedIndirect");
+	HOOK(40, H_DrawInstancedIndirect, o_DrawInstancedIndirect, "DrawInstancedIndirect");
+	HOOK(42, H_DispatchIndirect, o_DispatchIndirect, "DispatchIndirect");
+	HOOK(43, H_RSSetState, o_RSSetState, "RSSetState");
+	HOOK(45, H_RSSetScissorRects, o_RSSetScissorRects, "RSSetScissorRects");
+	HOOK(46, H_CopySubresourceRegion, o_CopySubresourceRegion, "CopySubresourceRegion");
+	HOOK(47, H_CopyResource, o_CopyResource, "CopyResource");
+	HOOK(49, H_CopyStructureCount, o_CopyStructureCount, "CopyStructureCount");
+	HOOK(50, H_ClearRTV, o_ClearRTV, "ClearRenderTargetView");
+	HOOK(51, H_ClearUAVUint, o_ClearUAVUint, "ClearUnorderedAccessViewUint");
+	HOOK(52, H_ClearUAVFloat, o_ClearUAVFloat, "ClearUnorderedAccessViewFloat");
+	HOOK(53, H_ClearDSV, o_ClearDSV, "ClearDepthStencilView");
+	HOOK(54, H_GenerateMips, o_GenerateMips, "GenerateMips");
+	HOOK(55, H_SetResourceMinLOD, o_SetResourceMinLOD, "SetResourceMinLOD");
+	HOOK(57, H_Resolve, o_Resolve, "ResolveSubresource");
+	HOOK(110, H_ClearState, o_ClearState, "ClearState");
+	ID3D11DeviceContext1* context1 = nullptr;
+	if (SUCCEEDED(ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&context1)) && context1) {
+		void** vtable1 = *(void***)context1;
+#define HOOK1(index, hook, original, name) \
+	total++;                               \
+	hooked += HookFunction(vtable1[index], (void*)&hook, (void**)&original, name)
+		HOOK1(117, H_DiscardResource, o_DiscardResource, "DiscardResource");
+		HOOK1(118, H_DiscardView, o_DiscardView, "DiscardView");
+		HOOK1(115, H_Ctx1<0>, o_Ctx1[0], "CopySubresourceRegion1");
+		HOOK1(116, H_Ctx1<1>, o_Ctx1[1], "UpdateSubresource1");
+		HOOK1(119, H_Ctx1<2>, o_Ctx1[2], "VSSetConstantBuffers1");
+		HOOK1(123, H_Ctx1<3>, o_Ctx1[3], "PSSetConstantBuffers1");
+		HOOK1(124, H_Ctx1<4>, o_Ctx1[4], "CSSetConstantBuffers1");
+		HOOK1(132, H_Ctx1<5>, o_Ctx1[5], "ClearView");
+		HOOK1(131, H_Ctx1<6>, o_Ctx1[6], "SwapDeviceContextState");
+		HOOK1(122, H_Ctx1<7>, o_Ctx1[7], "GSSetConstantBuffers1");
+#undef HOOK1
+		context1->Release();
 	}
-#undef HK
-	s_ready = ok == want;
-	Log("synchronized: %d/%d extra context hooks in place%s (Synchronized=%d, F5 switches it)", ok, want,
-		s_ready ? "" : "; synchronized mode unavailable", g_cfg.synchronized);
+#undef HOOK
+	s_hooksReady = hooked == total;
+	Log("synchronized: %d/%d extra context hooks in place%s (Synchronized=%d, F5 switches it)", hooked, total,
+		s_hooksReady ? "" : "; synchronized mode unavailable", g_cfg.synchronized);
 }
 
-bool ReplayAvailable() { return s_ready; }
+bool ReplayAvailable() { return s_hooksReady; }
 
 // Our own drawing at Present (depth reprojection): the game's state is saved and put back.
-static StateBlock s_tempState;
-void StateSaveTemp(ID3D11DeviceContext* c) { CaptureState(c, s_tempState); }
+static PipelineState s_modDrawState;
+void StateSaveTemp(ID3D11DeviceContext* c) { CapturePipelineState(c, s_modDrawState); }
 void StateRestoreTemp(ID3D11DeviceContext* c) {
-	ApplyState(c, s_tempState);
-	ReleaseState(s_tempState);
+	ApplyPipelineState(c, s_modDrawState);
+	ReleasePipelineState(s_modDrawState);
 }
 
-// Right after Present (StereoBeginFrame has decided this frame is synchronized).
 // Drops every reference the recorder holds on the game's objects. The swapchain can only be
-// resized when nothing holds its back buffer (0.3.27: the game froze switching to 4.8K, its
-// ResizeBuffers failed with DXGI_ERROR_INVALID_CALL because the saved pipeline states still had
-// the back buffer's render target view).
+// resized when nothing holds its back buffer: a saved pipeline state still holding its render
+// target view makes ResizeBuffers fail and the game freezes.
 void ReplayRelease() {
-	if (!s_ready) return;
-	AcquireSRWLockExclusive(&s_lock);
-	InterlockedExchange(&g_recOn, 0);
-	s_frameValid = false;
-	for (auto& o : s_open) o.res = nullptr;
-	ReleaseRefs();
-	s_len = 0;
-	ReleaseViewCache();
-	ReleaseState(s_startState);
-	ReleaseState(s_endState);
-	ReleaseState(s_finalState);
-	ReleaseSRWLockExclusive(&s_lock);
+	if (!s_hooksReady) return;
+	AcquireSRWLockExclusive(&s_recordLock);
+	InterlockedExchange(&g_recording, 0);
+	s_recordingValid = false;
+	for (auto& o : s_openMaps) o.res = nullptr;
+	ReleaseHeldRefs();
+	s_arenaUsed = 0;
+	ReleaseSnapshotViews();
+	ReleasePipelineState(s_recordStartState);
+	ReleasePipelineState(s_presentState);
+	ReleasePipelineState(s_finalPassState);
+	ReleaseSRWLockExclusive(&s_recordLock);
 }
 
+// Right after Present (StereoBeginFrame has decided whether this frame is synchronized).
 void ReplayFrameStart(ID3D11DeviceContext* c, bool synchronized) {
-	if (!s_ready) return;
+	if (!s_hooksReady) return;
 	if (!synchronized) {
 		ReplayRelease();
 		return;
 	}
-	ReleaseState(s_finalState);
-	AcquireSRWLockExclusive(&s_lock);
-	InterlockedExchange(&g_recOn, 0);
-	for (auto& o : s_open) o.res = nullptr;
-	ReleaseRefs();
-	s_len = 0;
-	s_frameCmds = 0;
-	s_copyMs = 0;
-	memset(s_counts, 0, sizeof(s_counts));
-	s_frameValid = synchronized;
-	s_cancelWhy = nullptr;
+	ReleasePipelineState(s_finalPassState);
+	AcquireSRWLockExclusive(&s_recordLock);
+	InterlockedExchange(&g_recording, 0);
+	for (auto& o : s_openMaps) o.res = nullptr;
+	ReleaseHeldRefs();
+	s_arenaUsed = 0;
+	s_frameCommands = 0;
+	s_uploadCopyMs = 0;
+	memset(s_opCounts, 0, sizeof(s_opCounts));
+	s_recordingValid = synchronized;
+	s_cancelReason = nullptr;
 	s_stoppedAtUi = false;
-	s_genCount = 0;
-	for (int i = 0; i < s_poolCount; i++) s_pool[i].used = false;
-	ReleaseViewCache();
-	ReleaseSRWLockExclusive(&s_lock);
+	s_generationCount = 0;
+	for (int i = 0; i < s_poolCount; i++) s_pool[i].inUse = false;
+	ReleaseSnapshotViews();
+	ReleaseSRWLockExclusive(&s_recordLock);
 	if (!synchronized) return;
-	CaptureState(c, s_startState);
-	InterlockedExchange(&g_recOn, 1);
+	CapturePipelineState(c, s_recordStartState);
+	InterlockedExchange(&g_recording, 1);
 }
 
 // At the first UI draw (fromUi) or at Present.
 void ReplayStop(bool fromUi) {
-	if (!g_recOn) return;
-	AcquireSRWLockExclusive(&s_lock);
-	if (g_recOn) {
-		InterlockedExchange(&g_recOn, 0);
+	if (!g_recording) return;
+	AcquireSRWLockExclusive(&s_recordLock);
+	if (g_recording) {
+		InterlockedExchange(&g_recording, 0);
 		s_stoppedAtUi = fromUi;
-		for (int i = 0; i < s_genCount; i++) CloseGen(s_gens[i]);
-		for (auto& o : s_open)
+		for (int i = 0; i < s_generationCount; i++) CloseGeneration(s_generations[i]);
+		for (auto& o : s_openMaps)
 			if (o.res) {  // still mapped: the game writes it later, can't replay this frame
-				s_frameValid = false;
-				s_cancelWhy = "a resource stayed mapped across the end of the recording";
+				s_recordingValid = false;
+				s_cancelReason = "a resource stayed mapped across the end of the recording";
 			}
 	}
-	ReleaseSRWLockExclusive(&s_lock);
+	ReleaseSRWLockExclusive(&s_recordLock);
 }
 
 // The final pass (UI target -> backbuffer) as the game drew it, for the second eye's scene image.
-void ReplayCaptureFinalPassState(ID3D11DeviceContext* c) { CaptureState(c, s_finalState); }
-void ReplayApplyFinalPassState(ID3D11DeviceContext* c) { ApplyState(c, s_finalState); }
+void ReplayCaptureFinalPassState(ID3D11DeviceContext* c) { CapturePipelineState(c, s_finalPassState); }
+void ReplayApplyFinalPassState(ID3D11DeviceContext* c) { ApplyPipelineState(c, s_finalPassState); }
 
 // At Present, after the left eye's frame was captured: draw the frame again for the right eye.
 // Returns true when the right eye's image is ready (in the UI split's scene texture, or in the
 // backbuffer when the frame had no UI).
 bool ReplaySecondEye(ID3D11DeviceContext* c, bool* inBackbuffer) {
 	*inBackbuffer = false;
-	if (!s_ready) return false;
+	if (!s_hooksReady) return false;
 	ReplayStop(false);
-	bool ok = s_frameValid && s_len > 0;
+	bool canReplay = s_recordingValid && s_arenaUsed > 0;
 	s_statFrames++;
-	if (!ok) {
-		if (s_cancelWhy) {
+	if (!canReplay) {
+		if (s_cancelReason) {
 			s_statCancelled++;
-			snprintf(s_lastCancel, sizeof(s_lastCancel), "%s", s_cancelWhy);
+			snprintf(s_lastCancelReason, sizeof(s_lastCancelReason), "%s", s_cancelReason);
 		}
 		return false;
 	}
-	double t0 = NowMs();
+	double startMs = NowMs();
 	g_replaying = true;
-	CaptureState(c, s_endState);
+	CapturePipelineState(c, s_presentState);
 	StereoBeginSecondEye();
 	GpuTimingMark(c, "replay start");
-	ApplyState(c, s_startState);
-	Play(c);
+	ApplyPipelineState(c, s_recordStartState);
+	PlayRecording(c);
 	GpuTimingMark(c, "replay end");
 	bool patched = StereoSecondEyePatched(), ready = patched;
 	if (ready && s_stoppedAtUi) {
 		ready = UiSecondEyeScene(c);
-		if (!ready) snprintf(s_lastCancel, sizeof(s_lastCancel), "%s", "the final pass wasn't seen this frame");
+		if (!ready) snprintf(s_lastCancelReason, sizeof(s_lastCancelReason), "%s", "the final pass wasn't seen this frame");
 	} else {
 		*inBackbuffer = ready;
 	}
-	ApplyState(c, s_endState);
-	ReleaseState(s_endState);
-	ReleaseState(s_startState);
-	ReleaseState(s_finalState);
+	ApplyPipelineState(c, s_presentState);
+	ReleasePipelineState(s_presentState);
+	ReleasePipelineState(s_recordStartState);
+	ReleasePipelineState(s_finalPassState);
 	g_replaying = false;
-	double ms = NowMs() - t0;
+	double replayMs = NowMs() - startMs;
 	if (ready) s_statReplayed++;
 	else if (!patched) s_statNoCamera++;
 	else s_statCancelled++;
-	s_statReplayMs += ms;
-	if (ms > s_statReplayMaxMs) s_statReplayMaxMs = ms;
-	s_statCopyMs += s_copyMs;
-	s_statCmds += s_frameCmds;
-	s_statBytes += (double)s_len;
-	s_statSkipped += s_skippedDraws;
-	if (!s_loggedCounts) {
-		s_loggedCounts = true;
-		char line[900];
-		size_t at = 0;
-		for (int i = 1; i < OP_COUNT && at + 48 < sizeof(line); i++)
-			if (s_counts[i]) at += snprintf(line + at, sizeof(line) - at, " %s %u,", kOpNames[i], s_counts[i]);
-		Log("synchronized: first frame drawn twice: %u calls recorded (%u KB), %s;%s", s_frameCmds, (unsigned)(s_len >> 10),
-			s_stoppedAtUi ? "stopped at the first UI draw" : "frame without UI, recorded to Present", line);
+	s_statReplayMs += replayMs;
+	if (replayMs > s_statReplayMaxMs) s_statReplayMaxMs = replayMs;
+	s_statCopyMs += s_uploadCopyMs;
+	s_statCommands += s_frameCommands;
+	s_statBytes += (double)s_arenaUsed;
+	s_statShadowDrawsSkipped += s_skippedShadowDraws;
+	if (!s_loggedFirstFrame) {
+		s_loggedFirstFrame = true;
+		char opList[900];
+		size_t used = 0;
+		for (int i = 1; i < OP_COUNT && used + 48 < sizeof(opList); i++)
+			if (s_opCounts[i]) used += snprintf(opList + used, sizeof(opList) - used, " %s %u,", kOpNames[i], s_opCounts[i]);
+		Log("synchronized: first frame drawn twice: %u calls recorded (%u KB), %s;%s", s_frameCommands, (unsigned)(s_arenaUsed >> 10),
+			s_stoppedAtUi ? "stopped at the first UI draw" : "frame without UI, recorded to Present", opList);
 	}
 	return ready;
 }
@@ -1954,22 +1933,22 @@ bool ReplaySecondEye(ID3D11DeviceContext* c, bool* inBackbuffer) {
 // From the culling report (every 30 s, game thread).
 void ReplayReport() {
 	DWORD now = GetTickCount();
-	if (now - s_statTick < 30000) return;
-	s_statTick = now;
+	if (now - s_lastReportTick < 30000) return;
+	s_lastReportTick = now;
 	if (!s_statFrames) return;
-	unsigned n = s_statReplayed + s_statNoCamera;
+	unsigned drawnTwice = s_statReplayed + s_statNoCamera;
 	Log("synchronized: %u frames, %u drawn twice (%u without the camera found), %u cancelled%s%s; second eye %.1f ms "
 		"of CPU time on average (max %.1f), recording copies %.2f ms, %.0f calls and %.0f KB per frame, %.0f shadow "
 		"draws reused per frame",
 		s_statFrames, s_statReplayed, s_statNoCamera, s_statCancelled, s_statCancelled ? ", last because: " : "",
-		s_statCancelled ? s_lastCancel : "", n ? s_statReplayMs / n : 0.0, s_statReplayMaxMs,
-		n ? s_statCopyMs / n : 0.0, n ? s_statCmds / n : 0.0, n ? s_statBytes / n / 1024 : 0.0, n ? s_statSkipped / n : 0.0);
+		s_statCancelled ? s_lastCancelReason : "", drawnTwice ? s_statReplayMs / drawnTwice : 0.0, s_statReplayMaxMs,
+		drawnTwice ? s_statCopyMs / drawnTwice : 0.0, drawnTwice ? s_statCommands / drawnTwice : 0.0, drawnTwice ? s_statBytes / drawnTwice / 1024 : 0.0, drawnTwice ? s_statShadowDrawsSkipped / drawnTwice : 0.0);
 	{
-		char info[160];
-		snprintf(info, sizeof(info), "Synchronized: %u of %u frames drawn twice, right eye %.1f ms CPU", s_statReplayed,
-				 s_statFrames, n ? s_statReplayMs / n : 0.0);
-		MenuSetInfo(3, info);
+		char menuLine[160];
+		snprintf(menuLine, sizeof(menuLine), "Synchronized: %u of %u frames drawn twice, right eye %.1f ms CPU", s_statReplayed,
+				 s_statFrames, drawnTwice ? s_statReplayMs / drawnTwice : 0.0);
+		MenuSetInfo(3, menuLine);
 	}
 	s_statFrames = s_statReplayed = s_statCancelled = s_statNoCamera = 0;
-	s_statReplayMs = s_statReplayMaxMs = s_statCopyMs = s_statCmds = s_statBytes = s_statSkipped = 0;
+	s_statReplayMs = s_statReplayMaxMs = s_statCopyMs = s_statCommands = s_statBytes = s_statShadowDrawsSkipped = 0;
 }

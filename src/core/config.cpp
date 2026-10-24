@@ -387,14 +387,6 @@ const Setting kSettings[] = {
 		"a flat copy of the whole screen. 1 = keep them (drawn into the 3D image)"),
 	S_INT(
 		"Render",
-		"FixLighting",
-		viewFix,
-		1,
-		0,
-		1,
-		"1 = fix NieR's tiled lighting and reflections for the VR camera (0 only for comparison)"),
-	S_INT(
-		"Render",
 		"GIVolumes",
 		giVolumes,
 		128,
@@ -423,15 +415,6 @@ const Setting kSettings[] = {
 		"At most 170: a field of view of 180 or more doesn't exist (170 covers ~88 deg to each side)."),
 	S_INT(
 		"Render",
-		"LodFix",
-		lodFix,
-		1,
-		0,
-		1,
-		"1 = only the camera's projection and culling use the wider view above; the camera itself and\n"
-		"model/texture detail keep the game's own (0 = old way: low-detail models in stereo)"),
-	S_INT(
-		"Render",
 		"HeadCulling",
 		headCulling,
 		1,
@@ -445,14 +428,6 @@ const Setting kSettings[] = {
 		"0x729b49",
 		"Places in the game (exe offsets, comma separated) that always get the game's own field of view:\n"
 		"0x729b49 = the camera code that also aims Pod 042 (the wide view made it shoot at the sky)"),
-	S_INT(
-		"Render",
-		"WideProjection",
-		wideProjection,
-		0,
-		0,
-		1,
-		"1 = the game camera's own projection also gets the wide view (makes Pod 042 aim at the sky)"),
 	S_INT(
 		"Render",
 		"ReuseShadows",

@@ -1,24 +1,4 @@
 // viewfix.cpp - keeps NieR's CPU-computed *view-space* data consistent with the eye camera.
-//
-// Two compute passes read data the game prepared on the CPU in its own camera's view space:
-//  * tiled light culling (CS with "g_LightAry"): point-light positions, view space, used to build
-//    the per-tile light lists (32x30-pixel tiles) that the forward shaders light with;
-//  * reflection-probe selection (CS with "g_CubeInput"): view space -> probe box matrices.
-// With the stereo camera (eye offset, levelling, CameraDolly) those no longer match the depth
-// buffer, so lights were culled from the wrong tiles: blocky, tile-shaped patches around 2B and on
-// the floor, worse the further the dolly moved the camera from the game's own. Right before each of
-// these dispatches we run a tiny compute shader that rewrites a copy of the data into the eye's view
-// space, and let the game's pass read the copy instead.
-//
-// Global illumination volumes (0.4.2/0.4.3, idea from FAR by DrDaxxy / Kaldaien): the probe-selection
-// pass runs per pixel and loops over every slot of g_CubeInput (loop count = the buffer view's size,
-// GetDimensions; 128 slots, 30-52 in use in the 0.4.2 log). It writes the chosen *slot numbers* per
-// pixel and later shaders sample g_CubeTexArray at those slots, so slots must never move (0.4.2
-// sorted them: wrong lighting on grass, trees, interiors). Now: each frame the game's buffer is copied
-// to the CPU (read 3 frames later, never waiting); pure::gi_pick decides which slots stay on (all
-// used ones, or the GIVolumes nearest to the camera); the copy pass marks the others empty, and the
-// game's pass gets a view that ends right after the last slot left on. With all volumes kept this
-// only cuts the empty tail of the loop (no visual change).
 #include "render/viewfix.h"
 #include "core/config.h"
 #include "core/log.h"
@@ -282,7 +262,7 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 	s_restoreSlot = -1;
 	if (kind < 1 || kind > 2) return;
 	float T[16], Tinv[16];
-	bool view = g_cfg.viewFix && StereoGetViewFix(T, Tinv);  // false in mono frames: the data already matches
+	bool view = StereoGetViewFix(T, Tinv);  // false in mono frames: the data already matches
 	bool gi = kind == 2;  // GI volumes: always read back; slots switched off / loop cut once a pick exists
 	if (!view && !gi) return;
 	if (!view) {

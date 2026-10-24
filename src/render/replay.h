@@ -1,12 +1,13 @@
 // replay.h - Synchronized: record the left eye's frame, play it back for the right eye at Present (replay.cpp).
 #pragma once
 #include <d3d11.h>
+#include "render/d3d_hooks.h"
 
-extern volatile bool g_replaying;  // playback running: hooks pass calls straight through
-extern volatile LONG g_recOn;
-extern ID3D11DeviceContext* g_recCtx;
-extern volatile LONG g_recSuspend;  // mod-internal calls (not recorded)
-inline bool RecOn(ID3D11DeviceContext* c) { return g_recOn && c == g_recCtx && !g_recSuspend && !g_replaying; }
+extern volatile bool g_replaying;           // playback running: hooks pass calls straight through
+extern volatile LONG g_recording;           // the recorder is taking calls
+extern ID3D11DeviceContext* g_gameContext;  // the game's immediate context
+extern volatile LONG g_modCallsInProgress;  // mod-internal calls (not recorded)
+inline bool ShouldRecord(ID3D11DeviceContext* c) { return g_recording && c == g_gameContext && !g_modCallsInProgress && !g_replaying; }
 
 enum RecStage {
 	RS_VS = 0,
@@ -14,21 +15,22 @@ enum RecStage {
 	RS_DS,
 	RS_GS,
 	RS_PS,
-	RS_CS
+	RS_CS,
+	RS_COUNT
 };
 
-void RecSetCB(int stage, UINT start, UINT n, ID3D11Buffer* const* b);
-void RecSetSRV(int stage, UINT start, UINT n, ID3D11ShaderResourceView* const* v);
-void RecSetShader(int stage, void* sh, ID3D11ClassInstance* const* ci, UINT n);
-void RecCSSetUAV(UINT start, UINT n, ID3D11UnorderedAccessView* const* v, const UINT* counts);
-void RecDraw(int kind, UINT a, UINT b, INT c, UINT d, UINT e);
+void RecSetCB(int stage, UINT start, UINT count, ID3D11Buffer* const* buffers);
+void RecSetSRV(int stage, UINT start, UINT count, ID3D11ShaderResourceView* const* views);
+void RecSetShader(int stage, void* shader, ID3D11ClassInstance* const* classInstances, UINT count);
+void RecCSSetUAV(UINT start, UINT count, ID3D11UnorderedAccessView* const* views, const UINT* initialCounts);
+void RecDraw(const DrawArgs& args);
 void RecDispatch(UINT x, UINT y, UINT z, int viewFixKind);
-void RecOMSetRT(UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv);
-void RecViewports(UINT n, const D3D11_VIEWPORT* vp);
+void RecSetRenderTargets(UINT count, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv);
+void RecSetViewports(UINT count, const D3D11_VIEWPORT* viewports);
 void RecBeforeMap(ID3D11Resource* res, D3D11_MAP type);
-void RecMap(ID3D11Resource* res, UINT sub, D3D11_MAP type, UINT flags, const D3D11_MAPPED_SUBRESOURCE* m);
+void RecMap(ID3D11Resource* res, UINT sub, D3D11_MAP type, UINT flags, const D3D11_MAPPED_SUBRESOURCE* mapped);
 void RecUnmap(ID3D11Resource* res, UINT sub);
-void RecUpdate(ID3D11Resource* res, UINT sub, const D3D11_BOX* box, const void* data, UINT rp, UINT dp);
+void RecUpdate(ID3D11Resource* res, UINT sub, const D3D11_BOX* box, const void* data, UINT rowPitch, UINT depthPitch);
 void RecUnsupported(const char* what);
 
 void ReplayInstall(ID3D11DeviceContext* ctx);

@@ -325,12 +325,14 @@ inline bool level_reference(Q head, bool* flipped, Q* out) {
 
 // Extra resolutions (extra_resolutions.cpp): 125-300% of the monitor's desktop size, rounded to 8
 // pixels, within Direct3D 11's 16384 limit, leaving out sizes the mode list already has (NVIDIA
-// DSR/DLDSR modes). `listed` holds (w << 16 | h). Returns how many sizes were written (max 6).
+// DSR/DLDSR modes). `listed` holds (w << 16 | h). Returns how many sizes were written (at most
+// kSupersampleFactorCount).
+inline constexpr float kSupersampleFactors[] = {1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f};
+inline constexpr int kSupersampleFactorCount = sizeof(kSupersampleFactors) / sizeof(kSupersampleFactors[0]);
 inline int supersample_sizes(uint32_t bw, uint32_t bh, const uint32_t* listed, int nlisted, uint32_t* ow, uint32_t* oh) {
-	static const float kF[6] = {1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f};
 	int n = 0;
-	for (int k = 0; k < 6; k++) {
-		uint32_t w = ((uint32_t)(bw * kF[k] + 4)) & ~7u, h = ((uint32_t)(bh * kF[k] + 4)) & ~7u;
+	for (int k = 0; k < kSupersampleFactorCount; k++) {
+		uint32_t w = ((uint32_t)(bw * kSupersampleFactors[k] + 4)) & ~7u, h = ((uint32_t)(bh * kSupersampleFactors[k] + 4)) & ~7u;
 		if (w > 16384 || h > 16384) break;
 		uint32_t key = (w & 0xffff) << 16 | (h & 0xffff);
 		bool dup = false;

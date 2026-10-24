@@ -4,5 +4,5 @@
 
 void ExtraResolutionsInstallHooks();
 void ExtraResolutionsEarlyHooks();  // from DllMain: patches code only
-void ExtraResolutionsHookSwapChain(IDXGISwapChain* sc);
-void ExtraResolutionsOnFirstPresent(IDXGISwapChain* sc);
+void ExtraResolutionsHookSwapChain(IDXGISwapChain* swapChain);
+void ExtraResolutionsOnFirstPresent(IDXGISwapChain* swapChain);

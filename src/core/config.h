@@ -41,10 +41,8 @@ struct Config {
 	int shadows;      // 0 = NieR's screen-space shadow mask cleared to "lit" (diagnostic)
 	int vignette;
 	int lowHealthFx;  // 0 = low-health grey/distortion (screen filter effects) removed in stereo
-	int viewFix;      // [Render] FixLighting (ini only): lights and reflections moved into each eye's view
 	int distortionFx;            // 0 = remove the screen-copy distortion/glitch effects (hits, low health) in stereo
 	float cullFov;               // vertical field of view (deg) the game culls with during stereo; 0 = game default
-	int lodFix;                  // 1 = model detail keeps the game's own field of view while culling is widened (ini only)
 	float cullFovAsked;          // CullingFov from the ini when above the 170 maximum (for the log), else 0
 	unsigned fovEasingCaller;    // exe offset of the camera-easing fov read, once found (0 = unknown)
 	unsigned fovRealCallers[8];  // exe offsets of fov getter callers that always get the real fov
@@ -68,7 +66,6 @@ struct Config {
 	int vrRumble;        // the game's rumble goes to the VR controllers
 	int motionControls;  // swing a hand to attack (vr_controllers.cpp)
 	float swingSpeed;    // m/s a hand must move (relative to the head) to count as a swing
-	int wideProjection;  // 1 = the camera's own projection gets the wide fov too (Pod aims up; ini only)
 	int iniAdded;        // settings added to an older ini at startup
 	int flatBelowDraws;  // frames with fewer draws than this render mono (title screen); 0 = off
 	int topDownFlat;     // 1 = steep top-down views are shown on the flat screen
