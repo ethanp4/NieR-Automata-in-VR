@@ -1,3 +1,4 @@
+// imgui_panel.h - a Dear ImGui panel drawn into a render target (imgui_panel.cpp).
 #pragma once
 #include <d3d11.h>
 

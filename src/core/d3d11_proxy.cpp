@@ -42,8 +42,8 @@ bool ProxyLoadReal() {
 				(unsigned)GetLastError());
 	}
 	if (!s_realDll) {
-		UINT n = GetSystemDirectoryW(path, MAX_PATH - 16);
-		lstrcpyW(path + n, L"\\d3d11.dll");
+		UINT length = GetSystemDirectoryW(path, MAX_PATH - 16);
+		lstrcpyW(path + length, L"\\d3d11.dll");
 		s_realDll = LoadLibraryW(path);
 		if (!s_realDll) {
 			Log("ERROR: could not load %s (error %u)", Utf8(path).s, (unsigned)GetLastError());
@@ -60,13 +60,13 @@ bool ProxyLoadReal() {
 		(PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)(void*)GetProcAddress(s_realDll, "D3D11CreateDeviceAndSwapChain");
 	int missing = 0;
 	for (int i = 0; i < kThunkCount; i++) {
-		void* p = (void*)GetProcAddress(s_realDll, kThunkNames[i]);
-		if (!p) {
+		void* proc = (void*)GetProcAddress(s_realDll, kThunkNames[i]);
+		if (!proc) {
 			missing++;
 			LogV("real d3d11 lacks export %s", kThunkNames[i]);
-			p = (void*)&MissingExport;
+			proc = (void*)&MissingExport;
 		}
-		g_realProcs[i] = p;
+		g_realProcs[i] = proc;
 	}
 	Log("proxy ready: %d forwarded exports (%d not present in this Windows build)", kThunkCount, missing);
 	return s_realCreateDevice && g_realCreateDeviceAndSwapChain;

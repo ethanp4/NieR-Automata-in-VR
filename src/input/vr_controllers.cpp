@@ -327,7 +327,7 @@ void LogProfiles() {
 			char info[160];
 			snprintf(info, sizeof(info), "VR controllers: left %s, right %s", ShortProfileName(s_profileName[0]),
 					 ShortProfileName(s_profileName[1]));
-			MenuSetInfo(11, info);
+			MenuSetInfo(INFO_CONTROLLERS, info);
 		}
 	}
 }
@@ -601,7 +601,7 @@ void VrInputMotion(XrSpace local, XrSpace view, XrTime time, bool focused, bool 
 		snprintf(info, sizeof(info), "Motion controls %s: swings left %u, right %u; fastest last second %.1f / %.1f m/s (needs %.1f)",
 				 g_cfg.motionControls ? "on" : "off", s_swingCount[0], s_swingCount[1], (double)s_peakSpeed[0], (double)s_peakSpeed[1],
 				 (double)g_cfg.swingSpeed);
-		MenuSetInfo(15, info);
+		MenuSetInfo(INFO_MOTION_CONTROLS, info);
 		s_peakSpeed[0] = s_peakSpeed[1] = 0;
 	}
 }

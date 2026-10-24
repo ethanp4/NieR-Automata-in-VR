@@ -1,3 +1,4 @@
+// config.cpp - every setting with its ini section, key, default, range and comment; reads and writes NieRVR.ini.
 #include "core/config.h"
 #include "core/main.h"
 #include <stdio.h>
@@ -19,10 +20,10 @@ struct Setting {
 	const char* section;
 	const char* key;
 	Kind kind;
-	void* ptr;            // the field in g_cfg
-	float def, min, max;  // K_INT, K_HEX, K_FLOAT
-	const char* comment;  // written above the key, "; " before each line ('\n' separates lines)
-	const char* text;     // K_PATH, K_TEXT: the default
+	void* field;                   // in g_cfg
+	float defaultValue, min, max;  // K_INT, K_HEX, K_FLOAT
+	const char* comment;           // written above the key, "; " before each line ('\n' separates lines)
+	const char* text;              // K_PATH, K_TEXT: the default
 };
 
 #define S_INT(sec, key, field, def, lo, hi, c) {sec, key, K_INT, &g_cfg.field, def, lo, hi, c, nullptr}
@@ -577,47 +578,47 @@ const Setting kSettings[] = {
 // ---------------------------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------------------------
-void Widen(const char* s, wchar_t* out, int cap) {
+void Widen(const char* text, wchar_t* out, int cap) {
 	int i = 0;
-	for (; s[i] && i < cap - 1; i++) out[i] = (wchar_t)(unsigned char)s[i];
+	for (; text[i] && i < cap - 1; i++) out[i] = (wchar_t)(unsigned char)text[i];
 	out[i] = 0;
 }
 
-float Clamp(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+float Clamp(float value, float lo, float hi) { return value < lo ? lo : (value > hi ? hi : value); }
 
 // "2.500" -> "2.5", "50.000" -> "50"
-void FormatFloat(char* buf, size_t cap, float v) {
-	snprintf(buf, cap, "%.3f", (double)v);
-	size_t n = strlen(buf);
-	while (n > 0 && buf[n - 1] == '0') buf[--n] = 0;
-	if (n > 0 && buf[n - 1] == '.') buf[--n] = 0;
+void FormatFloat(char* buf, size_t cap, float value) {
+	snprintf(buf, cap, "%.3f", (double)value);
+	size_t length = strlen(buf);
+	while (length > 0 && buf[length - 1] == '0') buf[--length] = 0;
+	if (length > 0 && buf[length - 1] == '.') buf[--length] = 0;
 	if (!strcmp(buf, "-0")) snprintf(buf, cap, "0");
 }
 
 // A number's text as written to the ini.
-void ValueText(const Setting& s, float v, char* buf, size_t cap) {
-	switch (s.kind) {
-		case K_INT: snprintf(buf, cap, "%d", (int)v); break;
-		case K_HEX: snprintf(buf, cap, "0x%X", (unsigned)(int)v); break;
-		case K_FLOAT: FormatFloat(buf, cap, v); break;
-		default: snprintf(buf, cap, "%s", s.text ? s.text : ""); break;
+void ValueText(const Setting& setting, float value, char* buf, size_t cap) {
+	switch (setting.kind) {
+		case K_INT: snprintf(buf, cap, "%d", (int)value); break;
+		case K_HEX: snprintf(buf, cap, "0x%X", (unsigned)(int)value); break;
+		case K_FLOAT: FormatFloat(buf, cap, value); break;
+		default: snprintf(buf, cap, "%s", setting.text ? setting.text : ""); break;
 	}
 }
 
 bool ReadRaw(const char* section, const char* key, wchar_t* buf, int cap) {
-	wchar_t sec[64], k[64];
-	Widen(section, sec, 64);
-	Widen(key, k, 64);
-	GetPrivateProfileStringW(sec, k, L"\x01", buf, cap, g_iniPath);
+	wchar_t sectionW[64], keyW[64];
+	Widen(section, sectionW, 64);
+	Widen(key, keyW, 64);
+	GetPrivateProfileStringW(sectionW, keyW, L"\x01", buf, cap, g_iniPath);
 	return !(buf[0] == 1 && buf[1] == 0);  // false: the key isn't in the file
 }
 
 void WriteRaw(const char* section, const char* key, const char* value) {
-	wchar_t sec[64], k[64], v[256];
-	Widen(section, sec, 64);
-	Widen(key, k, 64);
-	Widen(value, v, 256);
-	WritePrivateProfileStringW(sec, k, v, g_iniPath);
+	wchar_t sectionW[64], keyW[64], valueW[256];
+	Widen(section, sectionW, 64);
+	Widen(key, keyW, 64);
+	Widen(value, valueW, 256);
+	WritePrivateProfileStringW(sectionW, keyW, valueW, g_iniPath);
 }
 
 // A number from the ini: whole numbers (also hex, 0x..) or decimals ("0.8" for a switch rounds to 1).
@@ -626,21 +627,21 @@ bool ReadNumber(const char* section, const char* key, float* out) {
 	if (!ReadRaw(section, key, buf, 64)) return false;
 	wchar_t* end = nullptr;
 	if (wcschr(buf, L'.')) {
-		float v = wcstof(buf, &end);  // the C locale: always a '.' decimal point
+		float value = wcstof(buf, &end);  // the C locale: always a '.' decimal point
 		if (end == buf) return false;
-		*out = v;
+		*out = value;
 	} else {
-		long v = wcstol(buf, &end, 0);  // base 0: "0x77" is hex
+		long value = wcstol(buf, &end, 0);  // base 0: "0x77" is hex
 		if (end == buf) return false;
-		*out = (float)v;
+		*out = (float)value;
 	}
 	return true;
 }
 
-void WriteNumber(const char* section, const char* key, Kind kind, float v) {
-	Setting s = {section, key, kind, nullptr, 0, 0, 0, nullptr, nullptr};
+void WriteNumber(const char* section, const char* key, Kind kind, float value) {
+	Setting setting = {section, key, kind, nullptr, 0, 0, 0, nullptr, nullptr};
 	char buf[32];
-	ValueText(s, v, buf, sizeof(buf));
+	ValueText(setting, value, buf, sizeof(buf));
 	WriteRaw(section, key, buf);
 }
 
@@ -650,56 +651,56 @@ void WriteNumber(const char* section, const char* key, Kind kind, float v) {
 // Writes NieRVR.ini with every setting at its default, grouped by section, comments included.
 void WriteDefaultIni() {
 	static char text[16384];
-	size_t at = 0;
-	auto put = [&](const char* s) {
-		size_t n = strlen(s);
-		if (at + n < sizeof(text)) memcpy(text + at, s, n), at += n;
+	size_t used = 0;
+	auto put = [&](const char* setting) {
+		size_t length = strlen(setting);
+		if (used + length < sizeof(text)) memcpy(text + used, setting, length), used += length;
 	};
 	put("; NieRVR configuration. Delete this file to restore defaults.\r\n");
 	const char* section = "";
-	for (const Setting& s : kSettings) {
-		if (strcmp(section, s.section)) {
-			section = s.section;
+	for (const Setting& setting : kSettings) {
+		if (strcmp(section, setting.section)) {
+			section = setting.section;
 			put("\r\n[");
 			put(section);
 			put("]\r\n");
 		}
-		for (const char* c = s.comment; c && *c;) {
-			const char* e = c;
-			while (*e && *e != '\n') e++;
+		for (const char* c = setting.comment; c && *c;) {
+			const char* lineEnd = c;
+			while (*lineEnd && *lineEnd != '\n') lineEnd++;
 			char line[200];
-			size_t n = (size_t)(e - c) < sizeof(line) - 1 ? (size_t)(e - c) : sizeof(line) - 1;
-			memcpy(line, c, n);
-			line[n] = 0;
+			size_t length = (size_t)(lineEnd - c) < sizeof(line) - 1 ? (size_t)(lineEnd - c) : sizeof(line) - 1;
+			memcpy(line, c, length);
+			line[length] = 0;
 			put("; ");
 			put(line);
 			put("\r\n");
-			c = *e ? e + 1 : e;
+			c = *lineEnd ? lineEnd + 1 : lineEnd;
 		}
 		char val[64];
-		ValueText(s, s.def, val, sizeof(val));
-		put(s.key);
+		ValueText(setting, setting.defaultValue, val, sizeof(val));
+		put(setting.key);
 		put("=");
 		put(val);
 		put("\r\n");
 	}
-	HANDLE f = CreateFileW(g_iniPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (f == INVALID_HANDLE_VALUE) return;
-	DWORD w;
-	WriteFile(f, text, (DWORD)at, &w, nullptr);
-	CloseHandle(f);
+	HANDLE file = CreateFileW(g_iniPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (file == INVALID_HANDLE_VALUE) return;
+	DWORD written;
+	WriteFile(file, text, (DWORD)used, &written, nullptr);
+	CloseHandle(file);
 }
 
 // An ini from an older version keeps working, but lacks the settings added since: add each missing
 // key with its default (without the comments). Returns how many were added.
 int AddMissingSettings() {
 	int added = 0;
-	for (const Setting& s : kSettings) {
+	for (const Setting& setting : kSettings) {
 		wchar_t have[8];
-		if (ReadRaw(s.section, s.key, have, 8)) continue;
+		if (ReadRaw(setting.section, setting.key, have, 8)) continue;
 		char val[64];
-		ValueText(s, s.def, val, sizeof(val));
-		WriteRaw(s.section, s.key, val);
+		ValueText(setting, setting.defaultValue, val, sizeof(val));
+		WriteRaw(setting.section, setting.key, val);
 		added++;
 	}
 	return added;
@@ -711,22 +712,22 @@ void ParseHexList(const wchar_t* buf, unsigned* out, int* count, int max) {
 	for (int i = 0; buf[i] && *count < max;) {
 		while (buf[i] == ' ' || buf[i] == ',' || buf[i] == ';') i++;
 		if (buf[i] == '0' && (buf[i + 1] == 'x' || buf[i + 1] == 'X')) i += 2;
-		unsigned v = 0;
+		unsigned value = 0;
 		int digits = 0;
 		for (;; i++, digits++) {
 			wchar_t c = buf[i];
-			int d = c >= '0' && c <= '9' ? c - '0' : (c >= 'a' && c <= 'f' ? c - 'a' + 10 : (c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1));
-			if (d < 0) break;
-			v = v * 16 + (unsigned)d;
+			int digit = c >= '0' && c <= '9' ? c - '0' : (c >= 'a' && c <= 'f' ? c - 'a' + 10 : (c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1));
+			if (digit < 0) break;
+			value = value * 16 + (unsigned)digit;
 		}
-		if (digits && v) out[(*count)++] = v;
+		if (digits && value) out[(*count)++] = value;
 		if (!digits && buf[i]) i++;  // skip anything else
 	}
 }
 
 const Setting* Find(const void* field) {
-	for (const Setting& s : kSettings)
-		if (s.ptr && s.ptr == field) return &s;
+	for (const Setting& setting : kSettings)
+		if (setting.field && setting.field == field) return &setting;
 	return nullptr;
 }
 }  // namespace
@@ -738,22 +739,22 @@ void ConfigLoad() {
 	if (GetFileAttributesW(g_iniPath) == INVALID_FILE_ATTRIBUTES) WriteDefaultIni();
 	g_cfg.iniAdded = AddMissingSettings();
 
-	for (const Setting& s : kSettings) {
-		if (s.kind == K_PATH) {
-			wchar_t sec[64], k[64];
-			Widen(s.section, sec, 64);
-			Widen(s.key, k, 64);
-			GetPrivateProfileStringW(sec, k, L"", (wchar_t*)s.ptr, MAX_PATH, g_iniPath);
+	for (const Setting& setting : kSettings) {
+		if (setting.kind == K_PATH) {
+			wchar_t sectionW[64], keyW[64];
+			Widen(setting.section, sectionW, 64);
+			Widen(setting.key, keyW, 64);
+			GetPrivateProfileStringW(sectionW, keyW, L"", (wchar_t*)setting.field, MAX_PATH, g_iniPath);
 			continue;
 		}
-		if (s.kind == K_TEXT) continue;
-		float v;
-		if (!ReadNumber(s.section, s.key, &v)) v = s.def;
-		v = Clamp(v, s.min, s.max);
-		if (s.kind == K_FLOAT)
-			*(float*)s.ptr = v;
+		if (setting.kind == K_TEXT) continue;
+		float value;
+		if (!ReadNumber(setting.section, setting.key, &value)) value = setting.defaultValue;
+		value = Clamp(value, setting.min, setting.max);
+		if (setting.kind == K_FLOAT)
+			*(float*)setting.field = value;
 		else
-			*(int*)s.ptr = (int)(v + (v >= 0 ? 0.5f : -0.5f));
+			*(int*)setting.field = (int)(value + (value >= 0 ? 0.5f : -0.5f));
 	}
 
 	// limits that depend on another setting
@@ -767,30 +768,30 @@ void ConfigLoad() {
 	// the camera-easing fov reader found in game; defaults to the Steam build's (checked in game:
 	// a wrong one is dropped and searched again)
 	unsigned easing[1];
-	int n = 0;
-	if (ReadRaw("Render", "FovEasingCaller", buf, 200)) ParseHexList(buf, easing, &n, 1);
-	g_cfg.fovEasingCaller = n ? easing[0] : 0x7397de;
+	int count = 0;
+	if (ReadRaw("Render", "FovEasingCaller", buf, 200)) ParseHexList(buf, easing, &count, 1);
+	g_cfg.fovEasingCaller = count ? easing[0] : 0x7397de;
 }
 
 // Writes one setting of g_cfg (pass its field: &g_cfg.worldScale) to NieRVR.ini.
 bool ConfigSave(const void* field) {
-	const Setting* s = Find(field);
-	if (!s || s->kind == K_PATH || s->kind == K_TEXT) return false;
-	float v = s->kind == K_FLOAT ? *(const float*)field : (float)*(const int*)field;
-	WriteNumber(s->section, s->key, s->kind, v);
+	const Setting* setting = Find(field);
+	if (!setting || setting->kind == K_PATH || setting->kind == K_TEXT) return false;
+	float value = setting->kind == K_FLOAT ? *(const float*)field : (float)*(const int*)field;
+	WriteNumber(setting->section, setting->key, setting->kind, value);
 	return true;
 }
 
 bool ConfigDefault(const void* field, float* value) {
-	const Setting* s = Find(field);
-	if (!s || s->kind == K_PATH || s->kind == K_TEXT) return false;
-	*value = s->def;
+	const Setting* setting = Find(field);
+	if (!setting || setting->kind == K_PATH || setting->kind == K_TEXT) return false;
+	*value = setting->defaultValue;
 	return true;
 }
 
 // The camera-easing fov reader found in game (offset in the exe), so the next start skips the search.
 void ConfigSaveEasingCaller(unsigned offset) {
-	char a[24];
-	snprintf(a, sizeof(a), "0x%x", offset);
-	WriteRaw("Render", "FovEasingCaller", a);
+	char text[24];
+	snprintf(text, sizeof(text), "0x%x", offset);
+	WriteRaw("Render", "FovEasingCaller", text);
 }

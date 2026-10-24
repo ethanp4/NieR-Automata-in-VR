@@ -7,7 +7,7 @@
 // is written to NieRVR.ini; a few settings only take effect after a restart and say so.
 //
 // Drawn with Dear ImGui (ui/imgui_panel.h) on the VR thread and used with ImGui's own gamepad and
-// keyboard navigation; xr_main.cpp shows it on a quad in front of you.
+// keyboard navigation; xr_frame.cpp shows it on a quad in front of you.
 #include "ui/menu.h"
 #include "core/config.h"
 #include "core/log.h"
@@ -23,26 +23,26 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------------------------
-enum Type { T_BOOL,
-			T_INT,
-			T_FLOAT,
-			T_ACTION,
-			T_TEXT,
-			T_CHOICE };  // T_CHOICE: fmt holds the names, "Off|On"
-enum Flags { F_RESTART = 1,
-			 F_LOG = 2,
-			 F_RECENTER = 4,
-			 F_ALTERNATING = 8,
-			 F_SYNCHRONIZED = 16 };  // ALTERNATING/SYNCHRONIZED: only used in that mode
-enum Action { A_RECENTER = 1,
-			  A_SYNCHRONIZED_STATS,
-			  A_DLSS_FILE };
+enum ItemType { T_BOOL,
+				T_INT,
+				T_FLOAT,
+				T_ACTION,
+				T_TEXT,
+				T_CHOICE };  // T_CHOICE: format holds the names, "Off|On"
+enum ItemFlags { F_RESTART = 1,
+				 F_LOG = 2,
+				 F_RECENTER = 4,
+				 F_ALTERNATING = 8,
+				 F_SYNCHRONIZED = 16 };  // ALTERNATING/SYNCHRONIZED: only used in that mode
+enum ItemAction { A_RECENTER = 1,
+				  A_SYNCHRONIZED_STATS,
+				  A_DLSS_FILE };
 struct Item {
 	const char* label;
-	Type type;
-	void* ptr;  // the g_cfg field (its ini section and key come from config.cpp)
+	ItemType type;
+	void* value;     // the g_cfg field (its ini section and key come from config.cpp)
 	float min, max;  // slider range
-	const char* fmt;
+	const char* format;
 	int flags;
 	const char* help;
 };
@@ -571,7 +571,6 @@ Item kInput[] = {
 		"swings. The Info page shows how fast your swings are.",
 	},
 };
-const int kInfoLines = 18;
 
 struct Page {
 	const char* name;
@@ -584,9 +583,9 @@ Page s_pages[] = {{"View", kView, sizeof(kView) / sizeof(Item)},
 				  {"Screen", kScreen, sizeof(kScreen) / sizeof(Item)},
 				  {"Controls", kInput, sizeof(kInput) / sizeof(Item)},
 				  {"Info", nullptr, 0}};
-const int kPages = sizeof(s_pages) / sizeof(Page);
+const int kPageCount = sizeof(s_pages) / sizeof(Page);
 
-char s_infoText[kInfoLines][160];
+char s_infoText[INFO_LINE_COUNT][160];
 SRWLOCK s_infoLock = SRWLOCK_INIT;
 
 // ---------------------------------------------------------------------------------------------
@@ -596,28 +595,28 @@ UiPanel s_panel = {"menu", 30.0f, true};
 const float kSmall = 22.0f;  // font size of tags and hints
 
 volatile bool s_open, s_justOpened, s_wantRecenter;
-bool s_waitRelease;   // after closing: keep blocking the game's gamepad until every button is released
+bool s_waitRelease;  // after closing: keep blocking the game's gamepad until every button is released
 int s_page;
-bool s_pageChanged;   // select s_page's tab on the next frames (paging buttons, opening)
-bool s_focusFirst;    // put the navigation cursor on the page's first setting
-bool s_focusWindow;   // the menu window takes keyboard/gamepad focus (when it opens)
-bool s_uiActive;      // a slider is being adjusted: B (finish) and LB/RB (finer/coarser) go to ImGui
-XINPUT_GAMEPAD s_pad; // this frame's gamepad (a real one and the VR controllers), fed to ImGui
-bool s_padOk, s_foreground;
-bool s_holdA;         // the A press that opened the menu: kept from ImGui until A is let go
+bool s_pageChanged;        // select s_page's tab on the next frames (paging buttons, opening)
+bool s_focusFirst;         // put the navigation cursor on the page's first setting
+bool s_focusWindow;        // the menu window takes keyboard/gamepad focus (when it opens)
+bool s_sliderActive;       // a slider is being adjusted: B (finish) and LB/RB (finer/coarser) go to ImGui
+XINPUT_GAMEPAD s_gamepad;  // this frame's gamepad (a real one and the VR controllers), fed to ImGui
+bool s_gamepadOk, s_foreground;
+bool s_ignoreA;  // the A press that opened the menu: kept from ImGui until A is let go
 WORD s_prevButtons;
-bool s_comboLocked;   // B closed the menu: B + A can't open it again until B is let go
-bool s_keyPrev[256];
-const char* s_help;   // help text of the focused setting
+bool s_comboLocked;  // B closed the menu: B + A can't open it again until B is let go
+bool s_keyWasDown[256];
+const char* s_help;      // help text of the focused setting
 char s_helpDefault[96];  // and its default value, "" for actions
-bool s_resetPending;  // X / Delete was pressed: the focused setting goes back to its default
+bool s_resetPending;     // X / Delete was pressed: the focused setting goes back to its default
 
 // ---------------------------------------------------------------------------------------------
 // Keys
 // ---------------------------------------------------------------------------------------------
 // A key's name as the keyboard layout calls it ("Insert", "F1", ...).
 void KeyName(int vk, char* out, size_t cap) {
-	UINT sc = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC);
+	UINT scanCode = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC);
 	switch (vk) {  // keys on the extended part of the keyboard (else the name of the numpad key)
 		case VK_INSERT:
 		case VK_DELETE:
@@ -634,35 +633,35 @@ void KeyName(int vk, char* out, size_t cap) {
 		case VK_RCONTROL:
 		case VK_RMENU:
 		case VK_SNAPSHOT:
-			sc |= 0x100;
+			scanCode |= 0x100;
 			break;
 	}
-	wchar_t w[64];
-	if (vk <= 0 || !GetKeyNameTextW((LONG)(sc << 16), w, 64)) {
+	wchar_t name[64];
+	if (vk <= 0 || !GetKeyNameTextW((LONG)(scanCode << 16), name, 64)) {
 		snprintf(out, cap, vk > 0 ? "key 0x%X" : "(no key)", (unsigned)vk);
 		return;
 	}
-	snprintf(out, cap, "%s", Utf8(w).s);
+	snprintf(out, cap, "%s", Utf8(name).s);
 }
 
-bool KeyEdge(int vk, bool fg) {
+bool KeyEdge(int vk, bool foreground) {
 	if (vk <= 0 || vk > 255) return false;
-	bool d = (GetAsyncKeyState(vk) & 0x8000) != 0;
-	bool e = d && !s_keyPrev[vk];
-	s_keyPrev[vk] = d;
-	return e && fg;
+	bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+	bool pressed = down && !s_keyWasDown[vk];
+	s_keyWasDown[vk] = down;
+	return pressed && foreground;
 }
 bool KeyDown(int vk) { return s_foreground && (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
-void Open(bool on) {
-	if (s_open == on) return;
-	s_open = on;
-	if (on) {
+void SetOpen(bool open) {
+	if (s_open == open) return;
+	s_open = open;
+	if (open) {
 		s_justOpened = true;
 		g_blockPad = 1;
 		s_pageChanged = s_focusFirst = s_focusWindow = true;
-		s_holdA = true;
-		s_uiActive = false;
+		s_ignoreA = true;
+		s_sliderActive = false;
 		Log("menu: opened");
 	} else {
 		s_waitRelease = true;
@@ -674,73 +673,73 @@ void Open(bool on) {
 // Settings
 // ---------------------------------------------------------------------------------------------
 // After a setting was changed in the menu: log it and save it to NieRVR.ini.
-void Saved(const Item& it) {
-	char v[48];
-	if (it.type == T_BOOL)
-		snprintf(v, sizeof(v), "%s", *(int*)it.ptr ? "on" : "off");
-	else if (it.type == T_INT || it.type == T_CHOICE)
-		snprintf(v, sizeof(v), "%d", *(int*)it.ptr);
+void SaveItem(const Item& item) {
+	char value[48];
+	if (item.type == T_BOOL)
+		snprintf(value, sizeof(value), "%s", *(int*)item.value ? "on" : "off");
+	else if (item.type == T_INT || item.type == T_CHOICE)
+		snprintf(value, sizeof(value), "%d", *(int*)item.value);
 	else
-		snprintf(v, sizeof(v), "%.3f", (double)*(float*)it.ptr);
-	Log("menu: %s = %s%s", it.label, v, it.flags & F_RESTART ? " (after a restart)" : "");
-	ConfigSave(it.ptr);
+		snprintf(value, sizeof(value), "%.3f", (double)*(float*)item.value);
+	Log("menu: %s = %s%s", item.label, value, item.flags & F_RESTART ? " (after a restart)" : "");
+	ConfigSave(item.value);
 }
 
 // Settings that do nothing in the current eye mode say so.
-const char* Tag(const Item& it) {
-	if (it.type == T_ACTION && (intptr_t)it.ptr == A_DLSS_FILE) {
+const char* ItemTag(const Item& item) {
+	if (item.type == T_ACTION && (intptr_t)item.value == A_DLSS_FILE) {
 		static DlssFileState file;
 		DlssFileGet(&file);
 		if (file.state == DF_UPDATE_AVAILABLE) return "(update available)";
 		return file.state == DF_MISSING && file.text[0] ? file.text : nullptr;  // why the last download failed
 	}
-	if ((it.flags & F_ALTERNATING) && g_cfg.synchronized) return "(not used: synchronized mode)";
-	if ((it.flags & F_SYNCHRONIZED) && !g_cfg.synchronized) return "(not used: alternating mode)";
-	if (it.flags & F_RESTART) return "(restart)";
+	if ((item.flags & F_ALTERNATING) && g_cfg.synchronized) return "(not used: synchronized mode)";
+	if ((item.flags & F_SYNCHRONIZED) && !g_cfg.synchronized) return "(not used: alternating mode)";
+	if (item.flags & F_RESTART) return "(restart)";
 	return nullptr;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Drawing (ImGui; runs on the VR thread every headset frame while the menu is open)
 // ---------------------------------------------------------------------------------------------
-ImVec4 Col(const float* c) { return ImVec4(c[0], c[1], c[2], c[3]); }
+ImVec4 ToImVec4(const float* color) { return ImVec4(color[0], color[1], color[2], color[3]); }
 
 // The v-th name of a T_CHOICE item ("Off|DLSS").
-void ChoiceName(const Item& it, int v, char* out, size_t cap) {
+void ChoiceName(const Item& item, int index, char* out, size_t cap) {
 	snprintf(out, cap, "?");
-	const char* n = it.fmt;
-	for (int i = 0; n && i < v; i++) {  // skip v names
-		n = strchr(n, '|');
-		if (n) n++;
+	const char* name = item.format;
+	for (int i = 0; name && i < index; i++) {  // skip v names
+		name = strchr(name, '|');
+		if (name) name++;
 	}
-	if (n && v >= 0) snprintf(out, cap, "%.*s", (int)strcspn(n, "|"), n);
+	if (name && index >= 0) snprintf(out, cap, "%.*s", (int)strcspn(name, "|"), name);
 }
 
 // A value of a setting as the menu shows it.
-void ValueText(const Item& it, float v, char* out, size_t cap) {
-	switch (it.type) {
-		case T_BOOL: snprintf(out, cap, "%s", v != 0 ? "On" : "Off"); return;
-		case T_CHOICE: ChoiceName(it, (int)v, out, cap); return;
-		case T_INT: snprintf(out, cap, it.fmt ? it.fmt : "%d", (int)v); return;
-		case T_FLOAT: snprintf(out, cap, it.fmt ? it.fmt : "%.2f", (double)v); return;
+void ValueText(const Item& item, float value, char* out, size_t cap) {
+	switch (item.type) {
+		case T_BOOL: snprintf(out, cap, "%s", value != 0 ? "On" : "Off"); return;
+		case T_CHOICE: ChoiceName(item, (int)value, out, cap); return;
+		case T_INT: snprintf(out, cap, item.format ? item.format : "%d", (int)value); return;
+		case T_FLOAT: snprintf(out, cap, item.format ? item.format : "%.2f", (double)value); return;
 		default: out[0] = 0;
 	}
 }
 
 // Puts a setting back to its default (NieRVR.ini's table) and saves it.
-void ResetToDefault(Item& it) {
-	float d;
-	if ((it.type != T_BOOL && it.type != T_INT && it.type != T_FLOAT && it.type != T_CHOICE) || !ConfigDefault(it.ptr, &d))
+void ResetToDefault(Item& item) {
+	float defaultValue;
+	if ((item.type != T_BOOL && item.type != T_INT && item.type != T_FLOAT && item.type != T_CHOICE) || !ConfigDefault(item.value, &defaultValue))
 		return;
-	if (it.type == T_FLOAT) {
-		if (*(float*)it.ptr == d) return;
-		*(float*)it.ptr = d;
+	if (item.type == T_FLOAT) {
+		if (*(float*)item.value == defaultValue) return;
+		*(float*)item.value = defaultValue;
 	} else {
-		if (*(int*)it.ptr == (int)d) return;
-		*(int*)it.ptr = (int)d;
+		if (*(int*)item.value == (int)defaultValue) return;
+		*(int*)item.value = (int)defaultValue;
 	}
-	if (it.flags & F_RECENTER) s_wantRecenter = true;
-	Saved(it);
+	if (item.flags & F_RECENTER) s_wantRecenter = true;
+	SaveItem(item);
 }
 
 // While downloading, the button is the progress bar; pressing it cancels.
@@ -779,100 +778,100 @@ void DlssFileButton() {
 }
 
 // The widget of one setting; true if it changed.
-bool Widget(Item& it) {
+bool ItemWidget(Item& item) {
 	ImGui::SetNextItemWidth(-FLT_MIN);
-	const ImGuiSliderFlags sf = ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput |
-								(it.flags & F_LOG ? ImGuiSliderFlags_Logarithmic : 0);
-	switch (it.type) {
+	const ImGuiSliderFlags sliderFlags = ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput |
+										 (item.flags & F_LOG ? ImGuiSliderFlags_Logarithmic : 0);
+	switch (item.type) {
 		case T_BOOL: {
-			bool v = *(int*)it.ptr != 0;
-			if (!ImGui::Checkbox("##v", &v)) return false;
-			*(int*)it.ptr = v;
+			bool value = *(int*)item.value != 0;
+			if (!ImGui::Checkbox("##v", &value)) return false;
+			*(int*)item.value = value;
 			return true;
 		}
 		case T_INT: {
-			int v = *(int*)it.ptr;
-			const char* f = it.fmt ? it.fmt : "%d";
-			if (it.ptr == &g_cfg.giVolumes && v >= 128) f = "128 (all)";
-			if (!ImGui::SliderInt("##v", &v, (int)it.min, (int)it.max, f, sf)) return false;
-			*(int*)it.ptr = v;
+			int value = *(int*)item.value;
+			const char* format = item.format ? item.format : "%d";
+			if (item.value == &g_cfg.giVolumes && value >= 128) format = "128 (all)";
+			if (!ImGui::SliderInt("##v", &value, (int)item.min, (int)item.max, format, sliderFlags)) return false;
+			*(int*)item.value = value;
 			return true;
 		}
 		case T_FLOAT: {
-			float v = *(float*)it.ptr;
-			if (!ImGui::SliderFloat("##v", &v, it.min, it.max, it.fmt ? it.fmt : "%.2f", sf)) return false;
-			*(float*)it.ptr = v;
+			float value = *(float*)item.value;
+			if (!ImGui::SliderFloat("##v", &value, item.min, item.max, item.format ? item.format : "%.2f", sliderFlags)) return false;
+			*(float*)item.value = value;
 			return true;
 		}
 		case T_CHOICE: {  // a slider over the names
-			int v = *(int*)it.ptr;
+			int value = *(int*)item.value;
 			char name[64];
-			ChoiceName(it, v, name, sizeof(name));
-			if (!ImGui::SliderInt("##v", &v, (int)it.min, (int)it.max, name, sf)) return false;
-			*(int*)it.ptr = v;
+			ChoiceName(item, value, name, sizeof(name));
+			if (!ImGui::SliderInt("##v", &value, (int)item.min, (int)item.max, name, sliderFlags)) return false;
+			*(int*)item.value = value;
 			return true;
 		}
 		case T_ACTION:
-			if ((intptr_t)it.ptr == A_DLSS_FILE) {
+			if ((intptr_t)item.value == A_DLSS_FILE) {
 				DlssFileButton();
 				return false;
 			}
-			if (ImGui::Button("Do it", ImVec2(-FLT_MIN, 0)) && (intptr_t)it.ptr == A_RECENTER) s_wantRecenter = true;
+			if (ImGui::Button("Do it", ImVec2(-FLT_MIN, 0)) && (intptr_t)item.value == A_RECENTER) s_wantRecenter = true;
 			return false;
 		default:
 			return false;
 	}
 }
 
-void Row(Item& it, int index) {
+void ItemRow(Item& item, int index) {
 	ImGui::TableNextRow();
 	ImGui::TableSetColumnIndex(0);
 	ImGui::AlignTextToFramePadding();
-	ImGui::TextUnformatted(it.label);
-	if (const char* tag = Tag(it)) {
+	ImGui::TextUnformatted(item.label);
+	if (const char* tag = ItemTag(item)) {
 		ImGui::SameLine();
 		ImGui::PushFont(nullptr, kSmall);
-		ImGui::TextColored(Col(ui::Colors::warn), "%s", tag);
+		ImGui::TextColored(ToImVec4(ui::Colors::warn), "%s", tag);
 		ImGui::PopFont();
 	}
 	ImGui::TableSetColumnIndex(1);
 	ImGui::PushID(index);
-	bool changed = Widget(it);
+	bool changed = ItemWidget(item);
 	if (s_focusFirst) {  // the page was just opened: start on its first setting
 		ImGui::FocusItem();
 		ImGui::SetNavCursorVisible(true);
 		s_focusFirst = false;
 	}
 	bool focused = ImGui::IsItemFocused();
-	bool done = it.type == T_BOOL ? changed : ImGui::IsItemDeactivatedAfterEdit();  // sliders: when let go
-	if (it.type == T_BOOL) {
+	bool done = item.type == T_BOOL ? changed : ImGui::IsItemDeactivatedAfterEdit();  // sliders: when let go
+	if (item.type == T_BOOL) {
 		ImGui::SameLine();
-		ImGui::TextUnformatted(*(int*)it.ptr ? "On" : "Off");
+		ImGui::TextUnformatted(*(int*)item.value ? "On" : "Off");
 	}
 	ImGui::PopID();
-	if (changed && (it.flags & F_RECENTER)) s_wantRecenter = true;
-	if (done) Saved(it);
+	if (changed && (item.flags & F_RECENTER)) s_wantRecenter = true;
+	if (done) SaveItem(item);
 	if (focused) {
 		if (s_resetPending) {
 			s_resetPending = false;
-			ResetToDefault(it);
+			ResetToDefault(item);
 		}
-		s_help = it.help;
-		float d;
-		char v[64];
+		s_help = item.help;
+		float defaultValue;
+		char valueText[64];
 		s_helpDefault[0] = 0;
-		if (it.type != T_ACTION && ConfigDefault(it.ptr, &d)) {
-			ValueText(it, d, v, sizeof(v));
-			snprintf(s_helpDefault, sizeof(s_helpDefault), "Default: %s  (X or Delete: back to it)", v);
+		if (item.type != T_ACTION && ConfigDefault(item.value, &defaultValue)) {
+			ValueText(item, defaultValue, valueText, sizeof(valueText));
+			snprintf(s_helpDefault, sizeof(s_helpDefault), "Default: %s  (X or Delete: back to it)", valueText);
 		}
-		ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(Col(ui::Colors::bar)));
+		ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ToImVec4(ui::Colors::bar)));
 	}
 }
 
-void PageContents(const Page& p, bool info) {
-	if (info) {  // the Info page: lines of live text set by the other parts of the mod
+void PageContents(const Page& page, bool isInfo) {
+	if (isInfo) {  // the Info page: lines of live text set by the other parts of the mod
 		AcquireSRWLockShared(&s_infoLock);
-		for (int i = 0; i < kInfoLines; i++)
+		for (int i = 0; i < INFO_LINE_COUNT; i++)
 			if (s_infoText[i][0]) ImGui::TextWrapped("%s", s_infoText[i]);
 		ReleaseSRWLockShared(&s_infoLock);
 		s_focusFirst = false;
@@ -881,14 +880,14 @@ void PageContents(const Page& p, bool info) {
 	if (!ImGui::BeginTable("items", 2, ImGuiTableFlags_None)) return;
 	ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch);
 	ImGui::TableSetupColumn("control", ImGuiTableColumnFlags_WidthFixed, 440);
-	for (int i = 0; i < p.count; i++) Row(p.items[i], i);
+	for (int i = 0; i < page.count; i++) ItemRow(page.items[i], i);
 	ImGui::EndTable();
 }
 
 void Draw() {
 	// title and version
 	ImGui::PushFont(nullptr, 42.0f);
-	ImGui::TextColored(Col(ui::Colors::accent), "NieRVR settings");
+	ImGui::TextColored(ToImVec4(ui::Colors::accent), "NieRVR settings");
 	ImGui::PopFont();
 	ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - ImGui::CalcTextSize(NIERVR_VERSION).x);
 	ImGui::TextDisabled("%s", NIERVR_VERSION);
@@ -901,12 +900,12 @@ void Draw() {
 	s_helpDefault[0] = 0;
 	int shown = -1;
 	if (ImGui::BeginTabBar("pages")) {
-		for (int i = 0; i < kPages; i++) {
-			ImGuiTabItemFlags f = s_pageChanged && i == s_page ? ImGuiTabItemFlags_SetSelected : 0;
-			if (!ImGui::BeginTabItem(s_pages[i].name, nullptr, f)) continue;
+		for (int i = 0; i < kPageCount; i++) {
+			ImGuiTabItemFlags tabFlags = s_pageChanged && i == s_page ? ImGuiTabItemFlags_SetSelected : 0;
+			if (!ImGui::BeginTabItem(s_pages[i].name, nullptr, tabFlags)) continue;
 			shown = i;
 			ImGui::BeginChild("page", ImVec2(0, ImGui::GetContentRegionAvail().y - footer), ImGuiChildFlags_NavFlattened);
-			if (!s_pageChanged || i == s_page) PageContents(s_pages[i], i == kPages - 1);
+			if (!s_pageChanged || i == s_page) PageContents(s_pages[i], i == kPageCount - 1);
 			ImGui::EndChild();
 			ImGui::EndTabItem();
 		}
@@ -948,33 +947,33 @@ void Draw() {
 // change pages, MenuTick).
 void FeedInput() {
 	ImGuiIO& io = ImGui::GetIO();
-	WORD b = s_padOk ? s_pad.wButtons : 0;
-	if (!(b & XINPUT_GAMEPAD_A)) s_holdA = false;
+	WORD buttons = s_gamepadOk ? s_gamepad.wButtons : 0;
+	if (!(buttons & XINPUT_GAMEPAD_A)) s_ignoreA = false;
 	// The left stick works like the D-pad (ImGui would scroll with it; on the VR controllers the
 	// thumbstick is what you move with). On past half way, off again below a third.
-	static bool stUp, stDown, stLeft, stRight;
-	auto dir = [](bool& on, float v) { on = on ? v > 0.33f : v > 0.5f; return on; };
-	float sx = s_padOk ? (float)s_pad.sThumbLX / 32767.0f : 0.0f, sy = s_padOk ? (float)s_pad.sThumbLY / 32767.0f : 0.0f;
-	dir(stUp, sy);
-	dir(stDown, -sy);
-	dir(stLeft, -sx);
-	dir(stRight, sx);
-	io.AddKeyEvent(ImGuiKey_GamepadDpadUp, (b & XINPUT_GAMEPAD_DPAD_UP) || stUp);
-	io.AddKeyEvent(ImGuiKey_GamepadDpadDown, (b & XINPUT_GAMEPAD_DPAD_DOWN) || stDown);
-	io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, (b & XINPUT_GAMEPAD_DPAD_LEFT) || stLeft);
-	io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (b & XINPUT_GAMEPAD_DPAD_RIGHT) || stRight);
+	static bool stickUp, stickDown, stickLeft, stickRight;
+	auto stickDirection = [](bool& on, float v) { on = on ? v > 0.33f : v > 0.5f; return on; };
+	float stickX = s_gamepadOk ? (float)s_gamepad.sThumbLX / 32767.0f : 0.0f, stickY = s_gamepadOk ? (float)s_gamepad.sThumbLY / 32767.0f : 0.0f;
+	stickDirection(stickUp, stickY);
+	stickDirection(stickDown, -stickY);
+	stickDirection(stickLeft, -stickX);
+	stickDirection(stickRight, stickX);
+	io.AddKeyEvent(ImGuiKey_GamepadDpadUp, (buttons & XINPUT_GAMEPAD_DPAD_UP) || stickUp);
+	io.AddKeyEvent(ImGuiKey_GamepadDpadDown, (buttons & XINPUT_GAMEPAD_DPAD_DOWN) || stickDown);
+	io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, (buttons & XINPUT_GAMEPAD_DPAD_LEFT) || stickLeft);
+	io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (buttons & XINPUT_GAMEPAD_DPAD_RIGHT) || stickRight);
 	// The right stick scrolls the page (ImGui's stick scrolling, which it reads from its "left stick").
-	float rx = s_padOk ? (float)s_pad.sThumbRX / 32767.0f : 0.0f, ry = s_padOk ? (float)s_pad.sThumbRY / 32767.0f : 0.0f;
+	float rightX = s_gamepadOk ? (float)s_gamepad.sThumbRX / 32767.0f : 0.0f, rightY = s_gamepadOk ? (float)s_gamepad.sThumbRY / 32767.0f : 0.0f;
 	auto scroll = [&](ImGuiKey neg, ImGuiKey pos, float v) {
 		io.AddKeyAnalogEvent(neg, v < -0.25f, v < -0.25f ? -v : 0.0f);
 		io.AddKeyAnalogEvent(pos, v > 0.25f, v > 0.25f ? v : 0.0f);
 	};
-	scroll(ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight, rx);
-	scroll(ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadLStickUp, ry);
-	io.AddKeyEvent(ImGuiKey_GamepadFaceDown, (b & XINPUT_GAMEPAD_A) && !s_holdA);
-	io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (b & XINPUT_GAMEPAD_B) && s_uiActive);
-	io.AddKeyEvent(ImGuiKey_GamepadL1, (b & XINPUT_GAMEPAD_LEFT_SHOULDER) && s_uiActive);
-	io.AddKeyEvent(ImGuiKey_GamepadR1, (b & XINPUT_GAMEPAD_RIGHT_SHOULDER) && s_uiActive);
+	scroll(ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight, rightX);
+	scroll(ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadLStickUp, rightY);
+	io.AddKeyEvent(ImGuiKey_GamepadFaceDown, (buttons & XINPUT_GAMEPAD_A) && !s_ignoreA);
+	io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (buttons & XINPUT_GAMEPAD_B) && s_sliderActive);
+	io.AddKeyEvent(ImGuiKey_GamepadL1, (buttons & XINPUT_GAMEPAD_LEFT_SHOULDER) && s_sliderActive);
+	io.AddKeyEvent(ImGuiKey_GamepadR1, (buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER) && s_sliderActive);
 	io.AddKeyEvent(ImGuiKey_UpArrow, KeyDown(VK_UP));
 	io.AddKeyEvent(ImGuiKey_DownArrow, KeyDown(VK_DOWN));
 	io.AddKeyEvent(ImGuiKey_LeftArrow, KeyDown(VK_LEFT));
@@ -990,7 +989,7 @@ void FeedInput() {
 // ---------------------------------------------------------------------------------------------
 // Any thread: one line of the Info page.
 void MenuSetInfo(int line, const char* text) {
-	if (line < 0 || line >= kInfoLines) return;
+	if (line < 0 || line >= INFO_LINE_COUNT) return;
 	AcquireSRWLockExclusive(&s_infoLock);
 	snprintf(s_infoText[line], sizeof(s_infoText[line]), "%s", text);
 	ReleaseSRWLockExclusive(&s_infoLock);
@@ -998,57 +997,57 @@ void MenuSetInfo(int line, const char* text) {
 
 // Every headset frame: opening and closing, page buttons, and the gamepad state for ImGui.
 void MenuTick(bool foreground) {
-	DWORD t = GetTickCount();
+	DWORD now = GetTickCount();
 	static DWORD lastHook;
-	if (t - lastHook > 3000) {  // the game may load XInput late
-		lastHook = t;
+	if (now - lastHook > 3000) {  // the game may load XInput late
+		lastHook = now;
 		InstallGamepad();
 	}
-	XINPUT_GAMEPAD g = {};
-	bool pad = ReadGamepad(&g);
-	s_pad = g;
-	s_padOk = pad;
+	XINPUT_GAMEPAD pad = {};
+	bool havePad = ReadGamepad(&pad);
+	s_gamepad = pad;
+	s_gamepadOk = havePad;
 	s_foreground = foreground;
-	WORD b = pad ? g.wButtons : 0;
-	WORD pressed = b & ~s_prevButtons;  // newly pressed buttons
-	s_prevButtons = b;
+	WORD buttons = havePad ? pad.wButtons : 0;
+	WORD pressed = buttons & ~s_prevButtons;  // newly pressed buttons
+	s_prevButtons = buttons;
 	// Triggers also change pages (VR controllers: the grips are LB/RB, which is easy to miss).
 	// A pull counts once: above 160, and it must drop below 64 before it counts again.
-	static bool ltHeld, rtHeld;
-	bool ltPull = pad && !ltHeld && g.bLeftTrigger > 160;
-	bool rtPull = pad && !rtHeld && g.bRightTrigger > 160;
-	if (pad && g.bLeftTrigger > 160) ltHeld = true;
-	else if (!pad || g.bLeftTrigger < 64) ltHeld = false;
-	if (pad && g.bRightTrigger > 160) rtHeld = true;
-	else if (!pad || g.bRightTrigger < 64) rtHeld = false;
+	static bool leftTriggerHeld, rightTriggerHeld;
+	bool leftTriggerPulled = havePad && !leftTriggerHeld && pad.bLeftTrigger > 160;
+	bool rightTriggerPulled = havePad && !rightTriggerHeld && pad.bRightTrigger > 160;
+	if (havePad && pad.bLeftTrigger > 160) leftTriggerHeld = true;
+	else if (!havePad || pad.bLeftTrigger < 64) leftTriggerHeld = false;
+	if (havePad && pad.bRightTrigger > 160) rightTriggerHeld = true;
+	else if (!havePad || pad.bRightTrigger < 64) rightTriggerHeld = false;
 
 	// open / close. Gamepad: hold B, then press A. Closing: B, Start or the menu key.
-	if (!(b & XINPUT_GAMEPAD_B)) s_comboLocked = false;
-	bool comboFire = !s_comboLocked && (b & XINPUT_GAMEPAD_B) && (pressed & XINPUT_GAMEPAD_A);
+	if (!(buttons & XINPUT_GAMEPAD_B)) s_comboLocked = false;
+	bool comboFire = !s_comboLocked && (buttons & XINPUT_GAMEPAD_B) && (pressed & XINPUT_GAMEPAD_A);
 	bool keyToggle = KeyEdge(g_cfg.keyMenu, foreground);
-	bool pgKeyL = KeyEdge(VK_PRIOR, foreground), pgKeyR = KeyEdge(VK_NEXT, foreground);
-	bool delKey = KeyEdge(VK_DELETE, foreground), backKey = KeyEdge(VK_BACK, foreground);  // both read every frame
-	bool resetKey = delKey || backKey;
+	bool pageUpKey = KeyEdge(VK_PRIOR, foreground), pageDownKey = KeyEdge(VK_NEXT, foreground);
+	bool deleteKey = KeyEdge(VK_DELETE, foreground), backKey = KeyEdge(VK_BACK, foreground);  // both read every frame
+	bool resetKey = deleteKey || backKey;
 	if (!s_open) {
-		if (keyToggle || comboFire) Open(true);
-	} else if (keyToggle || (!s_uiActive && (pressed & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START)))) {
-		Open(false);
-		if (b & XINPUT_GAMEPAD_B) s_comboLocked = true;  // else A with B still down reopens it at once
+		if (keyToggle || comboFire) SetOpen(true);
+	} else if (keyToggle || (!s_sliderActive && (pressed & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START)))) {
+		SetOpen(false);
+		if (buttons & XINPUT_GAMEPAD_B) s_comboLocked = true;  // else A with B still down reopens it at once
 	}
 	if (!s_open) {
-		if (s_waitRelease && !b) {
+		if (s_waitRelease && !buttons) {
 			s_waitRelease = false;
 			g_blockPad = 0;
 		}
 		return;
 	}
 	// X / Delete: the highlighted setting back to its default (not while a slider is being adjusted)
-	if (!s_uiActive && ((pressed & XINPUT_GAMEPAD_X) || resetKey)) s_resetPending = true;
+	if (!s_sliderActive && ((pressed & XINPUT_GAMEPAD_X) || resetKey)) s_resetPending = true;
 	// pages (while a slider is being adjusted, LB/RB make it finer/coarser instead)
-	bool pgL = pgKeyL || (!s_uiActive && ((pressed & XINPUT_GAMEPAD_LEFT_SHOULDER) || ltPull));
-	bool pgR = pgKeyR || (!s_uiActive && ((pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER) || rtPull));
-	if (pgL || pgR) {
-		s_page = (s_page + (pgR ? 1 : kPages - 1)) % kPages;
+	bool pageLeft = pageUpKey || (!s_sliderActive && ((pressed & XINPUT_GAMEPAD_LEFT_SHOULDER) || leftTriggerPulled));
+	bool pageRight = pageDownKey || (!s_sliderActive && ((pressed & XINPUT_GAMEPAD_RIGHT_SHOULDER) || rightTriggerPulled));
+	if (pageLeft || pageRight) {
+		s_page = (s_page + (pageRight ? 1 : kPageCount - 1)) % kPageCount;
 		s_pageChanged = s_focusFirst = true;
 	}
 }
@@ -1056,19 +1055,19 @@ void MenuTick(bool foreground) {
 bool MenuIsOpen() { return s_open; }
 // Returns whether the menu was just opened, and clears it.
 bool MenuTakeJustOpened() {
-	bool j = s_justOpened;
+	bool justOpened = s_justOpened;
 	s_justOpened = false;
-	return j;
+	return justOpened;
 }
 bool MenuTakeRecenter() {
-	bool r = s_wantRecenter;
+	bool recenter = s_wantRecenter;
 	s_wantRecenter = false;
-	return r;
+	return recenter;
 }
 
 // Draws the menu into rtv (w x h pixels). False if ImGui couldn't start.
-bool MenuRender(ID3D11Device* dev, ID3D11DeviceContext* dc, ID3D11RenderTargetView* rtv, int w, int h) {
-	if (!UiPrepare(s_panel, dev, dc, w, h)) return false;
+bool MenuRender(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11RenderTargetView* rtv, int width, int height) {
+	if (!UiPrepare(s_panel, device, context, width, height)) return false;
 	FeedInput();
 	UiNewFrame();
 	ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -1081,7 +1080,7 @@ bool MenuRender(ID3D11Device* dev, ID3D11DeviceContext* dc, ID3D11RenderTargetVi
 				 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove);
 	Draw();
 	ImGui::End();
-	s_uiActive = ImGui::IsAnyItemActive();
-	UiRender(dc, rtv);
+	s_sliderActive = ImGui::IsAnyItemActive();
+	UiRender(context, rtv);
 	return true;
 }

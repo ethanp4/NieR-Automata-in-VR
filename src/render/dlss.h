@@ -13,13 +13,13 @@ struct DlssInputs {
 
 // Loads _nvngx.dll and starts NGX on the game's device (once). False: DLSS is unavailable; the
 // reason is logged and kept for DlssStatus.
-bool DlssInit(ID3D11Device* dev);
+bool DlssInit(ID3D11Device* device);
 // The DLSS feature for one eye at these sizes, (re)created when something changed.
 // quality: 0 DLAA, 1 Quality, 2 Balanced, 3 Performance, 4 Ultra performance; model: 0 CNN (preset E),
 // 1 transformer (preset K).
-bool DlssPrepare(ID3D11DeviceContext* c, int eye, UINT rw, UINT rh, UINT ow, UINT oh, int quality, int model,
+bool DlssPrepare(ID3D11DeviceContext* c, int eye, UINT renderW, UINT renderH, UINT outputW, UINT outputH, int quality, int model,
 				 bool depthInverted);
-bool DlssEvaluate(ID3D11DeviceContext* c, int eye, const DlssInputs& in);
+bool DlssEvaluate(ID3D11DeviceContext* c, int eye, const DlssInputs& inputs);
 void DlssReleaseFeatures();
 const char* DlssStatus();  // "DLSS 310.9.16" or why it isn't available
 
@@ -35,6 +35,6 @@ struct DlssFileState {
 	long long got, total;  // bytes, while downloading
 	char text[96];         // installed: its version; missing: why the last try failed ("" = none)
 };
-void DlssFileGet(DlssFileState* s);
+void DlssFileGet(DlssFileState* out);
 void DlssFileDownload();  // starts a background download (licence, then the DLL, checked by SHA256); also redownloads
 void DlssFileCancel();

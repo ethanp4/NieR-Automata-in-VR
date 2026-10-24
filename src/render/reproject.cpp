@@ -483,7 +483,7 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
 		memset(s_skipCounts, 0, sizeof(s_skipCounts));
 		char info[160];
 		snprintf(info, sizeof(info), "Depth reprojection: %u of %u frames in the last 30 s", s_warpedCount, s_warpedCount + s_skippedCount);
-		MenuSetInfo(10, info);
+		MenuSetInfo(INFO_REPROJECT, info);
 		s_warpedCount = s_skippedCount = 0;
 	}
 	return result;

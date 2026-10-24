@@ -10,11 +10,9 @@ Drop one file (d3d11.dll) into the game folder; no injector needed
 Automatically upscale to a percentage of your headsets native resolution using dlss, or render at native
 with dlaa only
 
-### First person mode
+### First person mode (work in progress)
 
-work in prorgess
-
-### Vr controller support with (optional) waggle controls
+### Vr controller support with optional waggle controls (work in progress)
 
 Get immersed in the experience. Regular controls and other controllers still work as before
 

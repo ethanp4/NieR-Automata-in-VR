@@ -16,22 +16,22 @@ const UINT kVignetteBufferSize = 48;
 ID3D11Resource* s_vignetteBuffer;
 void* s_vignetteMapped;
 
-void PatchVignette(float* f) {
-	if (!g_cfg.vignette) f[8] = 0.0001f;
+void PatchVignette(float* floats) {
+	if (!g_cfg.vignette) floats[8] = 0.0001f;
 }
 
 void FindVignetteBuffer(ID3D11DeviceContext* c) {
-	ID3D11Buffer* b = nullptr;
-	c->PSGetConstantBuffers(1, 1, &b);
-	if (!b) return;
-	D3D11_BUFFER_DESC d;
-	b->GetDesc(&d);
-	if (d.ByteWidth == kVignetteBufferSize) {
-		s_vignetteBuffer = b;
-		Log("vignette: parameters found (buffer of %u bytes); %s", d.ByteWidth,
+	ID3D11Buffer* buffer = nullptr;
+	c->PSGetConstantBuffers(1, 1, &buffer);
+	if (!buffer) return;
+	D3D11_BUFFER_DESC desc;
+	buffer->GetDesc(&desc);
+	if (desc.ByteWidth == kVignetteBufferSize) {
+		s_vignetteBuffer = buffer;
+		Log("vignette: parameters found (buffer of %u bytes); %s", desc.ByteWidth,
 			g_cfg.vignette ? "kept (Vignette=1)" : "removed from the next frame on");
 	}
-	b->Release();
+	buffer->Release();
 }
 
 // --- shadows -----------------------------------------------------------------------------------
@@ -48,21 +48,21 @@ bool s_restoreShader;
 ID3D11PixelShader* LitShader(ID3D11DeviceContext* c) {
 	if (s_litShaderTried) return s_litShader;
 	s_litShaderTried = true;
-	HMODULE comp = LoadLibraryW(L"d3dcompiler_47.dll");
-	pD3DCompile compile = comp ? (pD3DCompile)(void*)GetProcAddress(comp, "D3DCompile") : nullptr;
-	static const char src[] = "float4 main() : SV_Target { return 1; }";  // no inputs: links to any VS
-	ID3DBlob *b = nullptr, *err = nullptr;
-	HRESULT hr = compile ? compile(src, sizeof(src) - 1, "lit", nullptr, nullptr, "main", "ps_5_0", 0, 0, &b, &err) : E_FAIL;
-	ID3D11Device* dev = nullptr;
-	c->GetDevice(&dev);
-	if (SUCCEEDED(hr) && dev) hr = dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &s_litShader);
-	if (dev) dev->Release();
+	HMODULE compilerDll = LoadLibraryW(L"d3dcompiler_47.dll");
+	pD3DCompile compile = compilerDll ? (pD3DCompile)(void*)GetProcAddress(compilerDll, "D3DCompile") : nullptr;
+	static const char source[] = "float4 main() : SV_Target { return 1; }";  // no inputs: links to any VS
+	ID3DBlob *blob = nullptr, *errors = nullptr;
+	HRESULT hr = compile ? compile(source, sizeof(source) - 1, "lit", nullptr, nullptr, "main", "ps_5_0", 0, 0, &blob, &errors) : E_FAIL;
+	ID3D11Device* device = nullptr;
+	c->GetDevice(&device);
+	if (SUCCEEDED(hr) && device) hr = device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &s_litShader);
+	if (device) device->Release();
 	if (FAILED(hr)) {
 		s_litShader = nullptr;
 		Log("shadows off: no replacement shader (0x%08x); the shadow pass stays on", (unsigned)hr);
 	}
-	if (b) b->Release();
-	if (err) err->Release();
+	if (blob) blob->Release();
+	if (errors) errors->Release();
 	return s_litShader;
 }
 
@@ -85,8 +85,8 @@ uint32_t s_keptLogged[16];
 int s_keptCount;
 
 bool LowHealthShader(uint64_t hash) {
-	for (uint32_t h : kLowHealthShaders)
-		if ((uint32_t)hash == h) return true;
+	for (uint32_t known : kLowHealthShaders)
+		if ((uint32_t)hash == known) return true;
 	return false;
 }
 
@@ -99,35 +99,35 @@ struct Skipped {
 Skipped s_skipped[8];
 
 void NoteSkip(uint64_t hash, UINT slot) {
-	for (auto& e : s_skipped)
-		if (e.hash == hash && e.count) {
-			e.count++;
+	for (auto& entry : s_skipped)
+		if (entry.hash == hash && entry.count) {
+			entry.count++;
 			return;
 		}
-	for (auto& e : s_skipped)
-		if (!e.count) {
-			e = {hash, 1, slot};
+	for (auto& entry : s_skipped)
+		if (!entry.count) {
+			entry = {hash, 1, slot};
 			return;
 		}
 }
 
 ID3D11Resource* BoundResource(ID3D11DeviceContext* c, UINT slot) {
-	ID3D11ShaderResourceView* v = nullptr;
-	c->PSGetShaderResources(slot, 1, &v);
-	if (!v) return nullptr;
-	ID3D11Resource* r = nullptr;
-	v->GetResource(&r);
-	v->Release();
-	if (r) r->Release();  // still bound: stays alive for this draw
-	return r;
+	ID3D11ShaderResourceView* view = nullptr;
+	c->PSGetShaderResources(slot, 1, &view);
+	if (!view) return nullptr;
+	ID3D11Resource* res = nullptr;
+	view->GetResource(&res);
+	view->Release();
+	if (res) res->Release();  // still bound: stays alive for this draw
+	return res;
 }
 
-bool Tex2D(ID3D11Resource* r, D3D11_TEXTURE2D_DESC* d) {
-	if (!r) return false;
+bool Tex2D(ID3D11Resource* res, D3D11_TEXTURE2D_DESC* desc) {
+	if (!res) return false;
 	D3D11_RESOURCE_DIMENSION dim;
-	r->GetType(&dim);
+	res->GetType(&dim);
 	if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D) return false;
-	((ID3D11Texture2D*)r)->GetDesc(d);
+	((ID3D11Texture2D*)res)->GetDesc(desc);
 	return true;
 }
 }  // namespace
@@ -179,20 +179,20 @@ bool GameEffectsSkipEffectDraw(ID3D11DeviceContext* c, uint32_t sampled, uint64_
 	ID3D11RenderTargetView* rtv = nullptr;
 	c->OMGetRenderTargets(1, &rtv, nullptr);
 	if (!rtv) return false;
-	ID3D11Resource* rt = nullptr;
-	rtv->GetResource(&rt);
+	ID3D11Resource* target = nullptr;
+	rtv->GetResource(&target);
 	rtv->Release();
-	if (rt) rt->Release();
-	D3D11_TEXTURE2D_DESC td;
-	if (!Tex2D(rt, &td)) return false;
+	if (target) target->Release();
+	D3D11_TEXTURE2D_DESC targetDesc;
+	if (!Tex2D(target, &targetDesc)) return false;
 	bool skip = false;
 	UINT hit = 0;
 	for (UINT slot = 0; slot < 32 && !skip; slot++) {
 		if (!(sampled >> slot & 1)) continue;
-		ID3D11Resource* r = BoundResource(c, slot);
-		D3D11_TEXTURE2D_DESC d;
-		if (!r || r == rt || r == s_refractionCopy || !Tex2D(r, &d)) continue;
-		skip = d.Width == td.Width && d.Height == td.Height && d.Format == td.Format;
+		ID3D11Resource* res = BoundResource(c, slot);
+		D3D11_TEXTURE2D_DESC desc;
+		if (!res || res == target || res == s_refractionCopy || !Tex2D(res, &desc)) continue;
+		skip = desc.Width == targetDesc.Width && desc.Height == targetDesc.Height && desc.Format == targetDesc.Format;
 		hit = slot;
 	}
 	if (!skip) return false;
@@ -216,32 +216,32 @@ bool GameEffectsSkipEffectDraw(ID3D11DeviceContext* c, uint32_t sampled, uint64_
 			"removed while in stereo (LowHealthEffect=0)");
 	} else if (GetTickCount() - s_filterReportTick > 60000) {
 		char list[300];
-		size_t at = 0;
+		size_t used = 0;
 		list[0] = 0;
-		for (auto& e : s_skipped)
-			if (e.count && at + 40 < sizeof(list))
-				at += snprintf(list + at, sizeof(list) - at, " %08x/t%u x%u", (unsigned)(e.hash & 0xffffffff),
-							   e.slot, e.count);
+		for (auto& entry : s_skipped)
+			if (entry.count && used + 40 < sizeof(list))
+				used += snprintf(list + used, sizeof(list) - used, " %08x/t%u x%u", (unsigned)(entry.hash & 0xffffffff),
+								 entry.slot, entry.count);
 		Log("screen filter: %u draws removed in the last minute (shader/slot/count:%s)", s_filterSkips, list);
-		for (auto& e : s_skipped) e = {};
+		for (auto& entry : s_skipped) entry = {};
 		s_filterSkips = 0;
 		s_filterReportTick = GetTickCount();
 	}
 	return true;
 }
 
-void GameEffectsOnMap(ID3D11Resource* r, void* data, UINT size) {
-	if (r == s_vignetteBuffer && size == kVignetteBufferSize) s_vignetteMapped = data;
+void GameEffectsOnMap(ID3D11Resource* res, void* data, UINT size) {
+	if (res == s_vignetteBuffer && size == kVignetteBufferSize) s_vignetteMapped = data;
 }
 
-void GameEffectsBeforeUnmap(ID3D11Resource* r) {
-	if (r != s_vignetteBuffer || !s_vignetteMapped) return;
+void GameEffectsBeforeUnmap(ID3D11Resource* res) {
+	if (res != s_vignetteBuffer || !s_vignetteMapped) return;
 	PatchVignette((float*)s_vignetteMapped);
 	s_vignetteMapped = nullptr;
 }
 
-const void* GameEffectsPatchUpdate(ID3D11Resource* r, const void* data, UINT size, float* scratch) {
-	if (r != s_vignetteBuffer || size != kVignetteBufferSize) return data;
+const void* GameEffectsPatchUpdate(ID3D11Resource* res, const void* data, UINT size, float* scratch) {
+	if (res != s_vignetteBuffer || size != kVignetteBufferSize) return data;
 	if (data != scratch) memcpy(scratch, data, kVignetteBufferSize);
 	PatchVignette(scratch);
 	return scratch;

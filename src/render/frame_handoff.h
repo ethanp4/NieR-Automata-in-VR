@@ -3,6 +3,6 @@
 #pragma once
 #include <d3d11.h>
 
-void HookFromSwapChain(IDXGISwapChain* sc);
+void HookFromSwapChain(IDXGISwapChain* swapChain);
 void HookWithDummySwapChain();
 void CapturePollMidFrame();  // publish finished frames without waiting for Present

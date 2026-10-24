@@ -1,11 +1,11 @@
 # culling_stubs.S - widened field of view at the places that build the camera's projection and frusta
-# (culling.cpp). Since 0.3.17 the camera object's own fov field (+0x274) keeps the game's value: the
-# camera controller eases from it, and the model-detail code reads it. Writing 120 there (0.3.11 to
-# 0.3.16) drifted the game's own value towards 120 and gave low-detail models.
+# (culling.cpp). The camera object's own fov field (+0x274) keeps the game's value: the camera
+# controller eases from it, and the model-detail code reads it (writing the wide value there drifted
+# the game's own value wide and gave low-detail models).
 #
 # Each site is one 8-byte "movss xmmN, [reg+0x274]" that MinHook sends here: if reg is the main
-# camera object (nvr_fov_site_obj[idx], 0 = off; per site since 0.3.22 for the Ctrl+Shift+F6
-# test), xmmN gets nvr_fov_wide and execution resumes after the
+# camera object (nvr_fov_site_obj[idx], per site; 0 = off), xmmN gets nvr_fov_wide and execution
+# resumes after the
 # instruction; otherwise the original instruction runs (MinHook's trampoline). Flags are
 # clobbered; the next game instructions (mulss / movss) don't read them.
 .intel_syntax noprefix
@@ -66,9 +66,9 @@
 
 .text
 FOVSTUB nvr_fov_stub0, rbx, xmm1, 0   # camera update: projection rebuild   movss xmm1, [rbx+0x274]
-# frustum builder args: also remember r14 / rbp / rsi (its rdx / r8 / r9 arguments: eye, target and
-# up of a look-at) for the log. Head-direction culling (0.3.22, nvr_head_cull != 0): before the
-# call, nvr_head_cull_builder(eye, target, up) may turn the look-at the way the headset looks. All
+# frustum builder args: r14 / rbp / rsi hold its rdx / r8 / r9 arguments (eye, target and up of a
+# look-at). Head-direction culling (nvr_head_cull != 0): before the call,
+# nvr_head_cull_builder(eye, target, up) may turn the look-at the way the headset looks. All
 # volatile registers are kept (this is the middle of a game function).
 .globl nvr_fov_stub1
 .p2align 4
@@ -83,8 +83,8 @@ FOVSTUB nvr_fov_stub1b, rax, xmm1, 1, nvr_fov_wide_b  # camera update: frustum b
 FOVSTUB nvr_fov_stub2, rax, xmm0, 2   # render thread copy (+0xd4)          movss xmm0, [rax+0x274]
 FOVSTUB nvr_fov_stub3, rax, xmm0, 3   # render thread copy (+0xd4)          movss xmm0, [rax+0x274]
 
-# Right after the frustum builder call returns (0.3.23): put the game's look-at back (the block is
-# game data, 0.3.22 log), then the original "mov rbp, [rsp+0x90]" (MinHook trampoline).
+# Right after the frustum builder call returns: put the game's look-at back (the block is game
+# data), then the original "mov rbp, [rsp+0x90]" (MinHook trampoline).
 .globl nvr_post_builder
 .p2align 4
 nvr_post_builder:

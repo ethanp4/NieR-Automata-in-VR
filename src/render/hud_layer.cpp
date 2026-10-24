@@ -35,54 +35,54 @@
 #include "render/d3d_hooks.h"
 
 namespace {
-ID3D11Texture2D* s_bb;            // the swapchain backbuffer (raw pointer: identity only, never called)
-D3D11_TEXTURE2D_DESC s_bbDesc;     // its description, taken at Present while it was certainly alive
-bool s_vsIsUI;                     // current vertex shader is a UI shader
-bool s_uiSeen, s_sceneReady;
-ID3D11Resource* s_uiTarget;        // the intermediate the UI is drawn into
-ID3D11Texture2D* s_preUI;
-D3D11_TEXTURE2D_DESC s_preDesc;
-ID3D11ShaderResourceView* s_preSRV;
-ID3D11RenderTargetView* s_preRTV;
-D3D11_RENDER_TARGET_VIEW_DESC s_preRTVDesc;
-bool s_replayEffect;   // the current UI draw is a screen effect: also draw it into the pre-UI copy
-bool s_coverDraw;      // the current UI draw goes into the UI target: add its alpha to the coverage
+ID3D11Texture2D* s_backbuffer;          // the swapchain backbuffer (raw pointer: identity only, never called)
+D3D11_TEXTURE2D_DESC s_backbufferDesc;  // its description, taken at Present while it was certainly alive
+bool s_uiShaderBound;                   // current vertex shader is a UI shader
+bool s_uiStarted, s_sceneReady;
+ID3D11Resource* s_uiTarget;  // the intermediate the UI is drawn into
+ID3D11Texture2D* s_preUiCopy;
+D3D11_TEXTURE2D_DESC s_preUiDesc;
+ID3D11ShaderResourceView* s_preUiSrv;
+ID3D11RenderTargetView* s_preUiRtv;
+D3D11_RENDER_TARGET_VIEW_DESC s_preUiRtvDesc;
+bool s_drawIntoPreUi;     // the current UI draw is a screen effect: also draw it into the pre-UI copy
+bool s_drawIntoCoverage;  // the current UI draw goes into the UI target: add its alpha to the coverage
 bool s_loggedEffect;
-ID3D11Resource* s_screenCopy;      // this frame's copy of the UI target, made for distortion effects
-unsigned s_copyEffects;            // distortion draws removed/kept since the last report
-DWORD s_copyReportTick;
-bool s_loggedCopy;
+ID3D11Resource* s_screenCopy;  // this frame's copy of the UI target, made for distortion effects
+unsigned s_distortionDraws;    // distortion draws removed/kept since the last report
+DWORD s_distortionReportTick;
+bool s_loggedDistortion;
 // Synchronized: the game's final pass of this frame (state captured by replay.cpp), to draw the right
 // eye's scene image after its playback.
-bool s_finalOk;
-int s_finalSlot;
-DrawArgs s_finalArgs;
+bool s_finalPassSaved;
+int s_finalPassSlot;
+DrawArgs s_finalPassArgs;
 
 // Parameters of UI draws: the first 96 bytes of the UIParam / cbUIParam cbuffers (both start with
 // g_WorldMatrix, g_Color0, g_Color1, g_DispRate), remembered per buffer.
-struct UiCb {
-	ID3D11Resource* buf;
-	float f[24];
+struct UiParams {
+	ID3D11Resource* buffer;
+	float floats[24];
 };
-UiCb s_uiCb[32];
-int s_uiCbNext;
-struct UiPending {
+UiParams s_uiParams[32];
+int s_uiParamsNext;
+struct PendingUiMap {
 	ID3D11Resource* res;
 	const float* data;
 };
-UiPending s_uiPending[8];
-ID3D11Resource* s_vsCb1;  // buffer bound at VS slot b1 (UI parameters)
-D3D11_SHADER_RESOURCE_VIEW_DESC s_preSRVDesc;
+PendingUiMap s_pendingUiMaps[8];
+ID3D11Resource* s_vsSlot1Buffer;  // buffer bound at VS slot b1 (UI parameters)
+D3D11_SHADER_RESOURCE_VIEW_DESC s_preUiSrvDesc;
 ID3D11Texture2D* s_scene;
-ID3D11RenderTargetView* s_sceneRTV;
+ID3D11RenderTargetView* s_sceneRtv;
 D3D11_TEXTURE2D_DESC s_sceneDesc;
-D3D11_RENDER_TARGET_VIEW_DESC s_sceneRTVDesc;
+D3D11_RENDER_TARGET_VIEW_DESC s_sceneRtvDesc;
 unsigned s_framesWithUI;
-bool s_loggedOk, s_loggedNoFinal;
-volatile LONG s_budget;
+bool s_loggedWorking, s_loggedNoFinal;
+volatile LONG s_preUiFailLogs;
 
 template <typename T>
-void Rel(T*& p) {
+void SafeRelease(T*& p) {
 	if (p) p->Release();
 	p = nullptr;
 }
@@ -93,27 +93,27 @@ bool SameDesc(const D3D11_TEXTURE2D_DESC& a, const D3D11_TEXTURE2D_DESC& b) {
 }
 
 ID3D11Device* DeviceOf(ID3D11DeviceContext* c) {
-	ID3D11Device* d = nullptr;
-	c->GetDevice(&d);
-	if (d) d->Release();  // the context keeps it alive
-	return d;
+	ID3D11Device* device = nullptr;
+	c->GetDevice(&device);
+	if (device) device->Release();  // the context keeps it alive
+	return device;
 }
-void StoreUiCb(ID3D11Resource* res, const float* data) {
-	for (auto& e : s_uiCb)
-		if (e.buf == res) {
-			memcpy(e.f, data, sizeof(e.f));
+void StoreUiParams(ID3D11Resource* res, const float* data) {
+	for (auto& e : s_uiParams)
+		if (e.buffer == res) {
+			memcpy(e.floats, data, sizeof(e.floats));
 			return;
 		}
-	UiCb& e = s_uiCb[s_uiCbNext];
-	s_uiCbNext = (s_uiCbNext + 1) % 32;
-	e.buf = res;
-	memcpy(e.f, data, sizeof(e.f));
+	UiParams& e = s_uiParams[s_uiParamsNext];
+	s_uiParamsNext = (s_uiParamsNext + 1) % 32;
+	e.buffer = res;
+	memcpy(e.floats, data, sizeof(e.floats));
 }
 
-const float* FindUiCb(ID3D11Resource* res) {
+const float* FindUiParams(ID3D11Resource* res) {
 	if (!res) return nullptr;
-	for (auto& e : s_uiCb)
-		if (e.buf == res) return e.f;
+	for (auto& e : s_uiParams)
+		if (e.buffer == res) return e.floats;
 	return nullptr;
 }
 
@@ -127,47 +127,47 @@ struct DerivedBlend {
 };
 DerivedBlend s_blends[48];
 int s_blendCount;
-volatile LONG s_blendLogBudget;
+volatile LONG s_blendLogs;
 
-ID3D11BlendState* Derived(ID3D11Device* dev, ID3D11BlendState* game, int mode) {
+ID3D11BlendState* DerivedBlendState(ID3D11Device* device, ID3D11BlendState* game, int mode) {
 	for (int i = 0; i < s_blendCount; i++)
 		if (s_blends[i].game == game && s_blends[i].isNull == !game && s_blends[i].mode == mode) return s_blends[i].ours;
-	D3D11_BLEND_DESC d = {};
+	D3D11_BLEND_DESC desc = {};
 	if (game) {
-		game->GetDesc(&d);
+		game->GetDesc(&desc);
 	} else {
-		for (auto& r : d.RenderTarget) {
-			r.SrcBlend = r.SrcBlendAlpha = D3D11_BLEND_ONE;
-			r.DestBlend = r.DestBlendAlpha = D3D11_BLEND_ZERO;
-			r.BlendOp = r.BlendOpAlpha = D3D11_BLEND_OP_ADD;
-			r.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+		for (auto& rt : desc.RenderTarget) {
+			rt.SrcBlend = rt.SrcBlendAlpha = D3D11_BLEND_ONE;
+			rt.DestBlend = rt.DestBlendAlpha = D3D11_BLEND_ZERO;
+			rt.BlendOp = rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+			rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 		}
 	}
-	D3D11_RENDER_TARGET_BLEND_DESC& r = d.RenderTarget[0];
+	D3D11_RENDER_TARGET_BLEND_DESC& rt = desc.RenderTarget[0];
 	if (mode == 0) {
-		bool additive = r.BlendEnable && r.DestBlend == D3D11_BLEND_ONE;
-		if (!r.BlendEnable) {
-			r.SrcBlend = D3D11_BLEND_ONE;
-			r.DestBlend = D3D11_BLEND_ZERO;
-			r.BlendOp = D3D11_BLEND_OP_ADD;
+		bool additive = rt.BlendEnable && rt.DestBlend == D3D11_BLEND_ONE;
+		if (!rt.BlendEnable) {
+			rt.SrcBlend = D3D11_BLEND_ONE;
+			rt.DestBlend = D3D11_BLEND_ZERO;
+			rt.BlendOp = D3D11_BLEND_OP_ADD;
 		}
-		r.BlendEnable = TRUE;
-		r.SrcBlendAlpha = additive ? D3D11_BLEND_ZERO : D3D11_BLEND_ONE;
-		r.DestBlendAlpha = additive ? D3D11_BLEND_ONE : D3D11_BLEND_INV_SRC_ALPHA;
-		r.BlendOpAlpha = D3D11_BLEND_OP_ADD;
-		r.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALPHA;
-		if (LogBudget(&s_blendLogBudget, 6))
+		rt.BlendEnable = TRUE;
+		rt.SrcBlendAlpha = additive ? D3D11_BLEND_ZERO : D3D11_BLEND_ONE;
+		rt.DestBlendAlpha = additive ? D3D11_BLEND_ONE : D3D11_BLEND_INV_SRC_ALPHA;
+		rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+		rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALPHA;
+		if (LogBudget(&s_blendLogs, 6))
 			Log("ui split: UI blend %s: colour %d/%d op %d, alpha %d/%d -> coverage %s", game ? "state" : "(default)",
-				(int)(game ? d.RenderTarget[0].SrcBlend : 0), (int)(game ? d.RenderTarget[0].DestBlend : 0),
-				(int)r.BlendOp, (int)r.SrcBlendAlpha, (int)r.DestBlendAlpha, additive ? "unchanged (additive)" : "over");
+				(int)(game ? desc.RenderTarget[0].SrcBlend : 0), (int)(game ? desc.RenderTarget[0].DestBlend : 0),
+				(int)rt.BlendOp, (int)rt.SrcBlendAlpha, (int)rt.DestBlendAlpha, additive ? "unchanged (additive)" : "over");
 	} else {
-		r.RenderTargetWriteMask &= D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN |
-								   D3D11_COLOR_WRITE_ENABLE_BLUE;
+		rt.RenderTargetWriteMask &= D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN |
+									D3D11_COLOR_WRITE_ENABLE_BLUE;
 	}
-	d.IndependentBlendEnable = FALSE;
-	d.AlphaToCoverageEnable = FALSE;
+	desc.IndependentBlendEnable = FALSE;
+	desc.AlphaToCoverageEnable = FALSE;
 	ID3D11BlendState* ours = nullptr;
-	if (FAILED(dev->CreateBlendState(&d, &ours))) ours = nullptr;
+	if (FAILED(device->CreateBlendState(&desc, &ours))) ours = nullptr;
 	if (s_blendCount < 48) s_blends[s_blendCount++] = {game, !game, mode, ours};
 	return ours;
 }
@@ -177,58 +177,57 @@ void ReplayInto(ID3D11DeviceContext* c, ID3D11RenderTargetView* target, const Dr
 	ID3D11RenderTargetView* rtv = nullptr;
 	ID3D11DepthStencilView* dsv = nullptr;
 	c->OMGetRenderTargets(1, &rtv, &dsv);
-	ID3D11BlendState* bs = nullptr;
+	ID3D11BlendState* gameBlend = nullptr;
 	FLOAT factor[4];
-	UINT mask = 0xffffffff;
-	ID3D11BlendState* ours = nullptr;
+	UINT sampleMask = 0xffffffff;
+	ID3D11BlendState* derived = nullptr;
 	if (blendMode >= 0) {
-		c->OMGetBlendState(&bs, factor, &mask);
-		ours = Derived(DeviceOf(c), bs, blendMode);
+		c->OMGetBlendState(&gameBlend, factor, &sampleMask);
+		derived = DerivedBlendState(DeviceOf(c), gameBlend, blendMode);
 	}
-	if (blendMode < 0 || ours) {
-		if (ours) c->OMSetBlendState(ours, factor, mask);
+	if (blendMode < 0 || derived) {
+		if (derived) c->OMSetBlendState(derived, factor, sampleMask);
 		OriginalSetRenderTargets(c, 1, &target, dsv);
 		OriginalDraw(c, args);
 		OriginalSetRenderTargets(c, 1, &rtv, dsv);
-		if (ours) c->OMSetBlendState(bs, factor, mask);
+		if (derived) c->OMSetBlendState(gameBlend, factor, sampleMask);
 	}
-	if (bs) bs->Release();
+	if (gameBlend) gameBlend->Release();
 	if (rtv) rtv->Release();
 	if (dsv) dsv->Release();
 }
 
 // Full-screen white overlay at the centre of the 1600x900 UI canvas, unscaled: a screen effect.
-bool IsScreenEffect(const float* f) {
+bool IsScreenEffect(const float* params) {
 	auto within = [](float a, float b, float e) { return a > b - e && a < b + e; };
-	return within(f[0], 1, 0.01f) && within(f[5], 1, 0.01f) && within(f[3], 800, 0.5f) && within(f[7], 450, 0.5f) &&
-		   f[16] > 0.95f && f[17] > 0.95f && f[18] > 0.95f;
+	return within(params[0], 1, 0.01f) && within(params[5], 1, 0.01f) && within(params[3], 800, 0.5f) && within(params[7], 450, 0.5f) &&
+		   params[16] > 0.95f && params[17] > 0.95f && params[18] > 0.95f;
 }
 }  // namespace
 
 // Our scene texture: backbuffer-sized, with an RTV like the game's final-pass view of the
 // backbuffer (the default view until that pass has been seen once).
-static bool EnsureScene(ID3D11Device* dev, const D3D11_RENDER_TARGET_VIEW_DESC* rd) {
-	D3D11_TEXTURE2D_DESC bd;
-	bd = s_bbDesc;
-	bool descOk = rd ? memcmp(rd, &s_sceneRTVDesc, sizeof(*rd)) == 0 : true;
-	if (s_scene && SameDesc(bd, s_sceneDesc) && descOk) return true;
-	Rel(s_sceneRTV);
-	Rel(s_scene);
-	D3D11_TEXTURE2D_DESC nd = bd;
-	nd.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-	nd.MiscFlags = 0;
-	nd.CPUAccessFlags = 0;
-	nd.Usage = D3D11_USAGE_DEFAULT;
-	nd.MipLevels = 1;
-	nd.ArraySize = 1;
-	bool ok = SUCCEEDED(dev->CreateTexture2D(&nd, nullptr, &s_scene)) &&
-			  SUCCEEDED(dev->CreateRenderTargetView(s_scene, rd, &s_sceneRTV));
-	s_sceneDesc = bd;
-	if (rd) s_sceneRTVDesc = *rd;
-	else memset(&s_sceneRTVDesc, 0, sizeof(s_sceneRTVDesc));
+static bool EnsureScene(ID3D11Device* device, const D3D11_RENDER_TARGET_VIEW_DESC* rtvDesc) {
+	D3D11_TEXTURE2D_DESC desc = s_backbufferDesc;
+	bool sameView = rtvDesc ? memcmp(rtvDesc, &s_sceneRtvDesc, sizeof(*rtvDesc)) == 0 : true;
+	if (s_scene && SameDesc(desc, s_sceneDesc) && sameView) return true;
+	SafeRelease(s_sceneRtv);
+	SafeRelease(s_scene);
+	D3D11_TEXTURE2D_DESC newDesc = desc;
+	newDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+	newDesc.MiscFlags = 0;
+	newDesc.CPUAccessFlags = 0;
+	newDesc.Usage = D3D11_USAGE_DEFAULT;
+	newDesc.MipLevels = 1;
+	newDesc.ArraySize = 1;
+	bool ok = SUCCEEDED(device->CreateTexture2D(&newDesc, nullptr, &s_scene)) &&
+			  SUCCEEDED(device->CreateRenderTargetView(s_scene, rtvDesc, &s_sceneRtv));
+	s_sceneDesc = desc;
+	if (rtvDesc) s_sceneRtvDesc = *rtvDesc;
+	else memset(&s_sceneRtvDesc, 0, sizeof(s_sceneRtvDesc));
 	if (!ok) {
-		Rel(s_sceneRTV);
-		Rel(s_scene);
+		SafeRelease(s_sceneRtv);
+		SafeRelease(s_scene);
 	}
 	return ok;
 }
@@ -239,7 +238,7 @@ static bool IsUiParamSize(UINT size) { return size >= 112 && size <= 176; }
 
 void UiOnMap(ID3D11Resource* res, void* data, UINT size) {
 	if (!IsUiParamSize(size)) return;
-	for (auto& p : s_uiPending)
+	for (auto& p : s_pendingUiMaps)
 		if (!p.res) {
 			p = {res, (const float*)data};
 			return;
@@ -247,104 +246,104 @@ void UiOnMap(ID3D11Resource* res, void* data, UINT size) {
 }
 
 void UiBeforeUnmap(ID3D11Resource* res) {
-	for (auto& p : s_uiPending)
+	for (auto& p : s_pendingUiMaps)
 		if (p.res == res) {
 			float local[24];
 			memcpy(local, p.data, sizeof(local));  // mapped memory may be write-combined: read once
-			StoreUiCb(res, local);
+			StoreUiParams(res, local);
 			p.res = nullptr;
 			return;
 		}
 }
 
 void UiOnUpdate(ID3D11Resource* res, const void* data, UINT size) {
-	if (IsUiParamSize(size)) StoreUiCb(res, (const float*)data);
+	if (IsUiParamSize(size)) StoreUiParams(res, (const float*)data);
 }
 
-void UiOnSetVSConstantBuffers(UINT start, UINT n, ID3D11Buffer* const* bufs) {
-	if (start <= 1 && start + n > 1) s_vsCb1 = bufs[1 - start];
+void UiOnSetVSConstantBuffers(UINT start, UINT count, ID3D11Buffer* const* buffers) {
+	if (start <= 1 && start + count > 1) s_vsSlot1Buffer = buffers[1 - start];
 }
 
-void UiSetBackbuffer(ID3D11Texture2D* bb) {
-	if (bb) bb->GetDesc(&s_bbDesc);
-	s_bb = bb;
+void UiSetBackbuffer(ID3D11Texture2D* backbuffer) {
+	if (backbuffer) backbuffer->GetDesc(&s_backbufferDesc);
+	s_backbuffer = backbuffer;
 }
 
-// ResizeBuffers releases the old backbuffer: forget it until the next Present (0.3.4 crashed
-// calling into the freed one when the game switched to borderless).
-void UiOnResizeBuffers() { s_bb = nullptr; }
+// ResizeBuffers releases the old backbuffer: forget it until the next Present (calling into the freed
+// one crashed when the game switched to borderless).
+void UiOnResizeBuffers() { s_backbuffer = nullptr; }
 
 void UiBeginFrame() {
-	if (s_uiSeen) s_framesWithUI++;
-	if (s_uiSeen && !s_sceneReady && !s_loggedNoFinal && s_framesWithUI > 120) {
+	if (s_uiStarted) s_framesWithUI++;
+	if (s_uiStarted && !s_sceneReady && !s_loggedNoFinal && s_framesWithUI > 120) {
 		s_loggedNoFinal = true;
 		Log("ui split: UI draws found but the final pass into the backbuffer wasn't recognised; HUD stays in the "
 			"3D image");
 	}
-	s_uiSeen = false;
+	s_uiStarted = false;
 	s_sceneReady = false;
 	s_uiTarget = nullptr;
-	s_replayEffect = false;
-	s_coverDraw = false;
+	s_drawIntoPreUi = false;
+	s_drawIntoCoverage = false;
 	s_screenCopy = nullptr;
-	s_finalOk = false;
-	for (auto& p : s_uiPending) p.res = nullptr;
+	s_finalPassSaved = false;
+	for (auto& p : s_pendingUiMaps) p.res = nullptr;
 }
 
-void UiOnSetVS(bool isUI) { s_vsIsUI = isUI; }
+void UiOnSetVS(bool isUI) { s_uiShaderBound = isUI; }
 
 // Current render target 0's resource (raw pointer: valid while it stays bound).
-ID3D11Resource* CurrentRT(ID3D11DeviceContext* c) {
+static ID3D11Resource* CurrentTarget(ID3D11DeviceContext* c) {
 	ID3D11RenderTargetView* rtv = nullptr;
 	c->OMGetRenderTargets(1, &rtv, nullptr);
 	if (!rtv) return nullptr;
-	ID3D11Resource* r = nullptr;
-	rtv->GetResource(&r);
+	ID3D11Resource* res = nullptr;
+	rtv->GetResource(&res);
 	rtv->Release();
-	if (r) r->Release();
-	return r;
+	if (res) res->Release();
+	return res;
 }
 
 // Does the current pixel shader read `res` (slots t0-t7)?
-static bool PsReads(ID3D11DeviceContext* c, ID3D11Resource* res) {
+static bool PixelShaderReads(ID3D11DeviceContext* c, ID3D11Resource* res) {
 	if (!res) return false;
 	ID3D11ShaderResourceView* srvs[8] = {};
 	c->PSGetShaderResources(0, 8, srvs);
 	bool found = false;
-	for (auto& v : srvs) {
-		if (!v) continue;
-		ID3D11Resource* r = nullptr;
-		v->GetResource(&r);
-		if (r == res) found = true;
-		if (r) r->Release();
-		v->Release();
+	for (auto& view : srvs) {
+		if (!view) continue;
+		ID3D11Resource* viewRes = nullptr;
+		view->GetResource(&viewRes);
+		if (viewRes == res) found = true;
+		if (viewRes) viewRes->Release();
+		view->Release();
 	}
 	return found;
 }
 
-static bool FullSize(ID3D11Resource* r) {
+static bool IsFullSize(ID3D11Resource* res) {
 	D3D11_RESOURCE_DIMENSION dim;
-	r->GetType(&dim);
+	res->GetType(&dim);
 	if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D) return false;
-	D3D11_TEXTURE2D_DESC d;
-	((ID3D11Texture2D*)r)->GetDesc(&d);
-	return d.Width == s_bbDesc.Width && d.Height == s_bbDesc.Height;
+	D3D11_TEXTURE2D_DESC desc;
+	((ID3D11Texture2D*)res)->GetDesc(&desc);
+	return desc.Width == s_backbufferDesc.Width && desc.Height == s_backbufferDesc.Height;
 }
 
 // Distortion draw found (it reads this frame's screen copy): true = skip it.
-static bool OnCopyEffect() {
+static bool OnDistortionDraw() {
 	bool skip = !g_cfg.distortionFx && StereoActive();
-	s_copyEffects++;
-	if (!s_loggedCopy) {
-		s_loggedCopy = true;
-		s_copyReportTick = GetTickCount();
+	s_distortionDraws++;
+	if (!s_loggedDistortion) {
+		s_loggedDistortion = true;
+		s_distortionReportTick = GetTickCount();
 		Log("ui split: screen distortion effect (redraws a copy of the screen, e.g. when hit): %s",
 			g_cfg.distortionFx ? "kept in the 3D image (DistortionEffects=1)" : "removed while in stereo (DistortionEffects=0)");
-	} else if (GetTickCount() - s_copyReportTick > 60000) {
-		Log("ui split: %u screen distortion draws %s in the last minute", s_copyEffects,
+	} else if (GetTickCount() - s_distortionReportTick > 60000) {
+		Log("ui split: %u screen distortion draws %s in the last minute", s_distortionDraws,
 			g_cfg.distortionFx ? "kept" : "seen (removed while in stereo)");
-		s_copyReportTick = GetTickCount();
-		s_copyEffects = 0;
+		s_distortionReportTick = GetTickCount();
+		s_distortionDraws = 0;
 	}
 	return skip;
 }
@@ -352,152 +351,151 @@ static bool OnCopyEffect() {
 // Before a draw: at the first UI draw of the frame, keep a copy of the scene-only target.
 // Returns true when the draw must be skipped.
 bool UiBeforeDraw(ID3D11DeviceContext* c) {
-	if (!s_bb) return false;
-	if (!s_vsIsUI) {
+	if (!s_backbuffer) return false;
+	if (!s_uiShaderBound) {
 		// During the UI: a draw into another full-size texture that reads the UI target is NieR
 		// copying the screen for a distortion effect; draws into the UI target that read that
 		// copy are the effect itself.
-		if (!s_uiSeen || !s_uiTarget) return false;
-		ID3D11Resource* rt0 = CurrentRT(c);
-		if (!rt0 || rt0 == (ID3D11Resource*)s_bb) return false;
-		if (rt0 == s_uiTarget) {
-			if (!s_screenCopy || !PsReads(c, s_screenCopy)) return false;
-			if (OnCopyEffect()) return true;
-			s_replayEffect = s_preRTV != nullptr;  // kept: part of the 3D image, not the HUD
+		if (!s_uiStarted || !s_uiTarget) return false;
+		ID3D11Resource* target = CurrentTarget(c);
+		if (!target || target == (ID3D11Resource*)s_backbuffer) return false;
+		if (target == s_uiTarget) {
+			if (!s_screenCopy || !PixelShaderReads(c, s_screenCopy)) return false;
+			if (OnDistortionDraw()) return true;
+			s_drawIntoPreUi = s_preUiRtv != nullptr;  // kept: part of the 3D image, not the HUD
 			return false;
 		}
-		if (FullSize(rt0) && PsReads(c, s_uiTarget)) s_screenCopy = rt0;
+		if (IsFullSize(target) && PixelShaderReads(c, s_uiTarget)) s_screenCopy = target;
 		return false;
 	}
-	if (s_uiSeen) {
-		s_replayEffect = false;
-		s_coverDraw = false;
-		if (s_screenCopy && CurrentRT(c) == s_uiTarget && PsReads(c, s_screenCopy)) {
-			if (OnCopyEffect()) return true;
-			s_replayEffect = s_preRTV != nullptr;  // kept: part of the 3D image, not the HUD
+	if (s_uiStarted) {
+		s_drawIntoPreUi = false;
+		s_drawIntoCoverage = false;
+		if (s_screenCopy && CurrentTarget(c) == s_uiTarget && PixelShaderReads(c, s_screenCopy)) {
+			if (OnDistortionDraw()) return true;
+			s_drawIntoPreUi = s_preUiRtv != nullptr;  // kept: part of the 3D image, not the HUD
 			return false;
 		}
-		const float* p = FindUiCb(s_vsCb1);
-		bool effect = p && IsScreenEffect(p);
-		s_replayEffect = effect && s_preRTV;
-		s_coverDraw = !effect && s_sceneRTV && CurrentRT(c) == s_uiTarget;
+		const float* params = FindUiParams(s_vsSlot1Buffer);
+		bool effect = params && IsScreenEffect(params);
+		s_drawIntoPreUi = effect && s_preUiRtv;
+		s_drawIntoCoverage = !effect && s_sceneRtv && CurrentTarget(c) == s_uiTarget;
 		return false;
 	}
-	ID3D11Resource* rt0 = CurrentRT(c);
-	if (!rt0 || rt0 == (ID3D11Resource*)s_bb) return false;
+	ID3D11Resource* target = CurrentTarget(c);
+	if (!target || target == (ID3D11Resource*)s_backbuffer) return false;
 	D3D11_RESOURCE_DIMENSION dim;
-	rt0->GetType(&dim);
+	target->GetType(&dim);
 	if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D) return false;
-	D3D11_TEXTURE2D_DESC d;
-	((ID3D11Texture2D*)rt0)->GetDesc(&d);
-	D3D11_TEXTURE2D_DESC bd;
-	bd = s_bbDesc;
+	D3D11_TEXTURE2D_DESC desc;
+	((ID3D11Texture2D*)target)->GetDesc(&desc);
+	const D3D11_TEXTURE2D_DESC& backbufferDesc = s_backbufferDesc;
 	// the UI goes into a full-screen intermediate; ignore UI drawn into smaller offscreen textures
-	if (d.SampleDesc.Count != 1 || d.Width != bd.Width || d.Height != bd.Height) return false;
+	if (desc.SampleDesc.Count != 1 || desc.Width != backbufferDesc.Width || desc.Height != backbufferDesc.Height) return false;
 	ReplayStop(true);  // Synchronized: the scene is finished, the HUD is drawn once (not recorded)
 	GpuTimingMark(c, "UI start");
 	ReprojectAtUiStart(c);
 	UpscaleAtUiStart(c);
-	s_uiSeen = true;
-	if (!s_preUI || !SameDesc(d, s_preDesc)) {
-		Rel(s_preSRV);
-		Rel(s_preUI);
-		D3D11_TEXTURE2D_DESC nd = d;
-		Rel(s_preRTV);
-		nd.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-		nd.MiscFlags = 0;
-		nd.CPUAccessFlags = 0;
-		nd.Usage = D3D11_USAGE_DEFAULT;
-		HRESULT hr = DeviceOf(c)->CreateTexture2D(&nd, nullptr, &s_preUI);
+	s_uiStarted = true;
+	if (!s_preUiCopy || !SameDesc(desc, s_preUiDesc)) {
+		SafeRelease(s_preUiSrv);
+		SafeRelease(s_preUiCopy);
+		D3D11_TEXTURE2D_DESC newDesc = desc;
+		SafeRelease(s_preUiRtv);
+		newDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+		newDesc.MiscFlags = 0;
+		newDesc.CPUAccessFlags = 0;
+		newDesc.Usage = D3D11_USAGE_DEFAULT;
+		HRESULT hr = DeviceOf(c)->CreateTexture2D(&newDesc, nullptr, &s_preUiCopy);
 		if (FAILED(hr)) {
-			if (LogBudget(&s_budget, 3)) Log("ui split: pre-UI copy texture failed 0x%08x", (unsigned)hr);
-			s_preUI = nullptr;
+			if (LogBudget(&s_preUiFailLogs, 3)) Log("ui split: pre-UI copy texture failed 0x%08x", (unsigned)hr);
+			s_preUiCopy = nullptr;
 			return false;
 		}
-		s_preDesc = d;
-		Log("ui split: UI is drawn into a %ux%u format %d target", d.Width, d.Height, (int)d.Format);
+		s_preUiDesc = desc;
+		Log("ui split: UI is drawn into a %ux%u format %d target", desc.Width, desc.Height, (int)desc.Format);
 	}
-	c->CopyResource(s_preUI, rt0);
-	s_uiTarget = rt0;
+	c->CopyResource(s_preUiCopy, target);
+	s_uiTarget = target;
 	// A render target view on the copy, matching the game's view of its UI target, so screen
 	// effects can be drawn into it too.
 	ID3D11RenderTargetView* rtv = nullptr;
 	c->OMGetRenderTargets(1, &rtv, nullptr);
 	if (rtv) {
-		D3D11_RENDER_TARGET_VIEW_DESC rd;
-		rtv->GetDesc(&rd);
-		if (!s_preRTV || memcmp(&rd, &s_preRTVDesc, sizeof(rd)) != 0) {
-			Rel(s_preRTV);
-			if (FAILED(DeviceOf(c)->CreateRenderTargetView(s_preUI, &rd, &s_preRTV))) s_preRTV = nullptr;
-			s_preRTVDesc = rd;
+		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc;
+		rtv->GetDesc(&rtvDesc);
+		if (!s_preUiRtv || memcmp(&rtvDesc, &s_preUiRtvDesc, sizeof(rtvDesc)) != 0) {
+			SafeRelease(s_preUiRtv);
+			if (FAILED(DeviceOf(c)->CreateRenderTargetView(s_preUiCopy, &rtvDesc, &s_preUiRtv))) s_preUiRtv = nullptr;
+			s_preUiRtvDesc = rtvDesc;
 		}
 		rtv->Release();
 	}
 	// Coverage starts empty each frame.
-	if (s_bb && EnsureScene(DeviceOf(c), s_sceneRTVDesc.ViewDimension ? &s_sceneRTVDesc : nullptr)) {
+	if (s_backbuffer && EnsureScene(DeviceOf(c), s_sceneRtvDesc.ViewDimension ? &s_sceneRtvDesc : nullptr)) {
 		const FLOAT zero[4] = {0, 0, 0, 0};
-		c->ClearRenderTargetView(s_sceneRTV, zero);
+		c->ClearRenderTargetView(s_sceneRtv, zero);
 	}
-	const float* p = FindUiCb(s_vsCb1);
-	bool effect = p && IsScreenEffect(p);
-	s_replayEffect = effect && s_preRTV;
-	s_coverDraw = !effect && s_sceneRTV;
+	const float* params = FindUiParams(s_vsSlot1Buffer);
+	bool effect = params && IsScreenEffect(params);
+	s_drawIntoPreUi = effect && s_preUiRtv;
+	s_drawIntoCoverage = !effect && s_sceneRtv;
 	return false;
 }
 
 // After a draw: if this was the final pass (into the backbuffer, reading the UI target), run it
 // again on the pre-UI copy into our scene texture.
 void UiAfterDraw(ID3D11DeviceContext* c, const DrawArgs& args) {
-	if (s_coverDraw) {
+	if (s_drawIntoCoverage) {
 		// same draw, alpha only, into the coverage (our scene texture's alpha channel)
-		s_coverDraw = false;
-		ReplayInto(c, s_sceneRTV, args, 0);
+		s_drawIntoCoverage = false;
+		ReplayInto(c, s_sceneRtv, args, 0);
 		return;
 	}
-	if (s_replayEffect) {
+	if (s_drawIntoPreUi) {
 		// same draw, same state, into the scene-only copy
-		s_replayEffect = false;
-		ReplayInto(c, s_preRTV, args, -1);
+		s_drawIntoPreUi = false;
+		ReplayInto(c, s_preUiRtv, args, -1);
 		if (!s_loggedEffect) {
 			s_loggedEffect = true;
 			Log("ui split: full-screen overlay (film grain or screen effect) kept in the 3D image");
 		}
 		return;
 	}
-	if (!s_uiSeen || s_sceneReady || !s_uiTarget || !s_preUI) return;
-	if (CurrentRT(c) != (ID3D11Resource*)s_bb) return;
+	if (!s_uiStarted || s_sceneReady || !s_uiTarget || !s_preUiCopy) return;
+	if (CurrentTarget(c) != (ID3D11Resource*)s_backbuffer) return;
 	ID3D11ShaderResourceView* srvs[8] = {};
 	c->PSGetShaderResources(0, 8, srvs);
 	int slot = -1;
 	for (int i = 0; i < 8; i++) {
 		if (!srvs[i] || slot >= 0) continue;
-		ID3D11Resource* r = nullptr;
-		srvs[i]->GetResource(&r);
-		if (r == s_uiTarget) slot = i;
-		if (r) r->Release();
+		ID3D11Resource* res = nullptr;
+		srvs[i]->GetResource(&res);
+		if (res == s_uiTarget) slot = i;
+		if (res) res->Release();
 	}
 	ID3D11RenderTargetView* rtv = nullptr;
 	ID3D11DepthStencilView* dsv = nullptr;
 	if (slot >= 0) c->OMGetRenderTargets(1, &rtv, &dsv);
 	bool ok = slot >= 0 && rtv;
-	ID3D11Device* dev = DeviceOf(c);
+	ID3D11Device* device = DeviceOf(c);
 	if (ok) {
-		D3D11_SHADER_RESOURCE_VIEW_DESC sd;
-		srvs[slot]->GetDesc(&sd);
-		if (!s_preSRV || memcmp(&sd, &s_preSRVDesc, sizeof(sd)) != 0) {
-			Rel(s_preSRV);
-			ok = SUCCEEDED(dev->CreateShaderResourceView(s_preUI, &sd, &s_preSRV));
-			s_preSRVDesc = sd;
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
+		srvs[slot]->GetDesc(&srvDesc);
+		if (!s_preUiSrv || memcmp(&srvDesc, &s_preUiSrvDesc, sizeof(srvDesc)) != 0) {
+			SafeRelease(s_preUiSrv);
+			ok = SUCCEEDED(device->CreateShaderResourceView(s_preUiCopy, &srvDesc, &s_preUiSrv));
+			s_preUiSrvDesc = srvDesc;
 		}
 	}
 	if (ok) {
-		D3D11_RENDER_TARGET_VIEW_DESC rd;
-		rtv->GetDesc(&rd);
-		bool had = s_scene && memcmp(&rd, &s_sceneRTVDesc, sizeof(rd)) == 0;
-		ok = EnsureScene(dev, &rd);
-		if (ok && !had) {  // new texture: this frame's coverage is lost, start from "no UI"
+		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc;
+		rtv->GetDesc(&rtvDesc);
+		bool sameView = s_scene && memcmp(&rtvDesc, &s_sceneRtvDesc, sizeof(rtvDesc)) == 0;
+		ok = EnsureScene(device, &rtvDesc);
+		if (ok && !sameView) {  // new texture: this frame's coverage is lost, start from "no UI"
 			const FLOAT zero[4] = {0, 0, 0, 0};
-			c->ClearRenderTargetView(s_sceneRTV, zero);
+			c->ClearRenderTargetView(s_sceneRtv, zero);
 		}
 	}
 	if (ok) {
@@ -505,24 +503,24 @@ void UiAfterDraw(ID3D11DeviceContext* c, const DrawArgs& args) {
 		// so the UI coverage gathered in the alpha channel stays.
 		if (StereoSynchronizedFrame()) {  // the same pass will make the right eye's scene image
 			ReplayCaptureFinalPassState(c);
-			s_finalOk = true;
-			s_finalSlot = slot;
-			s_finalArgs = args;
+			s_finalPassSaved = true;
+			s_finalPassSlot = slot;
+			s_finalPassArgs = args;
 		}
-		c->PSSetShaderResources(slot, 1, &s_preSRV);
-		ReplayInto(c, s_sceneRTV, args, 1);
+		c->PSSetShaderResources(slot, 1, &s_preUiSrv);
+		ReplayInto(c, s_sceneRtv, args, 1);
 		c->PSSetShaderResources(slot, 1, &srvs[slot]);
 		s_sceneReady = true;
-		if (!s_loggedOk) {
-			s_loggedOk = true;
+		if (!s_loggedWorking) {
+			s_loggedWorking = true;
 			Log("ui split: working (final pass reads the UI target at slot t%d); HUD and menus go to a flat layer",
 				slot);
 		}
 	}
 	if (rtv) rtv->Release();
 	if (dsv) dsv->Release();
-	for (auto& s : srvs)
-		if (s) s->Release();
+	for (auto& srv : srvs)
+		if (srv) srv->Release();
 }
 
 ID3D11Texture2D* UiSceneTexture() { return s_sceneReady ? s_scene : nullptr; }
@@ -531,12 +529,12 @@ ID3D11Texture2D* UiSceneTexture() { return s_sceneReady ? s_scene : nullptr; }
 // holds the right eye's finished scene. Copy it and run the game's final pass on the copy into our
 // scene texture, exactly as for the left eye but without any UI (alpha = no coverage).
 bool UiSecondEyeScene(ID3D11DeviceContext* c) {
-	if (!s_finalOk || !s_sceneReady || !s_uiTarget || !s_preUI || !s_preSRV || !s_sceneRTV) return false;
-	c->CopyResource(s_preUI, s_uiTarget);
+	if (!s_finalPassSaved || !s_sceneReady || !s_uiTarget || !s_preUiCopy || !s_preUiSrv || !s_sceneRtv) return false;
+	c->CopyResource(s_preUiCopy, s_uiTarget);
 	const FLOAT zero[4] = {0, 0, 0, 0};
-	c->ClearRenderTargetView(s_sceneRTV, zero);
+	c->ClearRenderTargetView(s_sceneRtv, zero);
 	ReplayApplyFinalPassState(c);
-	c->PSSetShaderResources((UINT)s_finalSlot, 1, &s_preSRV);
-	ReplayInto(c, s_sceneRTV, s_finalArgs, 1);
+	c->PSSetShaderResources((UINT)s_finalPassSlot, 1, &s_preUiSrv);
+	ReplayInto(c, s_sceneRtv, s_finalPassArgs, 1);
 	return true;
 }

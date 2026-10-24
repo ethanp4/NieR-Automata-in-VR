@@ -535,7 +535,7 @@ void CullingUpdate(bool wide) {
 				char info[160];
 				snprintf(info, sizeof(info), "Game frame time %.1f ms average, slowest %.1f ms, %ld slower than 25 ms",
 						 s_frameMsSum / s_frameCount, s_frameMsMax, (long)s_slowFrames);
-				MenuSetInfo(2, info);
+				MenuSetInfo(INFO_CULLING, info);
 			}
 			s_frameMsSum = s_frameMsMax = 0;
 			s_frameCount = s_slowFrames = s_headCullFrames = 0;

@@ -16,9 +16,9 @@
 // Screen placement & hotkeys
 // ---------------------------------------------------------------------------------------------
 bool GameIsForeground() {
-	HWND fg = GetForegroundWindow();
+	HWND window = GetForegroundWindow();
 	DWORD pid = 0;
-	if (fg) GetWindowThreadProcessId(fg, &pid);
+	if (window) GetWindowThreadProcessId(window, &pid);
 	return pid == GetCurrentProcessId();
 }
 
@@ -31,22 +31,22 @@ bool KeyPressed(int vk) {
 }
 
 static void HandleHotkeys() {
-	bool fg = GameIsForeground();
+	bool foreground = GameIsForeground();
 	bool changed = false;
 	// Always poll so edge detection stays correct, only act while the game has focus.
-	bool rc = KeyPressed(g_cfg.keyRecenter), sm = KeyPressed(g_cfg.keySmaller), lg = KeyPressed(g_cfg.keyLarger),
-		 cl = KeyPressed(g_cfg.keyCloser), fa = KeyPressed(g_cfg.keyFarther), st = KeyPressed(g_cfg.keyStereo),
-		 f5 = KeyPressed(VK_F5), fp = KeyPressed(g_cfg.keyFirstPerson);
-	if (!fg) return;
-	if (fp) {
+	bool recenter = KeyPressed(g_cfg.keyRecenter), smaller = KeyPressed(g_cfg.keySmaller), larger = KeyPressed(g_cfg.keyLarger),
+		 closer = KeyPressed(g_cfg.keyCloser), farther = KeyPressed(g_cfg.keyFarther), toggleStereo = KeyPressed(g_cfg.keyStereo),
+		 f5 = KeyPressed(VK_F5), toggleFirstPerson = KeyPressed(g_cfg.keyFirstPerson);
+	if (!foreground) return;
+	if (toggleFirstPerson) {
 		g_cfg.firstPerson = !g_cfg.firstPerson;
 		Log("first person %s", g_cfg.firstPerson ? "ON (prototype)" : "OFF");
 		ConfigSave(&g_cfg.firstPerson);
 	}
 	if (f5) {
-		bool c = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0, s = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-		if (c && s) CullingToggleHeadCulling();  // Ctrl+Shift+F5: head-direction culling on/off
-		else if (!c && !s) {                     // F5: synchronized / alternating
+		bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0, shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+		if (ctrlDown && shiftDown) CullingToggleHeadCulling();  // Ctrl+Shift+F5: head-direction culling on/off
+		else if (!ctrlDown && !shiftDown) {                     // F5: synchronized / alternating
 			g_cfg.synchronized = !g_cfg.synchronized;
 			Log("stereo mode: %s", !g_cfg.synchronized ? "alternating (one eye per game frame)"
 								   : ReplayAvailable() ? "synchronized (the game's frame is drawn again for the right eye)"
@@ -54,58 +54,57 @@ static void HandleHotkeys() {
 			ConfigSave(&g_cfg.synchronized);
 		}
 	}
-	if (st && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
+	if (toggleStereo && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
 		// Shift+F12: TopDownFlat on/off (steep top-down views on the flat screen)
 		g_cfg.topDownFlat = !g_cfg.topDownFlat;
 		Log("top-down views: %s", g_cfg.topDownFlat ? "flat screen (TopDownFlat=1)" : "stereo (TopDownFlat=0)");
 		ConfigSave(&g_cfg.topDownFlat);
-		st = false;
+		toggleStereo = false;
 	}
-	if (st) {
+	if (toggleStereo) {
 		AcquireSRWLockExclusive(&g_stereo.lock);
 		g_stereo.enabled = !g_stereo.enabled;
 		bool on = g_stereo.enabled;
 		ReleaseSRWLockExclusive(&g_stereo.lock);
 		Log("stereo %s", on ? "ON" : "OFF (flat screen)");
 	}
-	if (rc) {
+	if (recenter) {
 		g_vr.recenterRequested = true;
 		Log("recenter requested");
 	}
 	bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-	if (ctrl && (sm || lg)) {
-		// Ctrl+F9: world bigger (less eye separation per game unit), Ctrl+F10: world smaller
-		// (10% per press: 0.3.1/0.3.2 used 2%, too small a step to see)
-		float f = sm ? 1 / 1.1f : 1.1f;
-		float v = g_cfg.worldScale * f;
-		g_cfg.worldScale = v < 0.002f ? 0.002f : (v > 50 ? 50 : v);
+	if (ctrl && (smaller || larger)) {
+		// Ctrl+F9: world bigger (less eye separation per game unit), Ctrl+F10: world smaller; 10% per press
+		float factor = smaller ? 1 / 1.1f : 1.1f;
+		float value = g_cfg.worldScale * factor;
+		g_cfg.worldScale = value < 0.002f ? 0.002f : (value > 50 ? 50 : value);
 		Log("world scale %.3f (the world now looks %.2fx its true size)", (double)g_cfg.worldScale,
 			(double)(1 / g_cfg.worldScale));
 		ConfigSave(&g_cfg.worldScale);
-		sm = lg = false;
+		smaller = larger = false;
 	}
-	if (ctrl && (cl || fa)) {
+	if (ctrl && (closer || farther)) {
 		// Ctrl+F6: camera closer to the character, Ctrl+F7: farther
-		float v = g_cfg.cameraDolly + (cl ? 0.25f : -0.25f);
-		g_cfg.cameraDolly = v < -5 ? -5 : (v > 5 ? 5 : v);
+		float value = g_cfg.cameraDolly + (closer ? 0.25f : -0.25f);
+		g_cfg.cameraDolly = value < -5 ? -5 : (value > 5 ? 5 : value);
 		Log("camera dolly %.2f m", (double)g_cfg.cameraDolly);
 		ConfigSave(&g_cfg.cameraDolly);
-		cl = fa = false;
+		closer = farther = false;
 	}
-	if (sm) {
+	if (smaller) {
 		g_cfg.width = g_cfg.width / 1.1f < 0.2f ? 0.2f : g_cfg.width / 1.1f;
 		changed = true;
 	}
-	if (lg) {
+	if (larger) {
 		g_cfg.width = g_cfg.width * 1.1f > 100.f ? 100.f : g_cfg.width * 1.1f;
 		changed = true;
 	}
-	if (cl) {
+	if (closer) {
 		g_cfg.distance = g_cfg.distance - 0.25f < 0.3f ? 0.3f : g_cfg.distance - 0.25f;
 		changed = true;
 		g_vr.recenterRequested = true;
 	}
-	if (fa) {
+	if (farther) {
 		g_cfg.distance = g_cfg.distance + 0.25f > 50.f ? 50.f : g_cfg.distance + 0.25f;
 		changed = true;
 		g_vr.recenterRequested = true;
@@ -118,125 +117,125 @@ static void HandleHotkeys() {
 }
 
 // The runtime may change its tracking space without the REFERENCE_SPACE_CHANGE_PENDING event the
-// spec asks for (0.5.2 log, Virtual Desktop through SteamVR: the space went from upside down to normal
-// after a dashboard visit; the old correction then turned the picture upside down until a manual
-// recenter). Each headset frame: a head whose up points against the reference's up for a third of a
-// second, or a head position jump of more than 0.75 m between two frames, re-levels everything.
+// spec asks for (Virtual Desktop through SteamVR: the space went from upside down to normal after a
+// dashboard visit, and the picture stayed upside down until a manual recenter). Each headset frame: a
+// head whose up points against the reference's up for a third of a second, or a head position jump of
+// more than 0.75 m between two frames, re-levels everything.
 static void WatchSpace() {
-	if (!g_vr.placed || !g_vr.dispValid) {
+	if (!g_vr.screenPlaced || !g_vr.displayPoseValid) {
 		g_vr.lastHeadValid = false;
 		return;
 	}
-	const XrPosef& e0 = g_vr.disp[0].pose;
-	const XrPosef& e1 = g_vr.disp[1].pose;
-	float head[3] = {(e0.position.x + e1.position.x) * 0.5f, (e0.position.y + e1.position.y) * 0.5f,
-					 (e0.position.z + e1.position.z) * 0.5f};
-	pure::V3 up = pure::rotate({e0.orientation.x, e0.orientation.y, e0.orientation.z, e0.orientation.w}, {0, 1, 0});
+	const XrPosef& leftEye = g_vr.displayViews[0].pose;
+	const XrPosef& rightEye = g_vr.displayViews[1].pose;
+	float head[3] = {(leftEye.position.x + rightEye.position.x) * 0.5f, (leftEye.position.y + rightEye.position.y) * 0.5f,
+					 (leftEye.position.z + rightEye.position.z) * 0.5f};
+	pure::V3 up = pure::rotate({leftEye.orientation.x, leftEye.orientation.y, leftEye.orientation.z, leftEye.orientation.w}, {0, 1, 0});
 	float along = g_vr.spaceFlipped ? -up.y : up.y;  // head up against the reference's up
-	g_vr.upsideFrames = along < -0.5f ? g_vr.upsideFrames + 1 : 0;
+	g_vr.upsideDownFrames = along < -0.5f ? g_vr.upsideDownFrames + 1 : 0;
 	bool jump = false;
 	if (g_vr.lastHeadValid) {
-		float dx = head[0] - g_vr.lastHead[0], dy = head[1] - g_vr.lastHead[1], dz = head[2] - g_vr.lastHead[2];
+		float dx = head[0] - g_vr.lastHeadPos[0], dy = head[1] - g_vr.lastHeadPos[1], dz = head[2] - g_vr.lastHeadPos[2];
 		jump = dx * dx + dy * dy + dz * dz > 0.75f * 0.75f;
 	}
-	memcpy(g_vr.lastHead, head, sizeof(head));
+	memcpy(g_vr.lastHeadPos, head, sizeof(head));
 	g_vr.lastHeadValid = true;
-	if (g_vr.upsideFrames >= 30 || jump) {
+	if (g_vr.upsideDownFrames >= 30 || jump) {
 		Log("tracking space changed without notice (%s); re-levelling the view and the screen",
 			jump ? "the head jumped more than 0.75 m in one frame" : "the head's up now points the other way");
-		g_vr.upsideFrames = 0;
+		g_vr.upsideDownFrames = 0;
 		g_vr.recenterRequested = true;
 	}
 }
 
 static void PlaceScreen(XrTime time) {
-	XrSpaceLocation loc = {};
-	loc.type = XR_TYPE_SPACE_LOCATION;
-	if (XR_FAILED(g_vr.xrLocateSpace(g_vr.view, g_vr.local, time, &loc))) return;
+	XrSpaceLocation location = {};
+	location.type = XR_TYPE_SPACE_LOCATION;
+	if (XR_FAILED(g_vr.xrLocateSpace(g_vr.viewSpace, g_vr.localSpace, time, &location))) return;
 	const XrSpaceLocationFlags need = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
-	if ((loc.locationFlags & need) != need) return;
-	pure::Q head{loc.pose.orientation.x, loc.pose.orientation.y, loc.pose.orientation.z, loc.pose.orientation.w};
+	if ((location.locationFlags & need) != need) return;
+	pure::Q head{location.pose.orientation.x, location.pose.orientation.y, location.pose.orientation.z, location.pose.orientation.w};
 	pure::Q yaw;  // level reference: heading only, upright for the player (pure::level_reference)
 	bool wasFlipped = g_vr.spaceFlipped;
-	if (!pure::level_reference(head, &g_vr.spaceFlipped, &yaw)) yaw = g_vr.placed ? g_vr.lastYaw : pure::Q{0, 0, 0, 1};
-	if (g_vr.spaceFlipped != wasFlipped || (!g_vr.placed && g_vr.spaceFlipped))
+	if (!pure::level_reference(head, &g_vr.spaceFlipped, &yaw)) yaw = g_vr.screenPlaced ? g_vr.lastScreenYaw : pure::Q{0, 0, 0, 1};
+	if (g_vr.spaceFlipped != wasFlipped || (!g_vr.screenPlaced && g_vr.spaceFlipped))
 		Log(g_vr.spaceFlipped ? "tracking space: the runtime's up axis points down (its +Y is the floor); the view, screen "
 								"and menu are turned upright for you"
 							  : "tracking space: normal (+Y up)");
-	pure::V3 off = pure::rotate(yaw, {0, g_cfg.heightOffset, -g_cfg.distance});
+	pure::V3 offset = pure::rotate(yaw, {0, g_cfg.heightOffset, -g_cfg.distance});
 	g_vr.quadPose.orientation = {yaw.x, yaw.y, yaw.z, yaw.w};
-	g_vr.quadPose.position = {loc.pose.position.x + off.x, loc.pose.position.y + off.y, loc.pose.position.z + off.z};
-	g_vr.lastYaw = yaw;
-	g_vr.placed = true;
+	g_vr.quadPose.position = {location.pose.position.x + offset.x, location.pose.position.y + offset.y, location.pose.position.z + offset.z};
+	g_vr.lastScreenYaw = yaw;
+	g_vr.screenPlaced = true;
 	g_vr.recenterRequested = false;
 	// The stereo camera treats this (yaw-only) head pose as "looking along the game camera".
 	AcquireSRWLockExclusive(&g_stereo.lock);
-	g_stereo.refPos[0] = loc.pose.position.x;
-	g_stereo.refPos[1] = loc.pose.position.y;
-	g_stereo.refPos[2] = loc.pose.position.z;
+	g_stereo.refPos[0] = location.pose.position.x;
+	g_stereo.refPos[1] = location.pose.position.y;
+	g_stereo.refPos[2] = location.pose.position.z;
 	g_stereo.refRot[0] = yaw.x;
 	g_stereo.refRot[1] = yaw.y;
 	g_stereo.refRot[2] = yaw.z;
 	g_stereo.refRot[3] = yaw.w;
 	g_stereo.refValid = true;
 	ReleaseSRWLockExclusive(&g_stereo.lock);
-	pure::V3 hu = pure::rotate(head, {0, 1, 0});
+	pure::V3 headUp = pure::rotate(head, {0, 1, 0});
 	Log("screen placed at (%.2f, %.2f, %.2f), %.2f m ahead; head up vector (%.2f, %.2f, %.2f)%s",
 		(double)g_vr.quadPose.position.x, (double)g_vr.quadPose.position.y, (double)g_vr.quadPose.position.z,
-		(double)g_cfg.distance, (double)hu.x, (double)hu.y, (double)hu.z, g_vr.spaceFlipped ? " (space flipped)" : "");
+		(double)g_cfg.distance, (double)headUp.x, (double)headUp.y, (double)headUp.z, g_vr.spaceFlipped ? " (space flipped)" : "");
 }
 
 static void LogStats() {
 	LARGE_INTEGER now;
 	QueryPerformanceCounter(&now);
-	double secs = (double)(now.QuadPart - g_vr.statStart.QuadPart) / (double)g_vr.qpcFreq.QuadPart;
+	double secs = (double)(now.QuadPart - g_vr.statStart.QuadPart) / (double)g_vr.qpcFrequency.QuadPart;
 	if (secs < 10) return;
-	unsigned got = g_vr.statGameFrames[0] + g_vr.statGameFrames[1] + g_vr.statGameFrames[2];
+	unsigned received = g_vr.statGameFrames[0] + g_vr.statGameFrames[1] + g_vr.statGameFrames[2];
 	Log("stats: headset %.1f fps (stereo %.1f, flat %.1f); game frames received: left %.1f, right %.1f, mono %.1f fps; "
 		"HUD-free image in %.0f%% of them; UI coverage avg %.0f%% max %.0f%%",
 		g_vr.statFrames / secs, g_vr.statStereoFrames / secs, g_vr.statQuadFrames / secs, g_vr.statGameFrames[0] / secs,
-		g_vr.statGameFrames[1] / secs, g_vr.statGameFrames[2] / secs, got ? 100.0 * g_vr.statSceneFrames / got : 0.0,
-		g_vr.statCovN ? 100.0 * g_vr.statCovSum / g_vr.statCovN : 0.0, 100.0 * g_vr.statCovMax);
+		g_vr.statGameFrames[1] / secs, g_vr.statGameFrames[2] / secs, received ? 100.0 * g_vr.statSceneFrames / received : 0.0,
+		g_vr.statCoverageCount ? 100.0 * g_vr.statCoverageSum / g_vr.statCoverageCount : 0.0, 100.0 * g_vr.statCoverageMax);
 	{
 		char info[160];
 		snprintf(info, sizeof(info), "Mode: %s", !g_vr.statStereoFrames ? "flat screen" : (g_cfg.synchronized ? "stereo, synchronized" : "stereo, alternating"));
-		MenuSetInfo(0, info);
+		MenuSetInfo(INFO_MODE, info);
 		snprintf(info, sizeof(info), "Headset %.0f fps; game images per second: left %.0f, right %.0f, flat %.0f",
 				 g_vr.statFrames / secs, g_vr.statGameFrames[0] / secs, g_vr.statGameFrames[1] / secs, g_vr.statGameFrames[2] / secs);
-		MenuSetInfo(1, info);
+		MenuSetInfo(INFO_HEADSET, info);
 	}
-	if (g_vr.statLagN || g_vr.statTurnN) {
+	if (g_vr.statLagCount || g_vr.statTurnCount) {
 		Log("stats: head pose: game images were on screen on average %.1f ms after the time their pose was predicted "
 			"from (prediction now %.1f ms ahead, PosePrediction=%d); the head had turned on average %.2f deg (max %.1f) "
 			"from the shown image's pose, beyond the rendered margin of %.1f deg in %.1f%% of headset frames",
-			g_vr.statLagN ? g_vr.statLagSum / g_vr.statLagN : 0.0, (double)g_vr.predictNs / 1e6, g_cfg.posePrediction,
-			g_vr.statTurnN ? g_vr.statTurnSum / g_vr.statTurnN : 0.0, (double)g_vr.statTurnMax, (double)g_vr.marginDeg,
-			g_vr.statTurnN ? 100.0 * g_vr.statTurnOver / g_vr.statTurnN : 0.0);
+			g_vr.statLagCount ? g_vr.statLagSum / g_vr.statLagCount : 0.0, (double)g_vr.predictionNs / 1e6, g_cfg.posePrediction,
+			g_vr.statTurnCount ? g_vr.statTurnSum / g_vr.statTurnCount : 0.0, (double)g_vr.statTurnMax, (double)g_vr.marginDeg,
+			g_vr.statTurnCount ? 100.0 * g_vr.statTurnOverMargin / g_vr.statTurnCount : 0.0);
 		char info[160];
 		snprintf(info, sizeof(info), "Head: images shown %.0f ms after their pose; predicting %.0f ms; past margin %.1f%%",
-				 g_vr.statLagN ? g_vr.statLagSum / g_vr.statLagN : 0.0, (double)g_vr.predictNs / 1e6,
-				 g_vr.statTurnN ? 100.0 * g_vr.statTurnOver / g_vr.statTurnN : 0.0);
-		MenuSetInfo(13, info);
+				 g_vr.statLagCount ? g_vr.statLagSum / g_vr.statLagCount : 0.0, (double)g_vr.predictionNs / 1e6,
+				 g_vr.statTurnCount ? 100.0 * g_vr.statTurnOverMargin / g_vr.statTurnCount : 0.0);
+		MenuSetInfo(INFO_HEAD_POSE, info);
 	}
 	static UINT resLoggedW, resLoggedH;
-	if (g_vr.resPct > 0 && g_vr.statStereoFrames && (resLoggedW != g_vr.contentW || resLoggedH != g_vr.contentH)) {
-		resLoggedW = g_vr.contentW;
-		resLoggedH = g_vr.contentH;
+	if (g_vr.sharpnessPctX > 0 && g_vr.statStereoFrames && (resLoggedW != g_vr.gameW || resLoggedH != g_vr.gameH)) {
+		resLoggedW = g_vr.gameW;
+		resLoggedH = g_vr.gameH;
 		Log("stats: resolution: the game renders %ux%u%s: %.0f%% of the sharpness the headset recommends across, %.0f%% "
 			"up-down; about %ux%u matches it in both directions",
-			g_vr.contentW, g_vr.contentH, g_vr.sceneW != g_vr.contentW ? " (upscaled)" : "", (double)g_vr.resPct, (double)g_vr.resPctH,
-			g_vr.resSuggestW, g_vr.resSuggestH);
+			g_vr.gameW, g_vr.gameH, g_vr.sceneW != g_vr.gameW ? " (upscaled)" : "", (double)g_vr.sharpnessPctX, (double)g_vr.sharpnessPctY,
+			g_vr.suggestedGameW, g_vr.suggestedGameH);
 		char info[160];
 		snprintf(info, sizeof(info), "Resolution %ux%u: %.0f%% / %.0f%% of recommended (across / up-down); ~%ux%u matches",
-				 g_vr.contentW, g_vr.contentH, (double)g_vr.resPct, (double)g_vr.resPctH, g_vr.resSuggestW, g_vr.resSuggestH);
-		MenuSetInfo(14, info);
+				 g_vr.gameW, g_vr.gameH, (double)g_vr.sharpnessPctX, (double)g_vr.sharpnessPctY, g_vr.suggestedGameW, g_vr.suggestedGameH);
+		MenuSetInfo(INFO_RESOLUTION, info);
 	}
 	g_vr.statLagSum = g_vr.statTurnSum = 0;
-	g_vr.statLagN = g_vr.statTurnN = g_vr.statTurnOver = 0;
+	g_vr.statLagCount = g_vr.statTurnCount = g_vr.statTurnOverMargin = 0;
 	g_vr.statTurnMax = 0;
 	g_vr.statSceneFrames = 0;
-	g_vr.statCovSum = g_vr.statCovMax = 0;
-	g_vr.statCovN = 0;
+	g_vr.statCoverageSum = g_vr.statCoverageMax = 0;
+	g_vr.statCoverageCount = 0;
 	g_vr.statFrames = g_vr.statQuadFrames = g_vr.statStereoFrames = 0;
 	g_vr.statGameFrames[0] = g_vr.statGameFrames[1] = g_vr.statGameFrames[2] = 0;
 	g_vr.statStart = now;
@@ -244,302 +243,301 @@ static void LogStats() {
 
 // Hands the latest predicted eye poses and fields of view to the game thread.
 static void UpdateEyePoses(XrTime time) {
-	XrViewLocateInfo li = {};
-	li.type = XR_TYPE_VIEW_LOCATE_INFO;
-	li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-	li.space = g_vr.local;
+	XrViewLocateInfo locateInfo = {};
+	locateInfo.type = XR_TYPE_VIEW_LOCATE_INFO;
+	locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+	locateInfo.space = g_vr.localSpace;
 	// where the eyes are when this VR frame is shown (diagnostic: how far the shown image is off)
 	{
-		li.displayTime = time;
-		XrViewState ds = {};
-		ds.type = XR_TYPE_VIEW_STATE;
-		XrView dv[2] = {};
-		dv[0].type = dv[1].type = XR_TYPE_VIEW;
-		uint32_t dn = 0;
-		g_vr.dispValid = XR_SUCCEEDED(g_vr.xrLocateViews(g_vr.session, &li, &ds, 2, &dn, dv)) && dn == 2 &&
-						 (ds.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
-		if (g_vr.dispValid && (ds.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT)) {
-			g_vr.disp[0] = dv[0];
-			g_vr.disp[1] = dv[1];
-			g_vr.dispHave = true;
+		locateInfo.displayTime = time;
+		XrViewState atDisplayState = {};
+		atDisplayState.type = XR_TYPE_VIEW_STATE;
+		XrView atDisplay[2] = {};
+		atDisplay[0].type = atDisplay[1].type = XR_TYPE_VIEW;
+		uint32_t atDisplayCount = 0;
+		g_vr.displayPoseValid = XR_SUCCEEDED(g_vr.xrLocateViews(g_vr.session, &locateInfo, &atDisplayState, 2, &atDisplayCount, atDisplay)) && atDisplayCount == 2 &&
+								(atDisplayState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
+		if (g_vr.displayPoseValid && (atDisplayState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT)) {
+			g_vr.displayViews[0] = atDisplay[0];
+			g_vr.displayViews[1] = atDisplay[1];
+			g_vr.displayViewsValid = true;
 		}
-		if (g_vr.dispValid)
-			for (int e = 0; e < 2; e++) {
-				g_vr.dispRot[e][0] = dv[e].pose.orientation.x;
-				g_vr.dispRot[e][1] = dv[e].pose.orientation.y;
-				g_vr.dispRot[e][2] = dv[e].pose.orientation.z;
-				g_vr.dispRot[e][3] = dv[e].pose.orientation.w;
+		if (g_vr.displayPoseValid)
+			for (int eye = 0; eye < 2; eye++) {
+				g_vr.displayEyeRot[eye][0] = atDisplay[eye].pose.orientation.x;
+				g_vr.displayEyeRot[eye][1] = atDisplay[eye].pose.orientation.y;
+				g_vr.displayEyeRot[eye][2] = atDisplay[eye].pose.orientation.z;
+				g_vr.displayEyeRot[eye][3] = atDisplay[eye].pose.orientation.w;
 			}
 	}
 	// the game renders with the pose predicted for when its frame will really be shown
-	g_vr.predictNs = g_cfg.posePrediction && g_vr.lagHave ? (long long)(g_vr.lagMs * 1e6) : 0;
-	li.displayTime = time + g_vr.predictNs;
-	li.space = g_vr.local;
-	XrViewState vs = {};
-	vs.type = XR_TYPE_VIEW_STATE;
-	XrView v[2] = {};
-	v[0].type = v[1].type = XR_TYPE_VIEW;
-	uint32_t n = 0;
+	g_vr.predictionNs = g_cfg.posePrediction && g_vr.poseLagValid ? (long long)(g_vr.poseLagMs * 1e6) : 0;
+	locateInfo.displayTime = time + g_vr.predictionNs;
+	locateInfo.space = g_vr.localSpace;
+	XrViewState viewState = {};
+	viewState.type = XR_TYPE_VIEW_STATE;
+	XrView views[2] = {};
+	views[0].type = views[1].type = XR_TYPE_VIEW;
+	uint32_t count = 0;
 	const XrViewStateFlags need = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
-	bool ok = XR_SUCCEEDED(g_vr.xrLocateViews(g_vr.session, &li, &vs, 2, &n, v)) && n == 2 && (vs.viewStateFlags & need) == need;
+	bool ok = XR_SUCCEEDED(g_vr.xrLocateViews(g_vr.session, &locateInfo, &viewState, 2, &count, views)) && count == 2 && (viewState.viewStateFlags & need) == need;
 	AcquireSRWLockExclusive(&g_stereo.lock);
 	g_stereo.valid = ok;
 	if (ok) g_stereo.poseBase = time;
 	if (ok) {
-		for (int e = 0; e < 2; e++) {
-			g_stereo.eyePos[e][0] = v[e].pose.position.x;
-			g_stereo.eyePos[e][1] = v[e].pose.position.y;
-			g_stereo.eyePos[e][2] = v[e].pose.position.z;
-			g_stereo.eyeRot[e][0] = v[e].pose.orientation.x;
-			g_stereo.eyeRot[e][1] = v[e].pose.orientation.y;
-			g_stereo.eyeRot[e][2] = v[e].pose.orientation.z;
-			g_stereo.eyeRot[e][3] = v[e].pose.orientation.w;
-			g_stereo.eyeTan[e][0] = pure::ftan(v[e].fov.angleLeft);
-			g_stereo.eyeTan[e][1] = pure::ftan(v[e].fov.angleRight);
-			g_stereo.eyeTan[e][2] = pure::ftan(v[e].fov.angleUp);
-			g_stereo.eyeTan[e][3] = pure::ftan(v[e].fov.angleDown);
+		for (int eye = 0; eye < 2; eye++) {
+			g_stereo.eyePos[eye][0] = views[eye].pose.position.x;
+			g_stereo.eyePos[eye][1] = views[eye].pose.position.y;
+			g_stereo.eyePos[eye][2] = views[eye].pose.position.z;
+			g_stereo.eyeRot[eye][0] = views[eye].pose.orientation.x;
+			g_stereo.eyeRot[eye][1] = views[eye].pose.orientation.y;
+			g_stereo.eyeRot[eye][2] = views[eye].pose.orientation.z;
+			g_stereo.eyeRot[eye][3] = views[eye].pose.orientation.w;
+			g_stereo.eyeTan[eye][0] = pure::ftan(views[eye].fov.angleLeft);
+			g_stereo.eyeTan[eye][1] = pure::ftan(views[eye].fov.angleRight);
+			g_stereo.eyeTan[eye][2] = pure::ftan(views[eye].fov.angleUp);
+			g_stereo.eyeTan[eye][3] = pure::ftan(views[eye].fov.angleDown);
 		}
 	}
 	ReleaseSRWLockExclusive(&g_stereo.lock);
 	static bool logged = false;
 	if (ok && !logged) {
 		logged = true;
-		for (int e = 0; e < 2; e++)
-			Log("eye %d: fov left %.1f right %.1f up %.1f down %.1f deg, position (%.4f, %.4f, %.4f)", e,
-				(double)(v[e].fov.angleLeft * 57.29578f), (double)(v[e].fov.angleRight * 57.29578f),
-				(double)(v[e].fov.angleUp * 57.29578f), (double)(v[e].fov.angleDown * 57.29578f),
-				(double)v[e].pose.position.x, (double)v[e].pose.position.y, (double)v[e].pose.position.z);
-		float dx = v[1].pose.position.x - v[0].pose.position.x, dy = v[1].pose.position.y - v[0].pose.position.y,
-			  dz = v[1].pose.position.z - v[0].pose.position.z;
+		for (int eye = 0; eye < 2; eye++)
+			Log("eye %d: fov left %.1f right %.1f up %.1f down %.1f deg, position (%.4f, %.4f, %.4f)", eye,
+				(double)(views[eye].fov.angleLeft * 57.29578f), (double)(views[eye].fov.angleRight * 57.29578f),
+				(double)(views[eye].fov.angleUp * 57.29578f), (double)(views[eye].fov.angleDown * 57.29578f),
+				(double)views[eye].pose.position.x, (double)views[eye].pose.position.y, (double)views[eye].pose.position.z);
+		float dx = views[1].pose.position.x - views[0].pose.position.x, dy = views[1].pose.position.y - views[0].pose.position.y,
+			  dz = views[1].pose.position.z - views[0].pose.position.z;
 		Log("IPD %.1f mm", (double)(pure::fsqrt(dx * dx + dy * dy + dz * dz) * 1000));
 	}
 }
 
-static XrFovf FovFromTag(const FrameTag& t) {
-	XrFovf f;
-	f.angleLeft = -pure::fatan(t.tanHalfW);
-	f.angleRight = pure::fatan(t.tanHalfW);
-	f.angleUp = pure::fatan(t.tanHalfH);
-	f.angleDown = -pure::fatan(t.tanHalfH);
-	return f;
+static XrFovf FovFromTag(const FrameTag& tag) {
+	XrFovf fov;
+	fov.angleLeft = -pure::fatan(tag.tanHalfW);
+	fov.angleRight = pure::fatan(tag.tanHalfW);
+	fov.angleUp = pure::fatan(tag.tanHalfH);
+	fov.angleDown = -pure::fatan(tag.tanHalfH);
+	return fov;
 }
 
 static bool UpdateMenu(XrTime time);
 static bool UpdateOverlay();
 
 void Frame() {
-	XrFrameState fs = {};
-	fs.type = XR_TYPE_FRAME_STATE;
-	XrFrameWaitInfo wi = {};
-	wi.type = XR_TYPE_FRAME_WAIT_INFO;
-	if (!XR_CHECK_FRAME(g_vr.xrWaitFrame(g_vr.session, &wi, &fs))) {
+	XrFrameState frameState = {};
+	frameState.type = XR_TYPE_FRAME_STATE;
+	XrFrameWaitInfo waitInfo = {};
+	waitInfo.type = XR_TYPE_FRAME_WAIT_INFO;
+	if (!XR_CHECK_FRAME(g_vr.xrWaitFrame(g_vr.session, &waitInfo, &frameState))) {
 		Sleep(5);
 		return;
 	}
-	XrFrameBeginInfo bi = {};
-	bi.type = XR_TYPE_FRAME_BEGIN_INFO;
-	if (!XR_CHECK_FRAME(g_vr.xrBeginFrame(g_vr.session, &bi))) return;
+	XrFrameBeginInfo beginInfo = {};
+	beginInfo.type = XR_TYPE_FRAME_BEGIN_INFO;
+	if (!XR_CHECK_FRAME(g_vr.xrBeginFrame(g_vr.session, &beginInfo))) return;
 
 	const XrCompositionLayerBaseHeader* layers[8];
 	uint32_t layerCount = 0;
 	XrCompositionLayerQuad quad = {}, hud = {}, menu = {}, overlay = {};
 	XrCompositionLayerProjection proj = {};
-	XrCompositionLayerProjectionView pv[2] = {};
+	XrCompositionLayerProjectionView projViews[2] = {};
 
 	HandleHotkeys();
 	VrInputSync(g_vr.state == XR_SESSION_STATE_FOCUSED, GameIsForeground());
-	VrInputMotion(g_vr.local, g_vr.view, fs.predictedDisplayTime, g_vr.state == XR_SESSION_STATE_FOCUSED, g_vr.spaceFlipped);
+	VrInputMotion(g_vr.localSpace, g_vr.viewSpace, frameState.predictedDisplayTime, g_vr.state == XR_SESSION_STATE_FOCUSED, g_vr.spaceFlipped);
 	MenuTick(GameIsForeground());
 	if (MenuTakeRecenter()) g_vr.recenterRequested = true;
-	UpdateEyePoses(fs.predictedDisplayTime);
-	WatchSpace(); // TODO: i dont think this function works perfectly
-	if (fs.shouldRender) {
-		if (!g_vr.placed || g_vr.recenterRequested) PlaceScreen(fs.predictedDisplayTime);
+	UpdateEyePoses(frameState.predictedDisplayTime);
+	WatchSpace();  // TODO: i dont think this function works perfectly
+	if (frameState.shouldRender) {
+		if (!g_vr.screenPlaced || g_vr.recenterRequested) PlaceScreen(frameState.predictedDisplayTime);
 		UpdateContent();
 		MeasureUICoverage();
 		AcquireSRWLockShared(&g_stereo.lock);
 		bool stereoOn = g_stereo.enabled;
 		ReleaseSRWLockShared(&g_stereo.lock);
-		auto& L = g_vr.views[0];
-		auto& R = g_vr.views[1];
-		auto& M = g_vr.views[2];
+		auto& left = g_vr.views[0];
+		auto& right = g_vr.views[1];
+		auto& mono = g_vr.views[2];
 		// Stereo when both eyes have rendered recently and are newer than any flat frame.
-		bool stereo = stereoOn && !g_vr.menuMode && L.has && R.has && L.tag.patched && R.tag.patched && L.seq > M.seq && R.seq > M.seq;
+		bool stereo = stereoOn && !g_vr.menuMode && left.hasFrame && right.hasFrame && left.tag.patched && right.tag.patched && left.seq > mono.seq && right.seq > mono.seq;
 		// Late warp: both eyes are submitted with the headset's own pose pair and field
 		// of view for this frame, each image re-aimed to it here. Runtimes that stream to the headset
 		// (Pico Connect, Steam Link, ...) assume one head pose per frame and images that cover exactly
-		// the eye's field of view: 0.5.0 sent each eye with its render pose (different moments in
-		// alternating mode: the right eye stuttered) and a symmetric, wider field of view (Quest 3,
-		// 54/40 deg per eye: squeezed sideways, cross-eyed).
-		bool late = stereo && g_cfg.lateWarp && g_vr.psWarp && g_vr.dispHave;
+		// the eye's field of view: each eye with its own render pose (different moments in alternating
+		// mode) made the right eye stutter, and the symmetric, wider rendered field of view looked
+		// squeezed sideways and cross-eyed.
+		bool lateWarp = stereo && g_cfg.lateWarp && g_vr.lateWarpPs && g_vr.displayViewsValid;
 		// the image the eyes show: the scene-only one (upscaled or not) when both eyes have it
-		const bool scn = L.tag.hasScene && R.tag.hasScene;
-		const UINT imgW = scn ? g_vr.sceneW : g_vr.contentW, imgH = scn ? g_vr.sceneH : g_vr.contentH;
-		uint32_t ew[2] = {imgW, imgW}, eh[2] = {imgH, imgH};
-		if (late)
-			for (int e = 0; e < 2; e++) {
+		const bool scene = left.tag.hasScene && right.tag.hasScene;
+		const UINT imgW = scene ? g_vr.sceneW : g_vr.gameW, imgH = scene ? g_vr.sceneH : g_vr.gameH;
+		uint32_t eyeW[2] = {imgW, imgW}, eyeH[2] = {imgH, imgH};
+		if (lateWarp)
+			for (int eye = 0; eye < 2; eye++) {
 				// same pixel density as the rendered image, over the eye's own field of view
-				const FrameTag& t = (e == 0 ? L : R).tag;
-				const XrFovf& f = g_vr.disp[e].fov;
-				float w = (pure::ftan(f.angleRight) - pure::ftan(f.angleLeft)) * imgW / (2 * t.tanHalfW);
-				float h = (pure::ftan(f.angleUp) - pure::ftan(f.angleDown)) * imgH / (2 * t.tanHalfH);
-				ew[e] = ((uint32_t)w + 1) & ~1u;
-				eh[e] = ((uint32_t)h + 1) & ~1u;
+				const FrameTag& tag = (eye == 0 ? left : right).tag;
+				const XrFovf& fov = g_vr.displayViews[eye].fov;
+				float width = (pure::ftan(fov.angleRight) - pure::ftan(fov.angleLeft)) * imgW / (2 * tag.tanHalfW);
+				float height = (pure::ftan(fov.angleUp) - pure::ftan(fov.angleDown)) * imgH / (2 * tag.tanHalfH);
+				eyeW[eye] = ((uint32_t)width + 1) & ~1u;
+				eyeH[eye] = ((uint32_t)height + 1) & ~1u;
 				// a few pixels' change doesn't need a new swapchain
-				if (g_vr.eyeSwap[e].sc && ew[e] + 16 > g_vr.eyeSwap[e].w && ew[e] < g_vr.eyeSwap[e].w + 16 && eh[e] + 16 > g_vr.eyeSwap[e].h &&
-					eh[e] < g_vr.eyeSwap[e].h + 16) {
-					ew[e] = g_vr.eyeSwap[e].w;
-					eh[e] = g_vr.eyeSwap[e].h;
+				if (g_vr.eyeSwap[eye].handle && eyeW[eye] + 16 > g_vr.eyeSwap[eye].w && eyeW[eye] < g_vr.eyeSwap[eye].w + 16 && eyeH[eye] + 16 > g_vr.eyeSwap[eye].h &&
+					eyeH[eye] < g_vr.eyeSwap[eye].h + 16) {
+					eyeW[eye] = g_vr.eyeSwap[eye].w;
+					eyeH[eye] = g_vr.eyeSwap[eye].h;
 				}
 			}
-		stereo = stereo && EnsureSwap(g_vr.eyeSwap[0], ew[0], eh[0], "left eye") && EnsureSwap(g_vr.eyeSwap[1], ew[1], eh[1], "right eye");
+		stereo = stereo && EnsureSwap(g_vr.eyeSwap[0], eyeW[0], eyeH[0], "left eye") && EnsureSwap(g_vr.eyeSwap[1], eyeW[1], eyeH[1], "right eye");
 		if (stereo) {
 			bool ok = true;
-			bool bothScene = L.tag.hasScene && R.tag.hasScene;
-			for (int e = 0; e < 2 && ok; e++) {
-				auto& V = e == 0 ? L : R;
-				const FrameTag& t = V.tag;
+			for (int eye = 0; eye < 2 && ok; eye++) {
+				auto& eyeView = eye == 0 ? left : right;
+				const FrameTag& tag = eyeView.tag;
 				// the 3D scene without HUD/menus when both eyes have one (never mix the two kinds:
 				// that would show the UI in one eye and on the HUD layer at the same time)
-				ID3D11ShaderResourceView* img = bothScene ? V.sceneSrv : V.srv;
-				pv[e].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
-				if (late) {
-					const XrView& d = g_vr.disp[e];
-					WarpParams w;
-					w.outTan[0] = pure::ftan(d.fov.angleLeft);
-					w.outTan[1] = pure::ftan(d.fov.angleRight);
-					w.outTan[2] = pure::ftan(d.fov.angleUp);
-					w.outTan[3] = pure::ftan(d.fov.angleDown);
-					w.srcTan[0] = t.tanHalfW;
-					w.srcTan[1] = t.tanHalfH;
-					w.srcTan[2] = w.srcTan[3] = 0;
-					pure::M4 rr = pure::m4_from_pose({t.rot[0], t.rot[1], t.rot[2], t.rot[3]}, {0, 0, 0});
-					pure::M4 rd = pure::m4_from_pose({d.pose.orientation.x, d.pose.orientation.y, d.pose.orientation.z,
-													  d.pose.orientation.w},
-													 {0, 0, 0});
+				ID3D11ShaderResourceView* image = scene ? eyeView.sceneSrv : eyeView.srv;
+				projViews[eye].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+				if (lateWarp) {
+					const XrView& shown = g_vr.displayViews[eye];
+					WarpParams warp;
+					warp.outTan[0] = pure::ftan(shown.fov.angleLeft);
+					warp.outTan[1] = pure::ftan(shown.fov.angleRight);
+					warp.outTan[2] = pure::ftan(shown.fov.angleUp);
+					warp.outTan[3] = pure::ftan(shown.fov.angleDown);
+					warp.srcTan[0] = tag.tanHalfW;
+					warp.srcTan[1] = tag.tanHalfH;
+					warp.srcTan[2] = warp.srcTan[3] = 0;
+					pure::M4 renderRot = pure::m4_from_pose({tag.rot[0], tag.rot[1], tag.rot[2], tag.rot[3]}, {0, 0, 0});
+					pure::M4 shownRot = pure::m4_from_pose({shown.pose.orientation.x, shown.pose.orientation.y, shown.pose.orientation.z,
+															shown.pose.orientation.w},
+														   {0, 0, 0});
 					for (int r = 0; r < 3; r++) {
 						for (int c = 0; c < 3; c++)
-							w.m[r][c] = rr.at(0, r) * rd.at(0, c) + rr.at(1, r) * rd.at(1, c) + rr.at(2, r) * rd.at(2, c);
-						w.m[r][3] = 0;
+							warp.m[r][c] = renderRot.at(0, r) * shownRot.at(0, c) + renderRot.at(1, r) * shownRot.at(1, c) + renderRot.at(2, r) * shownRot.at(2, c);
+						warp.m[r][3] = 0;
 					}
-					ok = RenderInto(g_vr.eyeSwap[e], img, nullptr, &w);
-					pv[e].pose = d.pose;
-					pv[e].fov = d.fov;
+					ok = RenderInto(g_vr.eyeSwap[eye], image, nullptr, &warp);
+					projViews[eye].pose = shown.pose;
+					projViews[eye].fov = shown.fov;
 				} else {
-					ok = RenderInto(g_vr.eyeSwap[e], img);
-					pv[e].pose.position = {t.pos[0], t.pos[1], t.pos[2]};
-					pv[e].pose.orientation = {t.rot[0], t.rot[1], t.rot[2], t.rot[3]};
-					pv[e].fov = FovFromTag(t);
+					ok = RenderInto(g_vr.eyeSwap[eye], image);
+					projViews[eye].pose.position = {tag.pos[0], tag.pos[1], tag.pos[2]};
+					projViews[eye].pose.orientation = {tag.rot[0], tag.rot[1], tag.rot[2], tag.rot[3]};
+					projViews[eye].fov = FovFromTag(tag);
 				}
-				pv[e].subImage.swapchain = g_vr.eyeSwap[e].sc;
-				pv[e].subImage.imageRect.offset = {0, 0};
-				pv[e].subImage.imageRect.extent = {(int32_t)g_vr.eyeSwap[e].w, (int32_t)g_vr.eyeSwap[e].h};
+				projViews[eye].subImage.swapchain = g_vr.eyeSwap[eye].handle;
+				projViews[eye].subImage.imageRect.offset = {0, 0};
+				projViews[eye].subImage.imageRect.extent = {(int32_t)g_vr.eyeSwap[eye].w, (int32_t)g_vr.eyeSwap[eye].h};
 			}
 			// resolution hint: the game picture's pixel density against the headset's recommended one
-			if (g_vr.recW && g_vr.dispHave) {
-				const XrFovf& f = g_vr.disp[0].fov;
-				float span = pure::ftan(f.angleRight) - pure::ftan(f.angleLeft);
-				float need = g_vr.recW / span * 2 * L.tag.tanHalfW;  // game width with the recommended density
-				float spanH = pure::ftan(f.angleUp) - pure::ftan(f.angleDown);
-				float needH = g_vr.recH / spanH * 2 * L.tag.tanHalfH;
-				if (need > 64 && needH > 64) {
+			if (g_vr.recommendedW && g_vr.displayViewsValid) {
+				const XrFovf& fov = g_vr.displayViews[0].fov;
+				float spanX = pure::ftan(fov.angleRight) - pure::ftan(fov.angleLeft);
+				float needW = g_vr.recommendedW / spanX * 2 * left.tag.tanHalfW;  // game width with the recommended density
+				float spanY = pure::ftan(fov.angleUp) - pure::ftan(fov.angleDown);
+				float needH = g_vr.recommendedH / spanY * 2 * left.tag.tanHalfH;
+				if (needW > 64 && needH > 64) {
 					// the 16:9 picture is stretched over the eye's field of view (Anamorphic): the two
-					// directions can differ a lot (0.5.1 Quest log: 144% across, 79% up-down)
-					g_vr.resPct = 100.f * imgW / need;
-					g_vr.resPctH = 100.f * imgH / needH;
+					// directions can differ a lot (on a Quest: 144% across, 79% up-down)
+					g_vr.sharpnessPctX = 100.f * imgW / needW;
+					g_vr.sharpnessPctY = 100.f * imgH / needH;
 					// keep the game's 16:9 shape: the larger of the two needs decides (the game's
 					// resolution: when upscaling, the image shown is that much larger)
-					float scale = need / imgW > needH / imgH ? need / imgW : needH / imgH;
-					g_vr.resSuggestW = ((UINT)(g_vr.contentW * scale) + 4) & ~7u;
-					g_vr.resSuggestH = ((UINT)(g_vr.contentH * scale) + 4) & ~7u;
+					float scale = needW / imgW > needH / imgH ? needW / imgW : needH / imgH;
+					g_vr.suggestedGameW = ((UINT)(g_vr.gameW * scale) + 4) & ~7u;
+					g_vr.suggestedGameH = ((UINT)(g_vr.gameH * scale) + 4) & ~7u;
 					// the upscaler's output follows this: the game image's shape with the headset's detail
-					float ns = need / g_vr.contentW > needH / g_vr.contentH ? need / g_vr.contentW : needH / g_vr.contentH;
-					UINT nw = ((UINT)(g_vr.contentW * ns) + 1) & ~1u, nh = ((UINT)(g_vr.contentH * ns) + 1) & ~1u;
-					EnterCriticalSection(&g_share.cs);
-					g_share.nativeW = nw;
-					g_share.nativeH = nh;
-					LeaveCriticalSection(&g_share.cs);
+					float nativeScale = needW / g_vr.gameW > needH / g_vr.gameH ? needW / g_vr.gameW : needH / g_vr.gameH;
+					UINT nativeW = ((UINT)(g_vr.gameW * nativeScale) + 1) & ~1u, nativeH = ((UINT)(g_vr.gameH * nativeScale) + 1) & ~1u;
+					EnterCriticalSection(&g_share.lock);
+					g_share.nativeW = nativeW;
+					g_share.nativeH = nativeH;
+					LeaveCriticalSection(&g_share.lock);
 				}
 			}
 			static int lateLogged = -1;
-			if (ok && lateLogged != (int)late) {
-				lateLogged = (int)late;
-				if (late)
+			if (ok && lateLogged != (int)lateWarp) {
+				lateLogged = (int)lateWarp;
+				if (lateWarp)
 					Log("late warp: eyes submitted with the headset's pose and field of view (left %.1f/%.1f, up %.1f/%.1f "
 						"deg), %ux%u per eye from a %ux%u image rendered %.1f x %.1f deg",
-						(double)(g_vr.disp[0].fov.angleLeft * 57.29578f), (double)(g_vr.disp[0].fov.angleRight * 57.29578f),
-						(double)(g_vr.disp[0].fov.angleUp * 57.29578f), (double)(g_vr.disp[0].fov.angleDown * 57.29578f),
-						g_vr.eyeSwap[0].w, g_vr.eyeSwap[0].h, g_vr.contentW, g_vr.contentH,
-						(double)(2 * pure::fatan(L.tag.tanHalfW) * 57.29578f), (double)(2 * pure::fatan(L.tag.tanHalfH) * 57.29578f));
+						(double)(g_vr.displayViews[0].fov.angleLeft * 57.29578f), (double)(g_vr.displayViews[0].fov.angleRight * 57.29578f),
+						(double)(g_vr.displayViews[0].fov.angleUp * 57.29578f), (double)(g_vr.displayViews[0].fov.angleDown * 57.29578f),
+						g_vr.eyeSwap[0].w, g_vr.eyeSwap[0].h, g_vr.gameW, g_vr.gameH,
+						(double)(2 * pure::fatan(left.tag.tanHalfW) * 57.29578f), (double)(2 * pure::fatan(left.tag.tanHalfH) * 57.29578f));
 				else
 					Log("late warp off: eyes submitted with the pose and field of view they were rendered with");
 			}
 			// head pose prediction: how long after the pose's base time the images are on screen
-			for (int e = 0; e < 2 && ok; e++) {
-				const FrameTag& t = (e == 0 ? L : R).tag;
-				if (!t.poseBase) continue;
-				double ms = (double)(fs.predictedDisplayTime - t.poseBase) / 1e6;
-				if (ms <= 0 || ms > 250) continue;
-				g_vr.lagMs = g_vr.lagHave ? g_vr.lagMs + (ms - g_vr.lagMs) * 0.01 : ms;
-				if (g_vr.lagMs > 120) g_vr.lagMs = 120;  // runtimes extrapolate the head only so far
-				g_vr.lagHave = true;
-				g_vr.statLagSum += ms;
-				g_vr.statLagN++;
+			for (int eye = 0; eye < 2 && ok; eye++) {
+				const FrameTag& tag = (eye == 0 ? left : right).tag;
+				if (!tag.poseBase) continue;
+				double delayMs = (double)(frameState.predictedDisplayTime - tag.poseBase) / 1e6;
+				if (delayMs <= 0 || delayMs > 250) continue;
+				g_vr.poseLagMs = g_vr.poseLagValid ? g_vr.poseLagMs + (delayMs - g_vr.poseLagMs) * 0.01 : delayMs;
+				if (g_vr.poseLagMs > 120) g_vr.poseLagMs = 120;  // runtimes extrapolate the head only so far
+				g_vr.poseLagValid = true;
+				g_vr.statLagSum += delayMs;
+				g_vr.statLagCount++;
 			}
 			// how far the head has turned from the shown image's pose (the black edge, if beyond the margin)
-			if (ok && g_vr.dispValid) {
-				const float* r = L.tag.rot;
-				float deg = pure::q_angle_deg({r[0], r[1], r[2], r[3]},
-											  {g_vr.dispRot[0][0], g_vr.dispRot[0][1], g_vr.dispRot[0][2], g_vr.dispRot[0][3]});
+			if (ok && g_vr.displayPoseValid) {
+				const float* rot = left.tag.rot;
+				float deg = pure::q_angle_deg({rot[0], rot[1], rot[2], rot[3]},
+											  {g_vr.displayEyeRot[0][0], g_vr.displayEyeRot[0][1], g_vr.displayEyeRot[0][2], g_vr.displayEyeRot[0][3]});
 				g_vr.statTurnSum += deg;
-				g_vr.statTurnN++;
+				g_vr.statTurnCount++;
 				if (deg > g_vr.statTurnMax) g_vr.statTurnMax = deg;
 				// margin: rendered half-width beyond the headset's own field of view (horizontal)
 				AcquireSRWLockShared(&g_stereo.lock);
-				float own = -g_stereo.eyeTan[0][0] > g_stereo.eyeTan[0][1] ? -g_stereo.eyeTan[0][0] : g_stereo.eyeTan[0][1];
+				float ownTan = -g_stereo.eyeTan[0][0] > g_stereo.eyeTan[0][1] ? -g_stereo.eyeTan[0][0] : g_stereo.eyeTan[0][1];
 				ReleaseSRWLockShared(&g_stereo.lock);
-				g_vr.marginDeg = (pure::fatan(L.tag.tanHalfW) - pure::fatan(own)) * 57.29578f;
-				if (deg > g_vr.marginDeg) g_vr.statTurnOver++;
+				g_vr.marginDeg = (pure::fatan(left.tag.tanHalfW) - pure::fatan(ownTan)) * 57.29578f;
+				if (deg > g_vr.marginDeg) g_vr.statTurnOverMargin++;
 			}
 			if (ok) {
 				proj.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION;
-				proj.space = g_vr.local;
+				proj.space = g_vr.localSpace;
 				proj.viewCount = 2;
-				proj.views = pv;
+				proj.views = projViews;
 				layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&proj;
 				g_vr.statStereoFrames++;
 				// HUD: keyed out of the newest eye frame, on a transparent flat layer in front.
 				// (Synchronized: the right eye is replayed without UI, so the HUD comes from the left)
-				auto& H = (L.seq > R.seq && !L.tag.noUI) || R.tag.noUI ? L : R;
-				if (bothScene && g_vr.placed && EnsureSwap(g_vr.hudSwap, g_vr.contentW, g_vr.contentH, "HUD") &&
-					RenderInto(g_vr.hudSwap, H.srv, KeySrv(H))) {
+				auto& hudSource = (left.seq > right.seq && !left.tag.noUI) || right.tag.noUI ? left : right;
+				if (scene && g_vr.screenPlaced && EnsureSwap(g_vr.hudSwap, g_vr.gameW, g_vr.gameH, "HUD") &&
+					RenderInto(g_vr.hudSwap, hudSource.srv, KeySrv(hudSource))) {
 					hud.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
 					hud.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-					hud.space = g_vr.local;
+					hud.space = g_vr.localSpace;
 					hud.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-					hud.subImage.swapchain = g_vr.hudSwap.sc;
+					hud.subImage.swapchain = g_vr.hudSwap.handle;
 					hud.subImage.imageRect.offset = {0, 0};
 					hud.subImage.imageRect.extent = {(int32_t)g_vr.hudSwap.w, (int32_t)g_vr.hudSwap.h};
 					hud.pose = g_vr.quadPose;
-					hud.size = {g_cfg.width, g_cfg.width * (float)g_vr.contentH / (float)g_vr.contentW};
+					hud.size = {g_cfg.width, g_cfg.width * (float)g_vr.gameH / (float)g_vr.gameW};
 					layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&hud;
 				}
 			}
 		} else {
 			// Flat screen: the most recent frame of any kind.
-			int k = -1;
+			int newest = -1;
 			for (int i = 0; i < 3; i++)
-				if (g_vr.views[i].has && (k < 0 || g_vr.views[i].seq > g_vr.views[k].seq)) k = i;
-			if (g_vr.placed && k >= 0 && EnsureSwap(g_vr.quadSwap, g_vr.contentW, g_vr.contentH, "screen") &&
-				RenderInto(g_vr.quadSwap, g_vr.views[k].srv)) {
+				if (g_vr.views[i].hasFrame && (newest < 0 || g_vr.views[i].seq > g_vr.views[newest].seq)) newest = i;
+			if (g_vr.screenPlaced && newest >= 0 && EnsureSwap(g_vr.screenSwap, g_vr.gameW, g_vr.gameH, "screen") &&
+				RenderInto(g_vr.screenSwap, g_vr.views[newest].srv)) {
 				quad.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
-				quad.space = g_vr.local;
+				quad.space = g_vr.localSpace;
 				quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-				quad.subImage.swapchain = g_vr.quadSwap.sc;
+				quad.subImage.swapchain = g_vr.screenSwap.handle;
 				quad.subImage.imageRect.offset = {0, 0};
-				quad.subImage.imageRect.extent = {(int32_t)g_vr.quadSwap.w, (int32_t)g_vr.quadSwap.h};
+				quad.subImage.imageRect.extent = {(int32_t)g_vr.screenSwap.w, (int32_t)g_vr.screenSwap.h};
 				quad.pose = g_vr.quadPose;
-				quad.size = {g_cfg.width, g_cfg.width * (float)g_vr.contentH / (float)g_vr.contentW};
+				quad.size = {g_cfg.width, g_cfg.width * (float)g_vr.gameH / (float)g_vr.gameW};
 				layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&quad;
 				g_vr.statQuadFrames++;
 			}
@@ -547,55 +545,55 @@ void Frame() {
 	}
 
 	// the stats overlay: moves with your head (view space), upper left of your view
-	if (!g_cfg.statsOverlay) g_vr.ovStart.QuadPart = 0;  // counting starts again when it is switched on
-	if (fs.shouldRender && g_cfg.statsOverlay && UpdateOverlay()) {
+	if (!g_cfg.statsOverlay) g_vr.overlayStart.QuadPart = 0;  // counting starts again when it is switched on
+	if (frameState.shouldRender && g_cfg.statsOverlay && UpdateOverlay()) {
 		// 0.32 m wide at 0.8 m; elsewhere scaled so it keeps its size and place in your view
-		const float k = g_cfg.overlayDistance / 0.8f;
-		const float width = 0.32f * k;
+		const float scale = g_cfg.overlayDistance / 0.8f;
+		const float width = 0.32f * scale;
 		overlay.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
 		overlay.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;  // ImGui's output is premultiplied
-		overlay.space = g_vr.view;
+		overlay.space = g_vr.viewSpace;
 		overlay.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		overlay.subImage.swapchain = g_vr.overlay.swap.sc;
+		overlay.subImage.swapchain = g_vr.overlayPanel.swap.handle;
 		overlay.subImage.imageRect.offset = {0, 0};
-		overlay.subImage.imageRect.extent = {(int32_t)g_vr.overlay.swap.w, (int32_t)g_vr.overlay.swap.h};
+		overlay.subImage.imageRect.extent = {(int32_t)g_vr.overlayPanel.swap.w, (int32_t)g_vr.overlayPanel.swap.h};
 		overlay.pose.orientation = {0, 0, 0, 1};
-		overlay.pose.position = {g_cfg.overlayX * k, g_cfg.overlayY * k, -g_cfg.overlayDistance};
-		overlay.size = {width, width * (float)g_vr.overlay.swap.h / (float)g_vr.overlay.swap.w};
+		overlay.pose.position = {g_cfg.overlayX * scale, g_cfg.overlayY * scale, -g_cfg.overlayDistance};
+		overlay.size = {width, width * (float)g_vr.overlayPanel.swap.h / (float)g_vr.overlayPanel.swap.w};
 		layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&overlay;
 	}
 
 	// the settings menu, on top of everything
-	if (fs.shouldRender && MenuIsOpen() && UpdateMenu(fs.predictedDisplayTime)) {
+	if (frameState.shouldRender && MenuIsOpen() && UpdateMenu(frameState.predictedDisplayTime)) {
 		menu.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
-		menu.space = g_vr.local;
+		menu.space = g_vr.localSpace;
 		menu.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		menu.subImage.swapchain = g_vr.menu.swap.sc;
+		menu.subImage.swapchain = g_vr.menuPanel.swap.handle;
 		menu.subImage.imageRect.offset = {0, 0};
-		menu.subImage.imageRect.extent = {(int32_t)g_vr.menu.swap.w, (int32_t)g_vr.menu.swap.h};
+		menu.subImage.imageRect.extent = {(int32_t)g_vr.menuPanel.swap.w, (int32_t)g_vr.menuPanel.swap.h};
 		menu.pose = g_vr.menuPose;
-		const float mw = 1.0f * g_cfg.menuDistance / 1.1f;  // 1 m wide at 1.1 m
-		menu.size = {mw, mw * (float)g_vr.menu.swap.h / (float)g_vr.menu.swap.w};
+		const float menuWidth = 1.0f * g_cfg.menuDistance / 1.1f;  // 1 m wide at 1.1 m
+		menu.size = {menuWidth, menuWidth * (float)g_vr.menuPanel.swap.h / (float)g_vr.menuPanel.swap.w};
 		layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&menu;
 	}
 
-	XrFrameEndInfo ei = {};
-	ei.type = XR_TYPE_FRAME_END_INFO;
-	ei.displayTime = fs.predictedDisplayTime;
-	ei.environmentBlendMode = g_vr.blend;
-	ei.layerCount = layerCount;
-	ei.layers = layerCount ? layers : nullptr;
-	XR_CHECK_FRAME(g_vr.xrEndFrame(g_vr.session, &ei));
+	XrFrameEndInfo endInfo = {};
+	endInfo.type = XR_TYPE_FRAME_END_INFO;
+	endInfo.displayTime = frameState.predictedDisplayTime;
+	endInfo.environmentBlendMode = g_vr.blendMode;
+	endInfo.layerCount = layerCount;
+	endInfo.layers = layerCount ? layers : nullptr;
+	XR_CHECK_FRAME(g_vr.xrEndFrame(g_vr.session, &endInfo));
 	g_vr.statFrames++;
-	g_vr.ovFrames++;
+	g_vr.overlayFrames++;
 	{  // headset frame time, for the overlay's graph
 		LARGE_INTEGER now;
 		QueryPerformanceCounter(&now);
-		if (g_vr.ovLastFrame.QuadPart) {
-			g_vr.ovFrameMs[g_vr.ovFrameNext] = (float)(1000.0 * (now.QuadPart - g_vr.ovLastFrame.QuadPart) / g_vr.qpcFreq.QuadPart);
-			g_vr.ovFrameNext = (g_vr.ovFrameNext + 1) % (int)(sizeof(g_vr.ovFrameMs) / sizeof(g_vr.ovFrameMs[0]));
+		if (g_vr.overlayLastFrame.QuadPart) {
+			g_vr.overlayFrameMs[g_vr.overlayFrameNext] = (float)(1000.0 * (now.QuadPart - g_vr.overlayLastFrame.QuadPart) / g_vr.qpcFrequency.QuadPart);
+			g_vr.overlayFrameNext = (g_vr.overlayFrameNext + 1) % (int)(sizeof(g_vr.overlayFrameMs) / sizeof(g_vr.overlayFrameMs[0]));
 		}
-		g_vr.ovLastFrame = now;
+		g_vr.overlayLastFrame = now;
 	}
 	LogStats();
 }
@@ -605,48 +603,48 @@ void Frame() {
 // without sRGB, so the copy keeps ImGui's colours as they are (they are already sRGB values).
 // True = the panel can be shown.
 typedef bool (*PanelDraw)(ID3D11Device* dev, ID3D11DeviceContext* dc, ID3D11RenderTargetView* rtv, int w, int h);
-static bool RenderPanel(Panel& p, int w, int h, const char* what, PanelDraw draw) {
-	if (!EnsureSwap(p.swap, (uint32_t)w, (uint32_t)h, what, true)) return false;
-	if (p.swap.w != (uint32_t)w || p.swap.h != (uint32_t)h) return false;  // runtime limits: not supported
-	if (!p.tex) {
-		DXGI_FORMAT f = (DXGI_FORMAT)g_vr.swapFormat;
-		if (f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) f = DXGI_FORMAT_R8G8B8A8_UNORM;
-		if (f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) f = DXGI_FORMAT_B8G8R8A8_UNORM;
-		D3D11_TEXTURE2D_DESC d = {};
-		d.Width = (UINT)w;
-		d.Height = (UINT)h;
-		d.MipLevels = d.ArraySize = 1;
-		d.Format = f;
-		d.SampleDesc.Count = 1;
-		d.Usage = D3D11_USAGE_DEFAULT;
-		d.BindFlags = D3D11_BIND_RENDER_TARGET;
-		if (FAILED(g_vr.dev->CreateTexture2D(&d, nullptr, &p.tex)) || FAILED(g_vr.dev->CreateRenderTargetView(p.tex, nullptr, &p.rtv))) {
-			SafeRelease(p.tex);
+static bool RenderPanel(Panel& panel, int width, int height, const char* what, PanelDraw draw) {
+	if (!EnsureSwap(panel.swap, (uint32_t)width, (uint32_t)height, what, true)) return false;
+	if (panel.swap.w != (uint32_t)width || panel.swap.h != (uint32_t)height) return false;  // runtime limits: not supported
+	if (!panel.tex) {
+		DXGI_FORMAT format = (DXGI_FORMAT)g_vr.swapFormat;
+		if (format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		if (format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) format = DXGI_FORMAT_B8G8R8A8_UNORM;
+		D3D11_TEXTURE2D_DESC desc = {};
+		desc.Width = (UINT)width;
+		desc.Height = (UINT)height;
+		desc.MipLevels = desc.ArraySize = 1;
+		desc.Format = format;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+		if (FAILED(g_vr.device->CreateTexture2D(&desc, nullptr, &panel.tex)) || FAILED(g_vr.device->CreateRenderTargetView(panel.tex, nullptr, &panel.rtv))) {
+			SafeRelease(panel.tex);
 			return false;
 		}
-		p.shown = false;
+		panel.shown = false;
 	}
-	if (!draw(g_vr.dev, g_vr.ctx, p.rtv, w, h)) return p.shown;
-	uint32_t idx = 0;
-	XrSwapchainImageAcquireInfo ai = {};
-	ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
-	if (!XR_CHECK_FRAME(g_vr.xrAcquireSwapchainImage(p.swap.sc, &ai, &idx))) return p.shown;
-	XrSwapchainImageWaitInfo wi = {};
-	wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
-	wi.timeout = XR_INFINITE_DURATION;
-	if (!XR_CHECK_FRAME(g_vr.xrWaitSwapchainImage(p.swap.sc, &wi))) return p.shown;  // no release without a wait
-	if (idx < p.swap.count) {
-		ID3D11Resource* img = nullptr;
-		p.swap.rtv[idx]->GetResource(&img);
-		if (img) {
-			g_vr.ctx->CopyResource(img, p.tex);
-			img->Release();
+	if (!draw(g_vr.device, g_vr.context, panel.rtv, width, height)) return panel.shown;
+	uint32_t imageIndex = 0;
+	XrSwapchainImageAcquireInfo acquireInfo = {};
+	acquireInfo.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
+	if (!XR_CHECK_FRAME(g_vr.xrAcquireSwapchainImage(panel.swap.handle, &acquireInfo, &imageIndex))) return panel.shown;
+	XrSwapchainImageWaitInfo waitInfo = {};
+	waitInfo.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
+	waitInfo.timeout = XR_INFINITE_DURATION;
+	if (!XR_CHECK_FRAME(g_vr.xrWaitSwapchainImage(panel.swap.handle, &waitInfo))) return panel.shown;  // no release without a wait
+	if (imageIndex < panel.swap.count) {
+		ID3D11Resource* image = nullptr;
+		panel.swap.rtv[imageIndex]->GetResource(&image);
+		if (image) {
+			g_vr.context->CopyResource(image, panel.tex);
+			image->Release();
 		}
 	}
-	XrSwapchainImageReleaseInfo ri = {};
-	ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
-	XR_CHECK_FRAME(g_vr.xrReleaseSwapchainImage(p.swap.sc, &ri));
-	p.shown = true;
+	XrSwapchainImageReleaseInfo releaseInfo = {};
+	releaseInfo.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
+	XR_CHECK_FRAME(g_vr.xrReleaseSwapchainImage(panel.swap.handle, &releaseInfo));
+	panel.shown = true;
 	return true;
 }
 
@@ -654,71 +652,71 @@ static bool RenderPanel(Panel& p, int w, int h, const char* what, PanelDraw draw
 // it at once when changed), drawn every headset frame while open (ImGui's navigation runs per frame).
 static bool UpdateMenu(XrTime time) {
 	if (MenuTakeJustOpened()) {
-		XrSpaceLocation loc = {};
-		loc.type = XR_TYPE_SPACE_LOCATION;
-		if (XR_SUCCEEDED(g_vr.xrLocateSpace(g_vr.view, g_vr.local, time, &loc)) &&
-			(loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
-			pure::Q head{loc.pose.orientation.x, loc.pose.orientation.y, loc.pose.orientation.z, loc.pose.orientation.w};
+		XrSpaceLocation location = {};
+		location.type = XR_TYPE_SPACE_LOCATION;
+		if (XR_SUCCEEDED(g_vr.xrLocateSpace(g_vr.viewSpace, g_vr.localSpace, time, &location)) &&
+			(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+			pure::Q head{location.pose.orientation.x, location.pose.orientation.y, location.pose.orientation.z, location.pose.orientation.w};
 			pure::Q yaw;
 			bool flipped = g_vr.spaceFlipped;
-			if (!pure::level_reference(head, &flipped, &yaw)) yaw = g_vr.lastYaw;
+			if (!pure::level_reference(head, &flipped, &yaw)) yaw = g_vr.lastScreenYaw;
 			g_vr.menuYaw = yaw;
-			g_vr.menuHead = loc.pose.position;
+			g_vr.menuHeadPos = location.pose.position;
 			g_vr.menuPlaced = true;
 		}
 	}
 	if (g_vr.menuPlaced) {
-		float k = g_cfg.menuDistance / 1.1f;
-		pure::V3 off = pure::rotate(g_vr.menuYaw, {0, -0.12f * k, -g_cfg.menuDistance});
+		float scale = g_cfg.menuDistance / 1.1f;
+		pure::V3 offset = pure::rotate(g_vr.menuYaw, {0, -0.12f * scale, -g_cfg.menuDistance});
 		g_vr.menuPose.orientation = {g_vr.menuYaw.x, g_vr.menuYaw.y, g_vr.menuYaw.z, g_vr.menuYaw.w};
-		g_vr.menuPose.position = {g_vr.menuHead.x + off.x, g_vr.menuHead.y + off.y, g_vr.menuHead.z + off.z};
+		g_vr.menuPose.position = {g_vr.menuHeadPos.x + offset.x, g_vr.menuHeadPos.y + offset.y, g_vr.menuHeadPos.z + offset.z};
 	}
-	return RenderPanel(g_vr.menu, 1280, 960, "menu", MenuRender);
+	return RenderPanel(g_vr.menuPanel, 1280, 960, "menu", MenuRender);
 }
 
 // The stats overlay: new numbers twice a second, redrawn ten times a second (the graph).
 static bool UpdateOverlay() {
 	LARGE_INTEGER now;
 	QueryPerformanceCounter(&now);
-	if (!g_vr.ovStart.QuadPart) {
-		g_vr.ovStart = now;
-		g_vr.ovFrames = 0;
-		g_vr.ovGameFrames[0] = g_vr.ovGameFrames[1] = g_vr.ovGameFrames[2] = 0;
-		g_vr.ovDrawn.QuadPart = 0;
+	if (!g_vr.overlayStart.QuadPart) {
+		g_vr.overlayStart = now;
+		g_vr.overlayFrames = 0;
+		g_vr.overlayGameFrames[0] = g_vr.overlayGameFrames[1] = g_vr.overlayGameFrames[2] = 0;
+		g_vr.overlayDrawn.QuadPart = 0;
 	}
-	double secs = (double)(now.QuadPart - g_vr.ovStart.QuadPart) / (double)g_vr.qpcFreq.QuadPart;
-	OverlayStats& st = g_vr.ovStats;
+	double secs = (double)(now.QuadPart - g_vr.overlayStart.QuadPart) / (double)g_vr.qpcFrequency.QuadPart;
+	OverlayStats& stats = g_vr.overlayStats;
 	if (secs >= 0.5) {
 		AcquireSRWLockShared(&g_stereo.lock);
 		bool stereoOn = g_stereo.enabled;
 		ReleaseSRWLockShared(&g_stereo.lock);
-		snprintf(g_vr.ovMode, sizeof(g_vr.ovMode), "%s",
+		snprintf(g_vr.overlayMode, sizeof(g_vr.overlayMode), "%s",
 				 !stereoOn || g_vr.menuMode ? "flat screen" : (g_cfg.synchronized ? "synchronized" : "alternating"));
-		st.headsetFps = (float)(g_vr.ovFrames / secs);
-		for (int i = 0; i < 3; i++) st.gameFps[i] = (float)(g_vr.ovGameFrames[i] / secs);
-		st.gameW = g_vr.contentW;
-		st.gameH = g_vr.contentH;
-		st.sceneW = g_vr.sceneW;
-		st.sceneH = g_vr.sceneH;
-		UpscaleStatus(g_vr.ovUpscaler, sizeof(g_vr.ovUpscaler));
-		st.sharpX = g_vr.resPct;
-		st.sharpY = g_vr.resPctH;
-		st.poseDelayMs = g_vr.lagHave ? (float)g_vr.lagMs : -1.0f;
-		st.predictMs = (float)(g_vr.predictNs / 1e6);
-		g_vr.ovFrames = 0;
-		g_vr.ovGameFrames[0] = g_vr.ovGameFrames[1] = g_vr.ovGameFrames[2] = 0;
-		g_vr.ovStart = now;
+		stats.headsetFps = (float)(g_vr.overlayFrames / secs);
+		for (int i = 0; i < 3; i++) stats.gameFps[i] = (float)(g_vr.overlayGameFrames[i] / secs);
+		stats.gameW = g_vr.gameW;
+		stats.gameH = g_vr.gameH;
+		stats.sceneW = g_vr.sceneW;
+		stats.sceneH = g_vr.sceneH;
+		UpscaleStatus(g_vr.overlayUpscaler, sizeof(g_vr.overlayUpscaler));
+		stats.sharpX = g_vr.sharpnessPctX;
+		stats.sharpY = g_vr.sharpnessPctY;
+		stats.poseDelayMs = g_vr.poseLagValid ? (float)g_vr.poseLagMs : -1.0f;
+		stats.predictMs = (float)(g_vr.predictionNs / 1e6);
+		g_vr.overlayFrames = 0;
+		g_vr.overlayGameFrames[0] = g_vr.overlayGameFrames[1] = g_vr.overlayGameFrames[2] = 0;
+		g_vr.overlayStart = now;
 	}
-	st.mode = g_vr.ovMode;
-	st.upscaler = g_vr.ovUpscaler;
-	st.frameMs = g_vr.ovFrameMs;
-	st.frameCount = (int)(sizeof(g_vr.ovFrameMs) / sizeof(g_vr.ovFrameMs[0]));
-	st.frameOffset = g_vr.ovFrameNext;
-	bool redraw = !g_vr.overlay.shown || (double)(now.QuadPart - g_vr.ovDrawn.QuadPart) / (double)g_vr.qpcFreq.QuadPart >= 0.1;
+	stats.mode = g_vr.overlayMode;
+	stats.upscaler = g_vr.overlayUpscaler;
+	stats.frameMs = g_vr.overlayFrameMs;
+	stats.frameCount = (int)(sizeof(g_vr.overlayFrameMs) / sizeof(g_vr.overlayFrameMs[0]));
+	stats.frameOffset = g_vr.overlayFrameNext;
+	bool redraw = !g_vr.overlayPanel.shown || (double)(now.QuadPart - g_vr.overlayDrawn.QuadPart) / (double)g_vr.qpcFrequency.QuadPart >= 0.1;
 	if (!redraw) return true;
-	g_vr.ovDrawn = now;
-	return RenderPanel(g_vr.overlay, 640, 330, "stats overlay",
+	g_vr.overlayDrawn = now;
+	return RenderPanel(g_vr.overlayPanel, 640, 330, "stats overlay",
 					   [](ID3D11Device* dev, ID3D11DeviceContext* dc, ID3D11RenderTargetView* rtv, int w, int h) {
-						   return OverlayRender(dev, dc, rtv, w, h, g_vr.ovStats);
+						   return OverlayRender(dev, dc, rtv, w, h, g_vr.overlayStats);
 					   });
 }

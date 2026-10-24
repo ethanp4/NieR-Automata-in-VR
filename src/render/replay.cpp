@@ -1947,7 +1947,7 @@ void ReplayReport() {
 		char menuLine[160];
 		snprintf(menuLine, sizeof(menuLine), "Synchronized: %u of %u frames drawn twice, right eye %.1f ms CPU", s_statReplayed,
 				 s_statFrames, drawnTwice ? s_statReplayMs / drawnTwice : 0.0);
-		MenuSetInfo(3, menuLine);
+		MenuSetInfo(INFO_SYNCHRONIZED, menuLine);
 	}
 	s_statFrames = s_statReplayed = s_statCancelled = s_statNoCamera = 0;
 	s_statReplayMs = s_statReplayMaxMs = s_statCopyMs = s_statCommands = s_statBytes = s_statShadowDrawsSkipped = 0;

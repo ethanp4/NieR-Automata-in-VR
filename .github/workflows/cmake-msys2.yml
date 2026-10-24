@@ -82,9 +82,6 @@ jobs:
       - name: Build
         run: cmake --build build
 
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-
       - name: Package
         run: |
           cmake --install build
@@ -100,6 +97,9 @@ jobs:
           path: |
             dist/
             build/d3d11.map
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
 
       - if: needs.version.outputs.tag != ''
         uses: actions/upload-artifact@v4
@@ -139,11 +139,9 @@ jobs:
           -DNIERVR_DLSS=OFF
 
       - name: Format check
-        continue-on-error: true
         run: cmake --build build --target format-check
 
       - name: clang-tidy
-        continue-on-error: true
         run: cmake --build build --target tidy
 
   release:

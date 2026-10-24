@@ -1,3 +1,4 @@
+// config.h - the mod's settings (g_cfg), loaded from NieRVR.ini (config.cpp).
 #pragma once
 #include <windows.h>
 

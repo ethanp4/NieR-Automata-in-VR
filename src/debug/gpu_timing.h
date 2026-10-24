@@ -4,7 +4,7 @@
 
 void GpuTimingFrameStart(ID3D11DeviceContext* c);
 void GpuTimingMark(ID3D11DeviceContext* c, const char* label);
-void GpuTimingTargets(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv,
+void GpuTimingTargets(ID3D11DeviceContext* c, UINT count, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv,
 					  const char* prefix);
 void GpuTimingCompute(ID3D11DeviceContext* c, const char* prefix, int kind);
 void GpuTimingDraw();
