@@ -1,7 +1,4 @@
-// frame_capture.cpp - press [Debug] CaptureKey (F11) in game: the next complete frame of the game's
-// D3D11 activity (constant-buffer contents, shader binds, draws, render targets, shader bytecode) is
-// written to NieRVR_capture_N.bin, and likely projection matrices are summarised in the log.
-// tools/analyze_capture.py reads the file.
+// frame_capture.cpp - [Debug] F11: records the next frame's D3D11 activity to NieRVR_capture_N.bin (tools/analyze_capture.py).
 #include "debug/frame_capture.h"
 #include "core/com.h"
 #include "core/locks.h"

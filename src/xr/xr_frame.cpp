@@ -14,9 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 
-// ---------------------------------------------------------------------------------------------
 // Screen placement & hotkeys
-// ---------------------------------------------------------------------------------------------
 bool GameIsForeground() {
 	HWND window = GetForegroundWindow();
 	DWORD pid = 0;
@@ -379,6 +377,7 @@ void Frame() {
 	HandleHotkeys();
 	VrInputSync(g_vr.state == XR_SESSION_STATE_FOCUSED, GameIsForeground());
 	VrInputMotion(g_vr.localSpace, g_vr.viewSpace, frameState.predictedDisplayTime, g_vr.state == XR_SESSION_STATE_FOCUSED, g_vr.spaceFlipped);
+	VrInputFingers(g_vr.localSpace, frameState.predictedDisplayTime);
 	MenuTick(GameIsForeground());
 	if (MenuTakeRecenter()) g_vr.recenterRequested = true;
 	UpdateEyePoses(frameState.predictedDisplayTime);
@@ -387,14 +386,12 @@ void Frame() {
 		if (!g_vr.screenPlaced || g_vr.recenterRequested) PlaceScreen(frameState.predictedDisplayTime);
 		UpdateContent();
 		MeasureUICoverage();
-		AcquireSRWLockShared(&g_stereo.lock);
-		bool stereoOn = g_stereo.enabled;
-		ReleaseSRWLockShared(&g_stereo.lock);
 		auto& left = g_vr.views[0];
 		auto& right = g_vr.views[1];
 		auto& mono = g_vr.views[2];
-		// Stereo when both eyes have rendered recently and are newer than any flat frame.
-		bool stereo = stereoOn && !g_vr.menuMode && left.hasFrame && right.hasFrame && left.tag.patched && right.tag.patched && left.seq > mono.seq && right.seq > mono.seq;
+		// Stereo while both eyes are newer than any flat frame: a menu (or F12) turns the screen flat with the
+		// game's first flat frame, not before (the eye frames still on their way would flash on the flat screen).
+		bool stereo = left.hasFrame && right.hasFrame && left.tag.patched && right.tag.patched && left.seq > mono.seq && right.seq > mono.seq;
 		// Late warp: both eyes are submitted with the headset's own pose pair and field
 		// of view for this frame, each image re-aimed to it here. Runtimes that stream to the headset
 		// (Pico Connect, Steam Link, ...) assume one head pose per frame and images that cover exactly
@@ -404,7 +401,8 @@ void Frame() {
 		bool lateWarp = stereo && g_cfg.lateWarp && g_vr.lateWarpPs && g_vr.displayViewsValid;
 		// the image the eyes show: the scene-only one (upscaled or not) when both eyes have it
 		const bool scene = left.tag.hasScene && right.tag.hasScene;
-		const UINT imgW = scene ? g_vr.sceneW : g_vr.gameW, imgH = scene ? g_vr.sceneH : g_vr.gameH;
+		// Eye swapchains sized from the scene image even for frames without one (stretched), so they aren't rebuilt
+		const UINT imgW = g_vr.sceneW ? g_vr.sceneW : g_vr.gameW, imgH = g_vr.sceneH ? g_vr.sceneH : g_vr.gameH;
 		uint32_t eyeW[2] = {imgW, imgW}, eyeH[2] = {imgH, imgH};
 		if (lateWarp)
 			for (int eye = 0; eye < 2; eye++) {
@@ -556,9 +554,9 @@ void Frame() {
 				}
 			}
 		} else {
-			// Flat screen: the most recent frame of any kind.
-			int newest = -1;
-			for (int i = 0; i < 3; i++)
+			// Flat screen: the flat frame while it is newer than an eye (switching to or from flat), else the newest eye
+			int newest = mono.hasFrame && (mono.seq > left.seq || mono.seq > right.seq) ? 2 : -1;
+			for (int i = 0; i < 2 && newest < 0; i++)
 				if (g_vr.views[i].hasFrame && (newest < 0 || g_vr.views[i].seq > g_vr.views[newest].seq)) newest = i;
 			if (g_vr.screenPlaced && newest >= 0 && EnsureSwap(g_vr.screenSwap, g_vr.gameW, g_vr.gameH, "screen") &&
 				RenderInto(g_vr.screenSwap, g_vr.views[newest].srv)) {

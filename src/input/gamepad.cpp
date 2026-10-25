@@ -7,9 +7,7 @@
 #include "input/gamepad.h"
 
 namespace {
-// ---------------------------------------------------------------------------------------------
 // XInput
-// ---------------------------------------------------------------------------------------------
 // The same hooks also hand the VR controllers to the game as the first gamepad (vr_controllers.cpp):
 // their state is merged into what pad 0 reports (a real pad keeps working), pad 0 reads as
 // connected while the VR controllers are in use, and the game's rumble goes to them.
@@ -37,6 +35,16 @@ void MergeVrPad(XINPUT_GAMEPAD& pad, const XINPUT_GAMEPAD& vr) {
 	if (lengthSq(vr.sThumbRX, vr.sThumbRY) > lengthSq(pad.sThumbRX, pad.sThumbRY)) pad.sThumbRX = vr.sThumbRX, pad.sThumbRY = vr.sThumbRY;
 }
 
+std::atomic<DWORD> s_attackTick;
+WORD s_lastAttackButtons;
+
+// An attack button going down (first person turns the character to where you look: game/player.cpp).
+void NoteAttacks(const XINPUT_GAMEPAD& pad) {
+	WORD attack = pad.wButtons & (XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y);
+	if (attack & ~s_lastAttackButtons) s_attackTick = GetTickCount();
+	s_lastAttackButtons = attack;
+}
+
 DWORD FilterState(DWORD user, DWORD result, XINPUT_STATE* state) {
 	if (!state) return result;
 	XINPUT_GAMEPAD vr;
@@ -57,6 +65,7 @@ DWORD FilterState(DWORD user, DWORD result, XINPUT_STATE* state) {
 	}
 	// Block input when mod menu is open
 	if (result == ERROR_SUCCESS && g_blockPad) state->Gamepad = {};
+	if (user == 0 && result == ERROR_SUCCESS) NoteAttacks(state->Gamepad);
 	return result;
 }
 template <int I>
@@ -147,6 +156,8 @@ void InstallGamepad() {
 
 // Call ReadPhysicalPad, then get VR controller inputs and return the two combined
 // Only called from the mod menu
+DWORD GamepadAttackTick() { return s_attackTick; }
+
 bool ReadGamepad(XINPUT_GAMEPAD* out) {
 	bool found = ReadPhysicalPad(out);
 	if (!found) *out = {};

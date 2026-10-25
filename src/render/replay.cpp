@@ -7,7 +7,7 @@
 #include "core/log.h"
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
-#include "render/hud_layer.h"
+#include "ui/hud_layer.h"
 #include "render/viewfix.h"
 #include "ui/menu.h"
 #include <atomic>
@@ -389,9 +389,7 @@ struct UpdateCommand {
 };
 }  // namespace
 
-// ---------------------------------------------------------------------------------------------
 // Recorder entry points (called from the hooks before the original call, lock taken inside)
-// ---------------------------------------------------------------------------------------------
 struct SlotRange {  // payload of Set{CB,SRV,Samp} and similar: start, count, then pointers
 	uint32_t start, count;
 };
@@ -662,9 +660,7 @@ void RecUpdate(ID3D11Resource* res, UINT sub, const D3D11_BOX* box, const void* 
 	HoldRef(res);
 }
 
-// ---------------------------------------------------------------------------------------------
 // Hooks for the context methods d3d_hooks.cpp doesn't hook already
-// ---------------------------------------------------------------------------------------------
 namespace {
 typedef void(STDMETHODCALLTYPE* PFN_SetSlots)(ID3D11DeviceContext* c, UINT, UINT, void* const*);
 typedef void(STDMETHODCALLTYPE* PFN_SetShader)(ID3D11DeviceContext* c, void*, ID3D11ClassInstance* const*, UINT);
@@ -1288,9 +1284,7 @@ void ApplyPipelineState(ID3D11DeviceContext* c, const PipelineState& state) {
 	c->SetPredication(state.predicate, state.predicateValue);
 }
 
-// ---------------------------------------------------------------------------------------------
 // Playback
-// ---------------------------------------------------------------------------------------------
 template <typename T>
 T Read(const uint8_t* payload, size_t offset) {
 	T value;
@@ -1690,9 +1684,7 @@ void PlayRecording(ID3D11DeviceContext* c) {
 }
 }  // namespace
 
-// ---------------------------------------------------------------------------------------------
 // Public API
-// ---------------------------------------------------------------------------------------------
 void ReplayInstall(ID3D11DeviceContext* ctx) {
 	static bool installed;
 	if (installed) return;

@@ -1,6 +1,4 @@
-// shader_table.cpp - every shader the game creates (d3d_hooks.cpp's Create*Shader hooks), with a copy
-// of its bytecode. Passes are recognised by the cbuffer and variable names in the bytecode's
-// reflection data.
+// shader_table.cpp - every shader the game creates, with a copy of its bytecode and which pass it belongs to.
 #include "render/shader_table.h"
 #include "core/locks.h"
 #include "core/pure.h"

@@ -9,9 +9,7 @@
 
 namespace pure {
 
-// ---------------------------------------------------------------------------------------------
 // Text
-// ---------------------------------------------------------------------------------------------
 // Finds `"key"` in a JSON text and copies its string value (with JSON escapes decoded) to out.
 // Good enough for OpenXR runtime manifests; not a general JSON parser.
 inline bool json_find_string(const char* json, size_t jsonLen, const char* key, char* out, size_t outCap) {
@@ -126,12 +124,10 @@ inline uint32_t dxbc_sampled_textures(const uint8_t* b, size_t len) {
 	return 0;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Perspective projection detection (camera probe)
 // m is 16 consecutive floats as found in a constant buffer.
 //   row-major  (mul(v, M)):  w comes from column 3:  m[3]=m[7]=m[15]=0, m[11]=+-1
 //   column-major (mul(M, v)): w comes from row 3:    m[12]=m[13]=m[15]=0, m[14]=+-1
-// ---------------------------------------------------------------------------------------------
 struct ProjInfo {
 	bool rowMajor;
 	float sx, sy;  // focal scales: 1/tan(half fov)
@@ -305,19 +301,6 @@ inline int headset_sizes(uint32_t fullW, uint32_t fullH, const uint32_t* listed,
 		n++;
 	}
 	return n;
-}
-
-// First person (camera.cpp, culling.cpp): where your eyes go, from the game camera's look-at (eye ->
-// target, the point it follows: around 2B): the target, `height` up (+Y) and `forward` along the
-// camera's horizontal facing. False when the camera looks straight up or down.
-inline bool first_person_pos(const float eye[3], const float target[3], float height, float forward, float out[3]) {
-	float fx = target[0] - eye[0], fz = target[2] - eye[2];
-	float l = fsqrt(fx * fx + fz * fz);
-	if (!(l > 1e-4f)) return false;
-	out[0] = target[0] + fx / l * forward;
-	out[1] = target[1] + height;
-	out[2] = target[2] + fz / l * forward;
-	return true;
 }
 
 // Upscaling (upscale.cpp): the i-th number (i >= 1) of the Halton sequence in base b, in [0, 1).

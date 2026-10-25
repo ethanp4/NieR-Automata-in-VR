@@ -206,9 +206,7 @@ bool InitDevice() {
 }
 
 namespace {
-// ---------------------------------------------------------------------------------------------
 // Game frame -> our device
-// ---------------------------------------------------------------------------------------------
 void ReleaseContent() {
 	for (auto& texture : g_vr.ring) SafeRelease(texture);
 	for (auto& texture : g_vr.ringScene) SafeRelease(texture);
@@ -437,6 +435,8 @@ void Blit(ID3D11RenderTargetView* rtv, uint32_t width, uint32_t height, ID3D11Sh
 namespace {
 
 constexpr int32_t kCovW = 64, kCovH = 36;
+// Only UI covering (nearly) the whole screen is a menu shown flat; popups and text boxes stay on the HUD layer over the 3D scene
+constexpr float kMenuCoverage = 0.9f, kGameplayCoverage = 0.6f;
 
 bool EnsureCoverageTargets() {
 	if (g_vr.coverageTex) return true;
@@ -495,9 +495,9 @@ void MeasureUICoverage() {
 		g_vr.statCoverageCount++;
 		if (coverage > g_vr.statCoverageMax) g_vr.statCoverageMax = coverage;
 		// Coverage is the UI's real opacity (> 50% per sample point).
-		if (coverage > 0.30f)
+		if (coverage > kMenuCoverage)
 			g_vr.menuVotes = g_vr.menuVotes < 0 ? 1 : g_vr.menuVotes + 1;
-		else if (coverage < 0.15f)
+		else if (coverage < kGameplayCoverage)
 			g_vr.menuVotes = g_vr.menuVotes > 0 ? -1 : g_vr.menuVotes - 1;
 		// Into the flat menu only after ~0.75 s of mostly-UI frames (full-screen damage flashes
 		// are shorter), out again quickly.

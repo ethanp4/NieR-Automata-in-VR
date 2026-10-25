@@ -4,9 +4,7 @@
 
 namespace pure {
 
-// ---------------------------------------------------------------------------------------------
 // Math (OpenXR conventions: right-handed, +Y up, -Z forward)
-// ---------------------------------------------------------------------------------------------
 struct V3 {
 	float x, y, z;
 };
@@ -46,11 +44,9 @@ inline bool yaw_from_forward(V3 fwd, Q* out) {
 	return true;
 }
 
-// ---------------------------------------------------------------------------------------------
 // 4x4 matrices in NieR's convention: column vectors (p' = M p), stored row by row
 // (m[r*4+c]); translation in m[3], m[7], m[11]. Right-handed, +Y up, camera looks down -Z,
 // which matches OpenXR's conventions.
-// ---------------------------------------------------------------------------------------------
 struct M4 {
 	float m[16];
 	float& at(int r, int c) { return m[r * 4 + c]; }
@@ -197,6 +193,20 @@ inline float fatan(float x) {
 	float r = x * (0.99997726f + x2 * (-0.33262347f + x2 * (0.19354346f + x2 * (-0.11643287f + x2 * (0.05265332f + x2 * -0.01172120f)))));
 	if (inv) r = 1.5707963f - r;
 	return neg ? -r : r;
+}
+
+inline constexpr float kPi = 3.14159265f;
+inline float wrap_angle(float radians) {  // to -pi..pi
+	while (radians > kPi) radians -= 2 * kPi;
+	while (radians < -kPi) radians += 2 * kPi;
+	return radians;
+}
+// The yaw of a direction (radians about +y; 0 = +z, a character's forward in their bind pose; positive turns towards +x).
+inline float yaw_of(V3 forward) {
+	float x = forward.x, z = forward.z;
+	if ((z < 0 ? -z : z) < 1e-6f) return x > 0 ? kPi / 2 : (x < 0 ? -kPi / 2 : 0);
+	float yaw = fatan(x / z);
+	return z > 0 ? yaw : wrap_angle(yaw + kPi);
 }
 
 // sin and cos for |x| <= pi/2 (Taylor series, rel. error < 1e-6).

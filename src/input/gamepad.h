@@ -8,3 +8,4 @@ extern std::atomic<bool> g_blockPad;  // the menu is open: the game sees a neutr
 
 void InstallGamepad();
 bool ReadGamepad(XINPUT_GAMEPAD* out);
+DWORD GamepadAttackTick();  // when an attack button (X light, Y heavy) last went down on the pad the game reads (0: never)

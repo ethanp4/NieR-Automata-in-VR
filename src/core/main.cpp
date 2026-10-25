@@ -20,9 +20,7 @@ INIT_ONCE s_initOnce = INIT_ONCE_STATIC_INIT;
 }  // namespace
 std::atomic<bool> g_initDone;
 
-// ---------------------------------------------------------------------------------------------
 // Small helpers
-// ---------------------------------------------------------------------------------------------
 void DescribeAddress(void* addr, char* out, size_t cap) {
 	HMODULE module = nullptr;
 	wchar_t name[MAX_PATH] = L"?";
@@ -40,11 +38,9 @@ void DescribeAddress(void* addr, char* out, size_t cap) {
 	}
 }
 
-// ---------------------------------------------------------------------------------------------
 // Crash reporting.
 // The report is produced on a dedicated thread with its own stack, so it also works for stack
 // overflows (where the crashing thread has no stack left to run anything).
-// ---------------------------------------------------------------------------------------------
 typedef BOOL(WINAPI* PFN_MiniDumpWriteDump)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE, PMINIDUMP_EXCEPTION_INFORMATION,
 											PMINIDUMP_USER_STREAM_INFORMATION, PMINIDUMP_CALLBACK_INFORMATION);
 
@@ -160,9 +156,7 @@ void InstallCrashHandler() {
 	if (prev != CrashFilter) s_prevFilter = prev;  // re-installing must not make us call ourselves
 }
 
-// ---------------------------------------------------------------------------------------------
 // Environment info for the log
-// ---------------------------------------------------------------------------------------------
 typedef LONG(WINAPI* PFN_RtlGetVersion)(OSVERSIONINFOW*);
 
 namespace {

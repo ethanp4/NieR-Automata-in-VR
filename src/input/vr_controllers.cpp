@@ -4,6 +4,7 @@
 #include "core/config.h"
 #include "core/log.h"
 #include "core/pure.h"
+#include "input/finger_curl.h"
 #include "input/waggle.h"
 #include "ui/menu.h"
 #include "xr/openxr.h"
@@ -46,6 +47,8 @@ enum Action { ACT_STICK,
 			  ACT_MENU,
 			  ACT_RUMBLE,
 			  ACT_HAND_POSE,
+			  ACT_TRIGGER_TOUCH,  // finger curls (first person's hands)
+			  ACT_THUMB_TOUCH,
 			  ACT_COUNT };
 XrInstance s_instance;
 XrActionSet s_actionSet;
@@ -84,6 +87,25 @@ LastHand s_lastHand[2];
 HandPeaks s_handPeaks[2] = {{-1, -1, -1, -1}, {-1, -1, -1, -1}};
 XrVector3f s_lastVel[2], s_lastSpin[2];
 bool s_lastVelValid[2], s_lastSpinValid[2];
+
+// Finger curls (first person's hands): from hand tracking (XR_EXT_hand_tracking: SteamVR's Index finger
+// tracking, hands without controllers) when the runtime gives it, else from the buttons.
+struct {
+	PFN_xrCreateHandTrackerEXT xrCreateHandTrackerEXT;
+	PFN_xrDestroyHandTrackerEXT xrDestroyHandTrackerEXT;
+	PFN_xrLocateHandJointsEXT xrLocateHandJointsEXT;
+} s_handXr;
+XrHandTrackerEXT s_handTracker[2];
+constexpr float kButtonSmoothing = 0.35f;  // of the way to the buttons' curls each frame
+constexpr DWORD kFingersFreshMs = 250;
+SRWLOCK s_fingerLock = SRWLOCK_INIT;
+struct Fingers {
+	bool valid;
+	bool fromJoints;
+	pure::FingerCurls curls;
+	DWORD tick;
+} s_fingers[2];
+int32_t s_loggedFingerSource[2] = {-1, -1};  // 0 buttons, 1 hand tracking
 
 // Keyboard / mouse handoff: a key or mouse button pressed in the game pauses the VR
 // controllers (the game sees a neutral pad, no rumble) until a button, trigger or stick on them is
@@ -151,13 +173,16 @@ struct Binding {
 	Action action;
 	const char* path;
 };
-template <int N>
-void SuggestBindings(const char* profile, const Binding (&bindings)[N]) {
-	XrActionSuggestedBinding suggested[N];
+// A profile's bindings, plus its finger touches (a path a profile doesn't have refuses all of them: kept apart).
+template <int N, int F = 1>
+void SuggestBindings(const char* profile, const Binding (&bindings)[N], const Binding (*fingers)[F] = nullptr) {
+	XrActionSuggestedBinding suggested[N + F];
 	int count = 0;
-	for (int i = 0; i < N; i++) {
-		XrPath path = ToPath(bindings[i].path);
-		if (path != XR_NULL_PATH) suggested[count++] = {s_actions[bindings[i].action], path};
+	for (int i = 0; i < N + F; i++) {
+		if (i >= N && !fingers) break;
+		const Binding& binding = i < N ? bindings[i] : (*fingers)[i - N];
+		XrPath path = ToPath(binding.path);
+		if (path != XR_NULL_PATH) suggested[count++] = {s_actions[binding.action], path};
 	}
 	XrInteractionProfileSuggestedBinding info = {};
 	info.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
@@ -190,6 +215,18 @@ constexpr Binding kTouch[] = {
 	{ACT_HAND_POSE, L "input/grip/pose"},
 	{ACT_HAND_POSE, R "input/grip/pose"},
 };
+constexpr Binding kTouchFingers[] = {
+	{ACT_TRIGGER_TOUCH, L "input/trigger/touch"},
+	{ACT_TRIGGER_TOUCH, R "input/trigger/touch"},
+	{ACT_THUMB_TOUCH, L "input/thumbstick/touch"},
+	{ACT_THUMB_TOUCH, R "input/thumbstick/touch"},
+	{ACT_THUMB_TOUCH, L "input/x/touch"},
+	{ACT_THUMB_TOUCH, L "input/y/touch"},
+	{ACT_THUMB_TOUCH, R "input/a/touch"},
+	{ACT_THUMB_TOUCH, R "input/b/touch"},
+	{ACT_THUMB_TOUCH, L "input/thumbrest/touch"},
+	{ACT_THUMB_TOUCH, R "input/thumbrest/touch"},
+};
 constexpr Binding kIndex[] = {
 	{ACT_STICK, L "input/thumbstick"},
 	{ACT_STICK, R "input/thumbstick"},
@@ -208,6 +245,23 @@ constexpr Binding kIndex[] = {
 	{ACT_RUMBLE, R "output/haptic"},
 	{ACT_HAND_POSE, L "input/grip/pose"},
 	{ACT_HAND_POSE, R "input/grip/pose"},
+};
+constexpr Binding kIndexFingers[] = {
+	{ACT_TRIGGER_TOUCH, L "input/trigger/touch"},
+	{ACT_TRIGGER_TOUCH, R "input/trigger/touch"},
+	{ACT_THUMB_TOUCH, L "input/thumbstick/touch"},
+	{ACT_THUMB_TOUCH, R "input/thumbstick/touch"},
+	{ACT_THUMB_TOUCH, L "input/a/touch"},
+	{ACT_THUMB_TOUCH, R "input/a/touch"},
+	{ACT_THUMB_TOUCH, L "input/b/touch"},
+	{ACT_THUMB_TOUCH, R "input/b/touch"},
+	{ACT_THUMB_TOUCH, L "input/trackpad/touch"},
+	{ACT_THUMB_TOUCH, R "input/trackpad/touch"},
+};
+// Vive wands and WMR controllers: only the trackpad says where your thumb is.
+constexpr Binding kTrackpadFingers[] = {
+	{ACT_THUMB_TOUCH, L "input/trackpad/touch"},
+	{ACT_THUMB_TOUCH, R "input/trackpad/touch"},
 };
 
 constexpr Binding kVive[] = {
@@ -344,7 +398,7 @@ void LogProfiles() {
 }  // namespace
 
 // After xrCreateInstance: actions and suggested bindings (must come before the session attaches).
-void VrInputInit(PFN_xrGetInstanceProcAddr getProcAddr, XrInstance instance, bool pico) {
+void VrInputInit(PFN_xrGetInstanceProcAddr getProcAddr, XrInstance instance, bool pico, bool handTracking) {
 	s_actionsReady = false;
 	s_instance = instance;
 	bool ok = true;
@@ -352,6 +406,18 @@ void VrInputInit(PFN_xrGetInstanceProcAddr getProcAddr, XrInstance instance, boo
 	if (XR_FAILED(getProcAddr(instance, #n, (PFN_xrVoidFunction*)&s_xr.n)) || !s_xr.n) ok = false;
 	XR_INPUT_FUNCS(LOAD)
 #undef LOAD
+	s_handXr = {};
+	if (handTracking) {
+		bool loaded = true;
+#define LOAD(n) \
+	if (XR_FAILED(getProcAddr(instance, #n, (PFN_xrVoidFunction*)&s_handXr.n)) || !s_handXr.n) loaded = false;
+		LOAD(xrCreateHandTrackerEXT)
+		LOAD(xrDestroyHandTrackerEXT)
+		LOAD(xrLocateHandJointsEXT)
+#undef LOAD
+		if (!loaded) s_handXr = {};
+		Log("vr controllers: hand tracking %s", loaded ? "available (finger curls from it)" : "functions missing (finger curls from the buttons)");
+	}
 	if (!ok) {
 		Log("vr controllers: OpenXR input functions missing; controllers not used");
 		return;
@@ -374,15 +440,17 @@ void VrInputInit(PFN_xrGetInstanceProcAddr getProcAddr, XrInstance instance, boo
 		 MakeAction(ACT_UPPER_BUTTON, XR_ACTION_TYPE_BOOLEAN_INPUT, "button_upper", "B / Y") &&
 		 MakeAction(ACT_MENU, XR_ACTION_TYPE_BOOLEAN_INPUT, "menu", "Menu (Start / Back / D-pad)") &&
 		 MakeAction(ACT_RUMBLE, XR_ACTION_TYPE_VIBRATION_OUTPUT, "rumble", "Rumble") &&
-		 MakeAction(ACT_HAND_POSE, XR_ACTION_TYPE_POSE_INPUT, "hand", "Hand position (motion controls)");
+		 MakeAction(ACT_HAND_POSE, XR_ACTION_TYPE_POSE_INPUT, "hand", "Hand position (motion controls)") &&
+		 MakeAction(ACT_TRIGGER_TOUCH, XR_ACTION_TYPE_BOOLEAN_INPUT, "trigger_touch", "Finger on the trigger (first person's hands)") &&
+		 MakeAction(ACT_THUMB_TOUCH, XR_ACTION_TYPE_BOOLEAN_INPUT, "thumb_touch", "Thumb on a button or stick (first person's hands)");
 	if (!ok) {
 		Log("vr controllers: could not create the actions");
 		return;
 	}
-	SuggestBindings("/interaction_profiles/oculus/touch_controller", kTouch);
-	SuggestBindings("/interaction_profiles/valve/index_controller", kIndex);
-	SuggestBindings("/interaction_profiles/htc/vive_controller", kVive);
-	SuggestBindings("/interaction_profiles/microsoft/motion_controller", kWmr);
+	SuggestBindings("/interaction_profiles/oculus/touch_controller", kTouch, &kTouchFingers);
+	SuggestBindings("/interaction_profiles/valve/index_controller", kIndex, &kIndexFingers);
+	SuggestBindings("/interaction_profiles/htc/vive_controller", kVive, &kTrackpadFingers);
+	SuggestBindings("/interaction_profiles/microsoft/motion_controller", kWmr, &kTrackpadFingers);
 	if (pico) SuggestBindings("/interaction_profiles/bytedance/pico4_controller", kTouch);
 	SuggestBindings("/interaction_profiles/khr/simple_controller", kSimple);
 	s_actionsReady = true;
@@ -417,6 +485,18 @@ void VrInputAttach(XrSession session) {
 		s_swings[hand] = {};
 		s_lastHand[hand] = {};
 	}
+	if (s_handXr.xrCreateHandTrackerEXT) {
+		for (int hand = 0; hand < 2; hand++) {
+			XrHandTrackerCreateInfoEXT trackerInfo = {XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT};
+			trackerInfo.hand = hand ? XR_HAND_RIGHT_EXT : XR_HAND_LEFT_EXT;
+			trackerInfo.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+			XrResult result = s_handXr.xrCreateHandTrackerEXT(session, &trackerInfo, &s_handTracker[hand]);
+			if (XR_FAILED(result)) {
+				s_handTracker[hand] = XR_NULL_HANDLE;
+				Log("vr controllers: no %s hand tracker (%d): its finger curls come from the buttons", hand ? "right" : "left", (int)result);
+			}
+		}
+	}
 	Log("motion controls: %s, %s sensitivity, %s", g_cfg.motionControls ? "on" : "off", g_cfg.swingSensitivity ? "normal" : "relaxed",
 		kStabAttacks ? "slashes and stabs attack" : "only slashes attack (stabs off)");
 }
@@ -426,6 +506,12 @@ void VrInputDetach() {
 		if (s_handSpace[hand]) s_xr.xrDestroySpace(s_handSpace[hand]);
 		s_handSpace[hand] = XR_NULL_HANDLE;
 		s_attackHeldUntil[hand] = 0;
+		if (s_handTracker[hand]) s_handXr.xrDestroyHandTrackerEXT(s_handTracker[hand]);
+		s_handTracker[hand] = XR_NULL_HANDLE;
+	}
+	{
+		ExclusiveLock guard(&s_fingerLock);
+		s_fingers[0].valid = s_fingers[1].valid = false;
 	}
 	s_attached = false;
 	s_session = XR_NULL_HANDLE;
@@ -657,6 +743,70 @@ void VrInputTakeHandPeaks(HandPeaks out[2]) {
 		out[hand] = s_handPeaks[hand];
 		s_handPeaks[hand] = {-1, -1, -1, -1};
 	}
+}
+
+namespace {
+// A hand's finger curls from its hand tracker (false: no tracker, or it isn't tracking the hand now).
+bool CurlsFromJoints(int hand, XrSpace base, XrTime time, pure::FingerCurls* out) {
+	if (!s_handTracker[hand] || !base) return false;
+	XrHandJointLocationEXT joints[XR_HAND_JOINT_COUNT_EXT];
+	XrHandJointLocationsEXT locations = {XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
+	locations.jointCount = XR_HAND_JOINT_COUNT_EXT;
+	locations.jointLocations = joints;
+	XrHandJointsLocateInfoEXT locateInfo = {XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
+	locateInfo.baseSpace = base;
+	locateInfo.time = time;
+	if (XR_FAILED(s_handXr.xrLocateHandJointsEXT(s_handTracker[hand], &locateInfo, &locations)) || !locations.isActive) return false;
+	pure::V3 positions[pure::kHandJoints];
+	for (int joint = 0; joint < pure::kHandJoints; joint++) {
+		if (!(joints[joint].locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)) return false;
+		positions[joint] = ToV3(joints[joint].pose.position);
+	}
+	*out = pure::finger_curls_from_joints(positions);
+	return true;
+}
+
+// A hand's finger curls from its buttons (false: the controller isn't active).
+bool CurlsFromButtons(int hand, pure::FingerCurls* out) {
+	bool active = false;
+	pure::FingerButtons buttons = {};
+	buttons.trigger = GetFloat(ACT_TRIGGER, hand, &active);
+	if (!active) return false;
+	buttons.squeeze = GetFloat(ACT_GRIP, hand);
+	buttons.triggerTouch = GetBool(ACT_TRIGGER_TOUCH, hand);
+	buttons.thumbTouch = GetBool(ACT_THUMB_TOUCH, hand);
+	*out = pure::finger_curls_from_buttons(buttons);
+	return true;
+}
+}  // namespace
+
+void VrInputFingers(XrSpace base, XrTime time) {
+	if (!s_attached) return;
+	for (int hand = 0; hand < 2; hand++) {
+		pure::FingerCurls curls;
+		bool fromJoints = CurlsFromJoints(hand, base, time, &curls);
+		if (!fromJoints && !CurlsFromButtons(hand, &curls)) continue;
+		if (s_loggedFingerSource[hand] != (int32_t)fromJoints) {
+			s_loggedFingerSource[hand] = fromJoints;
+			Log("vr controllers: %s hand's fingers from %s", hand ? "right" : "left", fromJoints ? "hand tracking" : "the buttons");
+		}
+		ExclusiveLock guard(&s_fingerLock);
+		Fingers& fingers = s_fingers[hand];
+		bool fresh = fingers.valid && fingers.fromJoints == fromJoints && GetTickCount() - fingers.tick < kFingersFreshMs;
+		fingers.curls = fresh && !fromJoints ? pure::smooth_curls(fingers.curls, curls, kButtonSmoothing) : curls;
+		fingers.valid = true;
+		fingers.fromJoints = fromJoints;
+		fingers.tick = GetTickCount();
+	}
+}
+
+bool VrInputFingerCurls(int hand, float out[5]) {
+	if (hand < 0 || hand > 1) return false;
+	SharedLock guard(&s_fingerLock);
+	const Fingers& fingers = s_fingers[hand];
+	if (!fingers.valid || GetTickCount() - fingers.tick > kFingersFreshMs) return false;
+	for (int finger = 0; finger < pure::FINGER_COUNT; finger++) out[finger] = fingers.curls.curl[finger];
+	return true;
 }
 
 bool VrInputLocateHand(int hand, XrSpace base, XrTime time, XrPosef* out) {

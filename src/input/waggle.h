@@ -1,12 +1,4 @@
-// waggle.h - motion controls: a slash or a stab of one hand, from its pose and velocities (vr_controllers.cpp).
-//
-// After BetterVR's weapon motion analyser (BotW). The hand's motion is measured in the controller's own
-// frame: -Z is where the fist points, so a stab moves along -Z and a slash turns about X or Y (a twist
-// about Z doesn't count). A short streak of good samples locks an attack; it fires once the hand has
-// travelled far enough (an angle for a slash, a distance for a stab); bad samples (the turning axis
-// wobbling, slowing down, leaving the stab direction) end it. After an attack the hand's way back to
-// guard can't fire again for a moment.
-// credit to https://github.com/Crementif/BotW-BetterVR with love
+// waggle.h - motion controls: a slash or a stab of one hand (vr_controllers.cpp); after BetterVR's motion analyser, https://github.com/Crementif/BotW-BetterVR, with love.
 #pragma once
 #include <math.h>
 #include <stdint.h>

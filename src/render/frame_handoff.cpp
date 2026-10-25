@@ -14,11 +14,12 @@
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
 #include "render/d3d_hooks.h"
-#include "render/first_person.h"
+#include "game/first_person.h"
+#include "game/game_state.h"
 #include "render/extra_resolutions.h"
 #include "render/frame_share.h"
 #include "render/game_effects.h"
-#include "render/hud_layer.h"
+#include "ui/hud_layer.h"
 #include "render/replay.h"
 #include "render/reproject.h"
 #include "render/upscale.h"
@@ -46,7 +47,6 @@ constexpr int32_t kResizeBuffersIndex = 13;
 PFN_ResizeBuffers o_ResizeBuffers;
 std::atomic<int32_t> s_resizeLogs;
 
-// ---------------------------------------------------------------------------------------------
 // Game-side capture state (only touched at nesting depth 0 on the presenting thread)
 //
 // The VR thread owns a ring of kRingSize shared textures. Each frame the backbuffer is copied into
@@ -55,7 +55,6 @@ std::atomic<int32_t> s_resizeLogs;
 // use keyed mutexes (DXGI 1.0 factory), so the query is the synchronisation: a slot is rewritten
 // once the ring comes round to it again (several game frames), normally long after the VR thread
 // has copied it (nothing checks that it has).
-// ---------------------------------------------------------------------------------------------
 ID3D11Device* s_device;
 ID3D11DeviceContext* s_context;
 ID3D11Texture2D* s_ring[kRingSize];
@@ -417,6 +416,7 @@ HRESULT PresentCommon(int hookIndex, void* returnAddress, IDXGISwapChain* swapCh
 			CaptureBeforePresent();
 			CodeDumpPoll();
 			PositionFinderPoll();
+			GameStatePoll();
 			CaptureFrame(swapChain);
 			if (s_context) GpuTimingFrameEnd(s_context);
 		}

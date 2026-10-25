@@ -281,88 +281,19 @@ constexpr Setting kSettings[] = {
 		0,
 		0,
 		1,
-		"1 = first person: you see through 2B's eyes, her head hidden, her body still there. The right stick\n"
-		"and your headset turn you. F3 switches it. If her bones aren't found (another outfit?), your eyes\n"
-		"go to the point the game camera follows instead"),
-	S_FLT(
-		"Stereo",
-		"FirstPersonHeight",
-		fpHeight,
-		0,
-		-1.5f,
-		1.5f,
-		"First person: metres above 2B's eyes (or the point the camera follows)"),
-	S_FLT(
-		"Stereo",
-		"FirstPersonForward",
-		fpForward,
-		0,
-		-1.5f,
-		1.5f,
-		"First person: metres ahead of them, the way you face"),
+		"1 = first person: you see through the character's eyes. The right stick and your headset turn you.\n"
+		"F3 switches it. If their bones aren't found (only 2B's skeleton is known so far), your eyes go to the\n"
+		"point the game camera follows instead"),
 	S_INT(
 		"Stereo",
-		"FirstPersonFollowFacing",
-		fpFollowFacing,
-		0,
-		0,
-		1,
-		"First person: 1 = the view turns with the way 2B faces (she turns around when you pull the stick back,\n"
-		"and so does your view: strong motion sickness). 0 = the right stick and your headset turn you"),
-	S_INT(
-		"Stereo",
-		"FirstPersonSteadyHeight",
-		fpSteadyHeight,
+		"FirstPersonTracking",
+		fpTracking,
 		1,
 		0,
 		1,
-		"First person: 1 = your height doesn't bob with her running and attacks; it follows the ground under\n"
-		"her (jumps, stairs) and, slowly, her posture. 0 = exactly her eyes' height"),
-	S_INT(
-		"Stereo",
-		"FirstPersonBody",
-		fpBody,
-		1,
-		0,
-		1,
-		"First person: 1 = her upper body follows your head: her head is where yours is, her waist bends to\n"
-		"reach it, and all of her slides along when you step further away. Her legs keep the game's animation.\n"
-		"Off while FirstPersonHeight or FirstPersonForward isn't 0. 0 = her body moves only as the game animates it"),
-	S_INT(
-		"Stereo",
-		"FirstPersonWalk",
-		fpWalk,
-		1,
-		0,
-		1,
-		"First person: 1 = your real steps (and leaning) move 2B in the game: enemies, hits and walls see her\n"
-		"where you are. 0 = your steps move only your view"),
-	S_INT(
-		"Stereo",
-		"FirstPersonArms",
-		fpArms,
-		1,
-		0,
-		1,
-		"First person: 1 = her arms follow your controllers (her hands where yours are, as far as her arms\n"
-		"reach). Needs FirstPersonBody. 0 = her arms move as the game animates them"),
-	S_INT(
-		"Stereo",
-		"FirstPersonShowHead",
-		fpShowHead,
-		0,
-		0,
-		1,
-		"First person: 1 = her head is drawn (you see the inside of it). 0 = her head is hidden from your\n"
-		"eyes (her shadow keeps it)"),
-	S_FLT(
-		"Stereo",
-		"FirstPersonWorldScale",
-		fpWorldScale,
-		1,
-		0.2f,
-		3,
-		"First person: WorldScale (see above) while in first person. 1 = life size"),
+		"First person: 1 = the character tracks your headset: your real steps move them in the game, their upper\n"
+		"body follows your head and their arms your controllers, and their head is hidden from your eyes.\n"
+		"0 = the camera starts at their eyes but you walk around freely and see all of them, head included"),
 	S_INT(
 		"Stereo",
 		"Anamorphic",
@@ -652,9 +583,7 @@ constexpr Setting kSettings[] = {
 #undef S_PATH
 #undef S_TEXT
 
-// ---------------------------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------------------------
 void Widen(const char* text, wchar_t* out, int cap) {
 	int i = 0;
 	for (; text[i] && i < cap - 1; i++) out[i] = (wchar_t)(unsigned char)text[i];
@@ -722,9 +651,7 @@ void WriteNumber(const char* section, const char* key, Kind kind, float value) {
 	WriteRaw(section, key, buf);
 }
 
-// ---------------------------------------------------------------------------------------------
 // The ini file
-// ---------------------------------------------------------------------------------------------
 // Writes NieRVR.ini with every setting at its default, grouped by section, comments included.
 void WriteDefaultIni() {
 	static char text[16384];
@@ -809,9 +736,7 @@ const Setting* Find(const void* field) {
 }
 }  // namespace
 
-// ---------------------------------------------------------------------------------------------
 // API
-// ---------------------------------------------------------------------------------------------
 void ConfigLoad() {
 	if (GetFileAttributesW(g_iniPath) == INVALID_FILE_ATTRIBUTES) WriteDefaultIni();
 	g_cfg.iniAdded = AddMissingSettings();

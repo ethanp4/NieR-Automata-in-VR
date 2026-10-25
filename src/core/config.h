@@ -33,15 +33,8 @@ struct Config {
 	float verticalFill;          // 1 = render the headset's full vertical FOV; 0 = fit width (sharper, crops top/bottom)
 	int32_t anamorphic;          // fill each eye's own FOV shape (non-square pixels) instead of a 16:9 cover
 	float cameraDolly;           // metres to move the camera along its line of sight (towards the character)
-	int32_t firstPerson;         // prototype: eyes at the game camera's look-at target (around 2B), not behind her
-	float fpHeight, fpForward;   // first person: metres above / ahead of 2B's eyes
-	int32_t fpFollowFacing;      // first person: the view turns with 2B's facing instead of the game camera
-	int32_t fpSteadyHeight;      // first person: no running bob up and down (jumps still move you)
-	int32_t fpBody;              // first person: her upper body follows your head
-	int32_t fpWalk;              // first person: your real steps move her
-	int32_t fpArms;              // first person: her arms follow your controllers
-	int32_t fpShowHead;          // first person: her head drawn, not hidden
-	float fpWorldScale;          // first person: WorldScale (1 = life size)
+	int32_t firstPerson;         // eyes at the character's eyes (or the game camera's look-at target), not behind them
+	int32_t fpTracking;          // first person: the character tracks your headset and controllers, its head hidden
 	int32_t keyFirstPerson;      // [Keys] FirstPerson
 	// [Render]
 	int32_t extraResolutions;

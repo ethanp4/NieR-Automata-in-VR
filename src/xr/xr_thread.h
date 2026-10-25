@@ -1,6 +1,4 @@
-// xr_thread.h - state shared by the VR thread's files: xr_main.cpp (OpenXR setup, session,
-// swapchains, the thread's loop), xr_device.cpp (its D3D11 device, the game's frames, menu detection)
-// and xr_frame.cpp (each headset frame). Only the VR thread uses any of it.
+// xr_thread.h - state shared by the VR thread's files (xr_main.cpp, xr_device.cpp, xr_frame.cpp).
 #pragma once
 #include "core/pure.h"
 #include "core/com.h"

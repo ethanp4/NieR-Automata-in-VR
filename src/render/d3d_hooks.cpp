@@ -1,8 +1,4 @@
-// d3d_hooks.cpp - hooks on the game's D3D11 device and immediate context. Every call the game makes
-// is passed on to the features that need it: camera patching (camera.cpp), the HUD split
-// (hud_layer.cpp), synchronized recording (replay.cpp), the view-space fix (viewfix.cpp), GPU timing,
-// the frame capture, and the game-effect toggles (game_effects.cpp).
-// While replay.cpp plays a frame back, the hooks pass calls straight through.
+// d3d_hooks.cpp - hooks on the game's D3D11 device and immediate context, passed on to every feature that needs them.
 #include "render/d3d_hooks.h"
 #include "core/com.h"
 #include <atomic>
@@ -12,10 +8,10 @@
 #include "debug/frame_capture.h"
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
-#include "render/first_person.h"
+#include "game/first_person.h"
 #include "render/frame_handoff.h"
 #include "render/game_effects.h"
-#include "render/hud_layer.h"
+#include "ui/hud_layer.h"
 #include "render/replay.h"
 #include "render/reproject.h"
 #include "render/shader_table.h"
@@ -226,7 +222,7 @@ HRESULT STDMETHODCALLTYPE H_Map(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
 
 void STDMETHODCALLTYPE H_Unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub) {
 	if (g_replaying) return o_Unmap(c, res, sub);
-	if (c == s_context && res) FirstPersonBeforeUnmap(res);  // her hairband hidden: recorded so for both eyes
+	if (c == s_context && res) FirstPersonBeforeUnmap(res);  // the character's posed bones: recorded so for both eyes
 	if (ShouldRecord(c) && res) RecUnmap(res, sub);          // the game's own data, before the camera is patched in
 	if (c == s_context && res) {
 		StereoBeforeUnmap(res);  // patch the camera for this frame's eye

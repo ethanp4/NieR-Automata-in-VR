@@ -1,11 +1,10 @@
-// First person: eyes at the camera's look-at target (pure::first_person_pos), or at 2B's eyes from her
-// bone lists (render/head_bone.h).
+// First person: 2B's eyes, body and arms from her bone lists (game/head_bone.h, game/body_pose.h).
 #include <cstdio>
 #include <cmath>
 #include "core/pure.h"
-#include "render/body_pose.h"
-#include "render/body_skeleton.h"
-#include "render/head_bone.h"
+#include "game/body_pose.h"
+#include "game/body_skeleton.h"
+#include "game/head_bone.h"
 static int fails;
 static void check(bool c, const char* w) {
 	if (!c) {
@@ -17,17 +16,6 @@ static bool near3(const float* a, float x, float y, float z) {
 	return std::fabs(a[0] - x) < 1e-4f && std::fabs(a[1] - y) < 1e-4f && std::fabs(a[2] - z) < 1e-4f;
 }
 int main() {
-	float p[3];
-	const float eye[3] = {0, 2, 3}, target[3] = {0, 1.5f, 0};  // camera 3 behind and 0.5 above, looking -Z
-	check(pure::first_person_pos(eye, target, 0, 0, p) && near3(p, 0, 1.5f, 0), "no offsets: at the target");
-	check(pure::first_person_pos(eye, target, 0.2f, 0, p) && near3(p, 0, 1.7f, 0), "height is straight up");
-	check(pure::first_person_pos(eye, target, 0, 0.3f, p) && near3(p, 0, 1.5f, -0.3f),
-		  "forward is the camera's horizontal facing (its downward tilt ignored)");
-	const float eye2[3] = {3, 1.5f, 0};  // camera to the side, looking -X
-	check(pure::first_person_pos(eye2, target, 0, 0.5f, p) && near3(p, -0.5f, 1.5f, 0), "forward follows the camera's yaw");
-	const float above[3] = {0, 5, 0};
-	check(!pure::first_person_pos(above, target, 0, 0.3f, p), "camera straight above: no facing");
-
 	// her parts, as their lists are first bound in a frame, among other characters' lists
 	{
 		pure::BodyPartWalker walker;
@@ -68,9 +56,6 @@ int main() {
 		check(near3(eyeAt, 10 + pure::kEyeBind.z, 2 + pure::kEyeBind.y, 5), "eyes: the bind position moved with the bone");
 		const float facing[3] = {head.forward.x, head.forward.y, head.forward.z};
 		check(near3(facing, 1, 0, 0), "facing: the bone's +z");
-		pure::M4 cam;
-		check(pure::m4_level_camera_facing(head.forward, head.eye, &cam) && std::fabs(-cam.at(0, 2) - 1) < 1e-4f && std::fabs(cam.at(1, 1) - 1) < 1e-4f,
-			  "camera looks along her facing, level");
 		const float collapsed[12] = {};
 		check(!pure::plausible_bone(collapsed), "a collapsed bone is not");
 	}
@@ -119,17 +104,17 @@ int main() {
 		auto same = [](pure::V3 a, pure::V3 b) { return pure::length(a - b) < 1e-3f; };
 		const pure::V3 ankle = pure::kLeftAnkleBind, neck = pure::kNeckPivotBind, eye = pure::kViewBind;
 
-		pure::pose_upper_body(bind, bind, eye, facingHer, delta);
+		pure::pose_upper_body(bind, bind, eye, facingHer, pure::m4_identity(), delta);
 		bool still = true;
 		for (int32_t bone = 0; bone < pure::kSkeletonBones; bone++) still = still && same(at(bone, pure::kSkeleton[bone].bind), pure::kSkeleton[bone].bind);
 		check(still, "your head where hers is: nothing moves");
 
-		pure::pose_upper_body(bind, bind, eye + pure::V3{0, 0, 0.1f}, facingHer, delta);
+		pure::pose_upper_body(bind, bind, eye + pure::V3{0, 0, 0.1f}, facingHer, pure::m4_identity(), delta);
 		check(same(at(pure::BONE_HEAD, eye), eye + pure::V3{0, 0, 0.1f}), "leaning 10 cm forward: her eyes are at yours");
 		check(same(at(pure::BONE_LEFT_ANKLE, ankle), ankle), "... her feet stay");
 		check(pure::length(at(pure::BONE_NECK, neck) - (neck + pure::V3{0, 0, 0.1f})) < 0.01f, "... her waist bends so her neck follows");
 
-		pure::pose_upper_body(bind, bind, eye + pure::V3{1, 0, 0}, facingHer, delta);
+		pure::pose_upper_body(bind, bind, eye + pure::V3{1, 0, 0}, facingHer, pure::m4_identity(), delta);
 		check(same(at(pure::BONE_LEFT_ANKLE, ankle), ankle + pure::V3{1 - pure::kLeanRadius, 0, 0}) && same(at(pure::BONE_HEAD, eye), eye + pure::V3{1, 0, 0}),
 			  "1 m away: all of her slides along, her head on yours");
 
@@ -137,7 +122,7 @@ int main() {
 		lookingRight.at(0, 2) = 1;
 		lookingRight.at(2, 0) = -1;
 		lookingRight.at(0, 0) = lookingRight.at(2, 2) = 0;
-		pure::pose_upper_body(bind, bind, eye, lookingRight, delta);
+		pure::pose_upper_body(bind, bind, eye, lookingRight, pure::m4_identity(), delta);
 		pure::V3 nose = at(pure::BONE_HEAD, eye + pure::V3{0, 0, 0.1f});
 		check(same(at(pure::BONE_HEAD, eye), eye) && same(nose, eye + pure::V3{-0.1f, 0, 0}) && same(at(pure::BONE_LEFT_ANKLE, ankle), ankle),
 			  "turning your head: hers turns about her eyes, her body stays");
@@ -147,6 +132,12 @@ int main() {
 		float out[12];
 		pure::move_bone(delta[pure::BONE_HEAD], bind, out);
 		check(same(pure::bone_point(out, eye + pure::V3{0, 0, 0.1f}), nose), "a moved bone list's matrix moves its points the same way");
+
+		const pure::V3 hips = pure::kSkeleton[pure::BONE_HIPS].bind;
+		pure::pose_upper_body(bind, bind, eye, facingHer, pure::m4_yaw_about(pure::kPi / 2, hips), delta);
+		pure::V3 ankleTurned = hips + pure::V3{ankle.z - hips.z, ankle.y - hips.y, -(ankle.x - hips.x)};
+		check(same(at(pure::BONE_LEFT_ANKLE, ankle), ankleTurned) && same(at(pure::BONE_HEAD, eye), eye),
+			  "her body turned a quarter about her hips (her feet too), her head still on yours");
 	}
 
 	// her arms on your controllers (bones in the bind pose: every matrix the identity)
@@ -160,7 +151,7 @@ int main() {
 
 		for (auto& d : delta) d = pure::m4_identity();
 		pure::M4 grip = pure::m4_identity();  // in front of her left shoulder, the barrel along -z
-		grip.at(0, 3) = -0.25f;
+		grip.at(0, 3) = 0.25f;
 		grip.at(1, 3) = 1.1f;
 		grip.at(2, 3) = 0.15f;
 		pure::HandTarget target = pure::hand_target(grip);
@@ -173,7 +164,7 @@ int main() {
 			  "her upper arm and forearm keep their lengths");
 		check(same(pure::moved_point(delta[arm.upper], elbowBind), elbow, 1e-3f), "the forearm turns about the elbow the upper arm put it at");
 		check(elbow.y < (shoulder.y + wrist.y) / 2, "her elbow bends down");
-		pure::V3 knuckle = pure::moved_point(delta[arm.hand], pure::kSkeleton[arm.middleKnuckle].bind);
+		pure::V3 knuckle = pure::moved_point(delta[arm.hand], pure::kSkeleton[arm.fingers[pure::FINGER_MIDDLE]].bind);
 		check(pure::dot(pure::normalized(knuckle - wrist), pure::normalized(target.forward)) > 0.999f, "her hand points the way the controller says");
 		bool fingers = true;
 		for (int32_t bone = 0; bone < pure::kSkeletonBones; bone++)
@@ -184,11 +175,120 @@ int main() {
 		for (int i = 0; i < 16; i++) otherArm = otherArm && delta[pure::kRightArm.hand].m[i] == pure::m4_identity().m[i];
 		check(otherArm, "the other arm stays");
 
-		grip.at(0, 3) = -1.5f;  // far out of reach to her left
+		// rolling the controller: her arm takes the twist (the wrist helper all of it), her wrist only swings
+		auto twistFrom = [&](int32_t bone) {  // the hand's twist about the forearm, from this bone (bind pose: the deltas are the lists)
+			pure::M4 from = delta[bone], handList = delta[arm.hand];
+			pure::V3 axis = pure::moved_point(delta[arm.fore], wristBind) - pure::moved_point(delta[arm.fore], elbowBind);
+			return pure::twist_about(pure::m4_mul(handList, pure::m4_rotation_transposed(from)), axis);
+		};
+		check(!pure::kTwistForearm || std::fabs(twistFrom(arm.wristTwist)) < 1e-3f, "no twist at her wrist");
+		pure::V3 elbowUnrolled = elbow;
+		pure::M4 rolled = pure::m4_mul(pure::m4_turn(target.forward, 1.0f, pure::m4_column(grip, 3)), grip);
+		pure::pose_arm(arm, bind, bind, bind, bind, rolled, delta);
+		pure::HandTarget rolledTarget = pure::hand_target(rolled);
+		wrist = pure::moved_point(delta[arm.hand], wristBind);
+		knuckle = pure::moved_point(delta[arm.hand], pure::kSkeleton[arm.fingers[pure::FINGER_MIDDLE]].bind);
+		pure::V3 indexKnuckle = pure::moved_point(delta[arm.hand], pure::kSkeleton[arm.fingers[pure::FINGER_INDEX]].bind);
+		pure::V3 littleKnuckle = pure::moved_point(delta[arm.hand], pure::kSkeleton[arm.fingers[pure::FINGER_LITTLE]].bind);
+		pure::V3 across = littleKnuckle - indexKnuckle;
+		pure::V3 acrossWanted = rolledTarget.across - rolledTarget.forward * pure::dot(rolledTarget.across, pure::normalized(rolledTarget.forward));
+		check(same(wrist, rolledTarget.wrist, 1e-3f) && pure::dot(pure::normalized(knuckle - wrist), pure::normalized(rolledTarget.forward)) > 0.999f &&
+				  pure::dot(pure::normalized(across - rolledTarget.forward * pure::dot(across, pure::normalized(rolledTarget.forward))),
+							pure::normalized(acrossWanted)) > 0.999f,
+			  "a rolled controller: her hand still turned exactly like it");
+		check(!pure::kTwistForearm || std::fabs(twistFrom(arm.wristTwist)) < 1e-3f, "... the roll in her arm, none at her wrist");
+		float atElbowEnd = twistFrom(arm.fore), atMiddle = twistFrom(arm.foreTwist);
+		check(!pure::kTwistForearm || (std::fabs(atElbowEnd) > std::fabs(atMiddle) + 0.05f && std::fabs(atMiddle) > 0.05f),
+			  "... more of it towards her wrist (less left to twist there)");
+		pure::V3 elbowRolled = pure::moved_point(delta[arm.fore], elbowBind);
+		check(!pure::kTwistForearm || pure::length(elbowRolled - elbowUnrolled) > 0.01f, "... her elbow swings a little");
+		check(std::fabs(pure::length(elbowRolled - shoulderBind) - upperLength) < 1e-3f &&
+				  std::fabs(pure::length(wrist - elbowRolled) - foreLength) < 1e-3f,
+			  "... her arm keeps its lengths");
+		check(same(pure::moved_point(delta[arm.fore], elbowBind), pure::moved_point(delta[arm.upper], elbowBind), 1e-3f),
+			  "... her forearm still turns about her elbow");
+
+		grip.at(0, 3) = 1.5f;  // far out of reach to her left
 		pure::pose_arm(arm, bind, bind, bind, bind, grip, delta);
 		wrist = pure::moved_point(delta[arm.hand], wristBind);
 		check(std::fabs(pure::length(wrist - shoulderBind) - (upperLength + foreLength) * pure::kStraightArm) < 1e-3f,
 			  "out of reach: her arm straight, towards the controller");
+	}
+
+	// her fingers on yours (bones in the bind pose, her hand where pose_arm put it)
+	{
+		static float bones[pure::kSkeletonBones][12];
+		for (auto& bone : bones) {
+			for (float& v : bone) v = 0;
+			bone[0] = bone[5] = bone[10] = 1;
+		}
+		static pure::M4 delta[pure::kSkeletonBones];
+		auto same = [](pure::V3 a, pure::V3 b) { return pure::length(a - b) < 1e-4f; };
+		const pure::ArmBones* arms[2] = {&pure::kLeftArm, &pure::kRightArm};
+		const char* sides[2] = {"left", "right"};
+		for (int side = 0; side < 2; side++) {
+			const pure::ArmBones& arm = *arms[side];
+			for (auto& d : delta) d = pure::m4_identity();
+			const float open[5] = {0, 0, 0, 0, 0}, fist[5] = {1, 1, 1, 1, 1};
+			char what[128];
+			pure::pose_fingers(arm, bones, open, delta);
+			bool still = true;
+			for (int finger = 0; finger < pure::FINGER_COUNT; finger++)
+				for (int joint = 0; joint < pure::finger_joints(finger); joint++) {
+					int bone = arm.fingers[finger] + joint;
+					still = still && same(pure::moved_point(delta[bone], pure::kSkeleton[bone].bind), pure::kSkeleton[bone].bind);
+				}
+			std::snprintf(what, sizeof(what), "%s hand open: her fingers as in her bind pose", sides[side]);
+			check(still, what);
+
+			pure::pose_fingers(arm, bones, fist, delta);
+			pure::V3 palm = pure::palm_side(arm), wrist = pure::kSkeleton[arm.hand].bind;
+			for (int finger = 0; finger < pure::FINGER_COUNT; finger++) {
+				int tip = arm.fingers[finger] + pure::finger_joints(finger) - 1, first = arm.fingers[finger];
+				pure::V3 tipBind = pure::kSkeleton[tip].bind, tipNow = pure::moved_point(delta[tip], tipBind);
+				pure::V3 firstNow = pure::moved_point(delta[first], pure::kSkeleton[first].bind);
+				std::snprintf(what, sizeof(what), "%s fist, finger %d: its tip goes to her palm's side and nearer her wrist", sides[side], finger);
+				check(pure::dot(tipNow - tipBind, palm) > 0.005f && pure::length(tipNow - wrist) < pure::length(tipBind - wrist), what);
+				if (finger != pure::FINGER_THUMB) {
+					std::snprintf(what, sizeof(what), "%s fist, finger %d: its tip lands on her palm, not past it", sides[side], finger);
+					check(pure::length(tipNow - wrist) > 0.03f, what);
+				}
+				std::snprintf(what, sizeof(what), "%s fist, finger %d: its first joint stays on her hand", sides[side], finger);
+				check(same(firstNow, pure::kSkeleton[first].bind), what);
+			}
+			int index = arm.fingers[pure::FINGER_INDEX];
+			pure::V3 a = pure::moved_point(delta[index], pure::kSkeleton[index].bind), b = pure::moved_point(delta[index + 1], pure::kSkeleton[index + 1].bind);
+			std::snprintf(what, sizeof(what), "%s fist: her finger bones keep their lengths", sides[side]);
+			check(std::fabs(pure::length(b - a) - pure::length(pure::kSkeleton[index + 1].bind - pure::kSkeleton[index].bind)) < 1e-4f, what);
+		}
+	}
+
+	// her body turning after your head
+	{
+		check(std::fabs(pure::yaw_of({0, 0, 1})) < 1e-5f && std::fabs(pure::yaw_of({1, 0, 0}) - pure::kPi / 2) < 1e-5f &&
+				  std::fabs(std::fabs(pure::yaw_of({0, 0, -1})) - pure::kPi) < 1e-5f && std::fabs(pure::yaw_of({-1, 0, -1}) + 3 * pure::kPi / 4) < 1e-4f,
+			  "yaw: 0 along +z, positive towards +x");
+		pure::M4 turn = pure::m4_yaw_about(0.3f, {0, 0, 0});
+		check(std::fabs(pure::yaw_of(pure::moved_point(turn, {0, 0, 1})) - 0.3f) < 1e-5f, "a yaw turn turns that way");
+
+		const float dt = 1.0f / 60;
+		pure::BodyTurn body;
+		check(std::fabs(body.update(0.5f, 0, 0.1f, dt) - 0.4f) < 1e-5f, "first frame: her body faces where you look");
+		float turned = 0;
+		for (int frame = 0; frame < 60; frame++) turned = body.update(0.5f + 0.2f, 0, 0.1f, dt);
+		check(std::fabs(turned - 0.4f) < 1e-4f, "your head turned a little: her body stays");
+		for (int frame = 0; frame < 60; frame++) turned = body.update(0.5f + 1.2f, 0, 0.1f, dt);
+		check(std::fabs(body.body - (0.5f + 1.2f - pure::kNeckFree)) < 0.01f, "turned further and held: her body follows to within the free turn");
+		float before = body.body;
+		body.update(0.5f + 1.2f + 1.0f, 1.0f, 0.1f, dt);
+		check(std::fabs(pure::wrap_angle(body.body - before - 1.0f)) < 1e-3f, "the stick turns her body at once");
+		body.update(0.5f + 1.2f + 1.0f + 1.5f, 1.0f, 0.1f, dt);
+		check(pure::wrap_angle(0.5f + 1.2f + 1.0f + 1.5f - body.body) <= pure::kNeckMax + 1e-4f, "a sudden turn: never further than the most a neck turns");
+
+		pure::BodyTurn across;
+		across.update(3.0f, 0, 3.0f, dt);
+		for (int frame = 0; frame < 120; frame++) across.update(-3.0f, 0, 3.0f, dt);  // 0.28 rad on, across +-pi
+		check(std::fabs(pure::wrap_angle(across.body - (-3.0f - pure::kNeckFree))) < 0.01f, "turning across +-pi: the short way");
 	}
 
 	// steady height: running bob filtered out, a jump followed

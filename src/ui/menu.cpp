@@ -1,13 +1,4 @@
 // menu.cpp - the in-headset settings menu.
-//
-// Opened with the menu key ([Keys] Menu, default Insert) or, on a gamepad or the VR controllers, by
-// holding B and pressing A; B, Start or the menu key close it. X (or Delete) puts the highlighted setting
-// back to its default. While it is open the game doesn't see
-// the gamepad (XInputGetState is hooked and returns a neutral pad). Every change applies at once and
-// is written to NieRVR.ini; a few settings only take effect after a restart and say so.
-//
-// Drawn with Dear ImGui (ui/imgui_panel.h) on the VR thread and used with ImGui's own gamepad and
-// keyboard navigation; xr_frame.cpp shows it on a quad in front of you.
 #include "ui/menu.h"
 #include "core/locks.h"
 #include "core/config.h"
@@ -23,9 +14,7 @@
 #include "imgui_internal.h"  // FocusItem
 
 namespace {
-// ---------------------------------------------------------------------------------------------
 // Settings
-// ---------------------------------------------------------------------------------------------
 enum ItemType { T_BOOL,
 				T_INT,
 				T_FLOAT,
@@ -91,104 +80,18 @@ Item kView[] = {
 		1,
 		nullptr,
 		0,
-		"You see through 2B's eyes, her head hidden and her body still there; the right stick and your headset turn "
-		"you. Also F3.",
+		"You see through the character's eyes; the right stick and your headset turn you. Also F3.",
 	},
 	{
-		"First person: height",
-		T_FLOAT,
-		&g_cfg.fpHeight,
-		-1.5f,
-		1.5f,
-		"%.2f m",
-		0,
-		"Moves your eyes up (positive) or down from 2B's eyes.",
-	},
-	{
-		"First person: forward",
-		T_FLOAT,
-		&g_cfg.fpForward,
-		-1.5f,
-		1.5f,
-		"%.2f m",
-		0,
-		"Moves your eyes forward (positive) or back, the way you face.",
-	},
-	{
-		"First person: turn with 2B",
+		"First person: character tracks your headset",
 		T_BOOL,
-		&g_cfg.fpFollowFacing,
+		&g_cfg.fpTracking,
 		0,
 		1,
 		nullptr,
 		0,
-		"The view turns with the way 2B faces instead of with the right stick. She has no walking backwards, so "
-		"pulling the stick back turns her, and you, around: strong motion sickness.",
-	},
-	{
-		"First person: body follows your head",
-		T_BOOL,
-		&g_cfg.fpBody,
-		0,
-		1,
-		nullptr,
-		0,
-		"Her head is where yours is, her waist bends to reach it, and all of her slides along when you step further "
-		"away. Her legs keep the game's animation. Only what you see changes: the game still thinks she's where it put her. "
-		"Off while the first person height or forward offset isn't 0.",
-	},
-	{
-		"First person: walk for real",
-		T_BOOL,
-		&g_cfg.fpWalk,
-		0,
-		1,
-		nullptr,
-		0,
-		"Your real steps and leaning move 2B in the game, so enemies, hits and walls see her where you are. "
-		"Off: your steps move only your view.",
-	},
-	{
-		"First person: arms follow your controllers",
-		T_BOOL,
-		&g_cfg.fpArms,
-		0,
-		1,
-		nullptr,
-		0,
-		"Her hands are where yours are, as far as her arms reach, turned like your controllers. Needs \"body follows "
-		"your head\".",
-	},
-	{
-		"First person: show her head",
-		T_BOOL,
-		&g_cfg.fpShowHead,
-		0,
-		1,
-		nullptr,
-		0,
-		"Her head is drawn: you see the inside of it. Off: her head is hidden from your eyes (her shadow keeps it).",
-	},
-	{
-		"First person: steady height",
-		T_BOOL,
-		&g_cfg.fpSteadyHeight,
-		0,
-		1,
-		nullptr,
-		0,
-		"Your height doesn't bob with her running and attacks; it follows the ground under her (jumps, stairs) and, "
-		"slowly, her posture. Off: exactly her eyes' height.",
-	},
-	{
-		"First person: world scale",
-		T_FLOAT,
-		&g_cfg.fpWorldScale,
-		0.2f,
-		3.0f,
-		"%.2f",
-		F_LOG,
-		"Like World scale, while in first person. 1 = life size.",
+		"Your real steps move the character in the game, their upper body follows your head and their arms your "
+		"controllers, and their head is hidden from your eyes. Off: walk around freely and see all of them.",
 	},
 	{
 		"Level the horizon",
@@ -657,9 +560,7 @@ constexpr int32_t kPageCount = std::size(s_pages);
 char s_infoText[INFO_LINE_COUNT][160];
 SRWLOCK s_infoLock = SRWLOCK_INIT;
 
-// ---------------------------------------------------------------------------------------------
 // State
-// ---------------------------------------------------------------------------------------------
 UiPanel s_panel = {"menu", 30.0f, true};
 constexpr float kSmall = 22.0f;  // font size of tags and hints
 
@@ -680,9 +581,7 @@ const char* s_help;      // help text of the focused setting
 char s_helpDefault[96];  // and its default value, "" for actions
 bool s_resetPending;     // X / Delete was pressed: the focused setting goes back to its default
 
-// ---------------------------------------------------------------------------------------------
 // Keys
-// ---------------------------------------------------------------------------------------------
 // A key's name as the keyboard layout calls it ("Insert", "F1", ...).
 void KeyName(int vk, char* out, size_t cap) {
 	UINT scanCode = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC);
@@ -738,9 +637,7 @@ void SetOpen(bool open) {
 	}
 }
 
-// ---------------------------------------------------------------------------------------------
 // Settings
-// ---------------------------------------------------------------------------------------------
 // After a setting was changed in the menu: log it and save it to NieRVR.ini.
 void SaveItem(const Item& item) {
 	char value[48];
@@ -768,9 +665,7 @@ const char* ItemTag(const Item& item) {
 	return nullptr;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Drawing (ImGui; runs on the VR thread every headset frame while the menu is open)
-// ---------------------------------------------------------------------------------------------
 ImVec4 ToImVec4(const float* color) { return ImVec4(color[0], color[1], color[2], color[3]); }
 
 // The v-th name of a T_CHOICE item ("Off|DLSS").
@@ -1054,9 +949,7 @@ void FeedInput() {
 }
 }  // namespace
 
-// ---------------------------------------------------------------------------------------------
 // API (VR thread unless noted)
-// ---------------------------------------------------------------------------------------------
 // Any thread: one line of the Info page.
 void MenuSetInfo(int line, const char* text) {
 	if (line < 0 || line >= INFO_LINE_COUNT) return;

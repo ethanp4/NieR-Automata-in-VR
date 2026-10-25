@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write src/render/body_skeleton.h: 2B's skeleton and which bone each slot of her GPU bone lists is.
+"""Write src/game/body_skeleton.h: 2B's skeleton and which bone each slot of her GPU bone lists is.
 
 Reads her model (pl/pl0000.dtt -> pl0000.wmb, WMB3) straight from the game's CPK archives.
 
@@ -22,38 +22,38 @@ SERIOUS_FACE_SET = 23
 # the bones the first-person body works with (bone id: name)
 NAMED = {
     0: 'HIPS', 1: 'WAIST', 2: 'SPINE', 3: 'CHEST', 4: 'NECK', 5: 'HEAD',
-    6: 'LEFT_CLAVICLE', 7: 'LEFT_UPPER_ARM', 8: 'LEFT_FOREARM', 9: 'LEFT_HAND',
-    10: 'RIGHT_CLAVICLE', 11: 'RIGHT_UPPER_ARM', 12: 'RIGHT_FOREARM', 13: 'RIGHT_HAND',
-    14: 'PELVIS', 15: 'LEFT_THIGH', 16: 'LEFT_SHIN', 17: 'LEFT_ANKLE', 18: 'LEFT_TOES',
-    19: 'RIGHT_THIGH', 20: 'RIGHT_SHIN', 21: 'RIGHT_ANKLE', 22: 'RIGHT_TOES',
+    6: 'RIGHT_CLAVICLE', 7: 'RIGHT_UPPER_ARM', 8: 'RIGHT_FOREARM', 9: 'RIGHT_HAND',
+    10: 'LEFT_CLAVICLE', 11: 'LEFT_UPPER_ARM', 12: 'LEFT_FOREARM', 13: 'LEFT_HAND',
+    14: 'PELVIS', 15: 'RIGHT_THIGH', 16: 'RIGHT_SHIN', 17: 'RIGHT_ANKLE', 18: 'RIGHT_TOES',
+    19: 'LEFT_THIGH', 20: 'LEFT_SHIN', 21: 'LEFT_ANKLE', 22: 'LEFT_TOES',
 }
 
 # the other bones: what they are, or may be (from where they are and what they hang off)
 HELPERS = {
     4095: 'A root at hip height: may be her centre for the game\'s movement',
     4094: 'The root on the floor: the model\'s origin',
-    2560: 'Left shoulder helper: may be upper arm twist', 2561: 'Right shoulder helper: may be upper arm twist',
-    2576: 'Left forearm helper: may be forearm twist', 2592: 'Right forearm helper: may be forearm twist',
-    2577: 'Left wrist helper: may be wrist twist', 2593: 'Right wrist helper: may be wrist twist',
-    3121: 'On the left forearm: may be where a weapon or bracelet attaches',
-    3120: 'On the right forearm: may be where a weapon or bracelet attaches',
-    2608: 'Left buttock helper: may keep her hips round when she bends',
-    2609: 'Right buttock helper: may keep her hips round when she bends',
-    2656: 'Front of the left hip: may keep the hip crease smooth',
-    2657: 'Front of the right hip: may keep the hip crease smooth',
+    2560: 'Right shoulder helper: may be upper arm twist', 2561: 'Left shoulder helper: may be upper arm twist',
+    2576: 'Right forearm helper: may be forearm twist', 2592: 'Left forearm helper: may be forearm twist',
+    2577: 'Right wrist helper: may be wrist twist', 2593: 'Left wrist helper: may be wrist twist',
+    3121: 'On the right forearm: may be where a weapon or bracelet attaches',
+    3120: 'On the left forearm: may be where a weapon or bracelet attaches',
+    2608: 'Right buttock helper: may keep her hips round when she bends',
+    2609: 'Left buttock helper: may keep her hips round when she bends',
+    2656: 'Front of the right hip: may keep the hip crease smooth',
+    2657: 'Front of the left hip: may keep the hip crease smooth',
     2640: 'Neck helper: may keep her neck smooth when her head turns',
     3136: 'Front of her chest: may be breast movement',
     2816: 'Centre of her face: may be the jaw or the face\'s root',
-    2817: 'Right eye', 2818: 'Left eye',
+    2817: 'Left eye', 2818: 'Right eye',
     3152: 'Back of the head, low: may be a hair root',
 }
 FINGERS = ['index finger', 'middle finger', 'ring finger', 'little finger']
-HAIR_STRANDS = {3164: 'right side', 3166: 'back right', 3168: 'back', 3170: 'back left', 3172: 'left side'}
+HAIR_STRANDS = {3164: 'left side', 3166: 'back left', 3168: 'back', 3170: 'back right', 3172: 'right side'}
 
 
 def direction(x, z):
-    """Which way from her centre a point is (her left is -x, +z in front of her)."""
-    names = ['front', 'front left', 'left', 'back left', 'back', 'back right', 'right', 'front right']
+    """Which way from her centre a point is (she faces +z with +y up: her left is +x)."""
+    names = ['front', 'front right', 'right', 'back right', 'back', 'back left', 'left', 'front left']
     return names[round(math.atan2(-x, z) / (math.pi / 4)) % 8]
 
 
@@ -63,7 +63,7 @@ def describe(bone, bones):
         return NAMED[i].lower().replace('_', ' ').capitalize()
     if i in HELPERS:
         return HELPERS[i]
-    for first, hand in ((256, 'Left'), (512, 'Right')):
+    for first, hand in ((256, 'Right'), (512, 'Left')):
         if first <= i < first + 3:
             return '%s thumb, joint %d' % (hand, i - first + 1)
         if first + 3 <= i < first + 19:
@@ -72,11 +72,11 @@ def describe(bone, bones):
     if 3153 <= i <= 3155:
         return 'Hair: fringe strand in front, joint %d' % (i - 3152)
     if 3156 <= i <= 3163:
-        return 'Hair: %s fringe strand, joint %d' % ('right' if i < 3160 else 'left', (i - 3156) % 4 + 1)
+        return 'Hair: %s fringe strand, joint %d' % ('left' if i < 3160 else 'right', (i - 3156) % 4 + 1)
     if 3164 <= i <= 3173:
         return 'Hair: %s strand, joint %d' % (HAIR_STRANDS[i - (i - 3164) % 2], (i - 3164) % 2 + 1)
     if 3102 <= i <= 3107:
-        return 'Dress: a front flap on her left (flap %d, joint %d)' % ((i - 3102) // 3 + 1, (i - 3102) % 3 + 1)
+        return 'Dress: a front flap on her right (flap %d, joint %d)' % ((i - 3102) // 3 + 1, (i - 3102) % 3 + 1)
     if 3184 <= i <= 3273:
         top = next(b['pos'] for b in bones if b['id'] == 3184 + (i - 3184) // 6 * 6)
         return 'Skirt: strand %d of 15 (%s), joint %d of 6' % ((i - 3184) // 6 + 1, direction(top[0], top[2]), (i - 3184) % 6 + 1)
@@ -183,7 +183,7 @@ def skeleton(wmb):
 
 def main():
     game = sys.argv[1]
-    out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(__file__), '..', 'src', 'render', 'body_skeleton.h')
+    out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(__file__), '..', 'src', 'game', 'body_skeleton.h')
     data = os.path.join(game, 'data')
     dtt = None
     for cpk in sorted(os.listdir(data)):

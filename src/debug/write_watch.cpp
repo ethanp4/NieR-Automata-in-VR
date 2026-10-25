@@ -1,12 +1,4 @@
 // write_watch.cpp - [Debug] which instructions write a few addresses (hardware write breakpoints, like Cheat Engine's "find out what writes to this address").
-//
-// Up to 4 addresses go in every thread's debug registers (DR0-DR3, 4-byte writes) for a moment; a
-// vectored exception handler counts each writing instruction and keeps the registers of its first hit.
-// The threads are changed from a helper thread (a thread can't change its own context while running).
-// The CPU stops after the write: the address logged is the instruction after the one that wrote. The
-// writers found so far are tiny copy helpers without a stack frame, so the return address on top of the
-// stack ([rsp]) is logged too: the code that called them. Registers pointing at an object whose +0x50
-// holds something like the watched value are kept as sources (WriteWatchSources).
 #include "debug/write_watch.h"
 #include "core/log.h"
 #include <atomic>

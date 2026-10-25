@@ -1,33 +1,5 @@
 // hud_layer.cpp - separates NieR's 2D UI (HUD, menus) from the 3D scene, on the game side.
-//
-// NieR draws the UI last, with UIParam/cbUIParam vertex shaders, into an intermediate render
-// target; one final full-screen pass then writes that target to the backbuffer (see
-// DEVELOPMENT.md). So, per frame:
-//   1. at the first UI draw, copy the intermediate target ("pre-UI": scene only);
-//   2. after the game's final pass into the backbuffer, run that same draw again with the pre-UI
-//      copy as input, into our own texture: the finished scene without UI.
-// The VR thread then shows the scene in stereo and keys the UI out of (full - scene) onto a flat
-// layer. If the game ever draws differently, no scene image is produced and nothing changes.
-//
-// The scene image also carries the UI's real coverage in its alpha channel: every UI draw is run a
-// second time into it with an alpha-only blend (over: a + (1 - a) * dst; additive: unchanged), and
-// the final pass replay writes colour only. The VR side then rebuilds the HUD exactly
-// (ui = full - (1 - a) * scene) instead of guessing it from where the two images differ.
-//
-// Some "UI" draws are really screen effects: NieR's film grain is a white, 20%-opaque texture
-// drawn over the whole 1600x900 UI canvas. Those are drawn into the pre-UI copy as well, so they
-// stay part of the 3D image instead of turning the HUD layer into a faint full-screen ghost.
-//
-// Others redraw the screen itself: for the glitch/distortion effects (when hit, at low health) and
-// the blurred background of some menus, NieR first copies the UI target (scene + HUD so far) into
-// another full-size texture, then draws pieces of that copy back over the UI target, shifted and
-// tinted. On the HUD layer that is a flat copy of the whole screen flashing in front of the 3D view.
-// In stereo those draws are skipped (DistortionEffects=0) or kept in the 3D image (=1).
-//
-// Below 5:4 (the headset-shaped resolutions) the final pass squeezes the frame into a centred 5:4 box,
-// with its quad's corners, to undo the game's own 5:4 camera. In stereo the mod's camera already fills
-// the whole frame, so the final pass is drawn with a viewport stretched by the same amount instead.
-#include "render/hud_layer.h"
+#include "ui/hud_layer.h"
 #include "core/com.h"
 #include "core/config.h"
 #include "core/log.h"

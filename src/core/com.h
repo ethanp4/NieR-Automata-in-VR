@@ -1,6 +1,4 @@
-// com.h - COM references: ComPtr for local temporaries (released when they go out of scope), and
-// SafeRelease for long-lived raw pointers. Globals stay raw on purpose: a ComPtr global would release
-// its object from a destructor while the game exits (DLL unload, under the loader lock).
+// com.h - COM references: ComPtr for local temporaries, SafeRelease for long-lived raw pointers (globals stay raw).
 #pragma once
 #include <wrl/client.h>
 

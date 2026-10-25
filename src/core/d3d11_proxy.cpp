@@ -81,9 +81,7 @@ bool ProxyLoadReal() {
 
 extern "C" void NVR_ResolveAll() { EnsureInit(); }
 
-// ---------------------------------------------------------------------------------------------
 // The two exports the game uses to create its renderer.
-// ---------------------------------------------------------------------------------------------
 extern "C" HRESULT WINAPI NVR_D3D11CreateDevice(IDXGIAdapter* adapter, D3D_DRIVER_TYPE driverType, HMODULE software,
 												UINT flags, const D3D_FEATURE_LEVEL* levels, UINT numLevels,
 												UINT sdkVersion, ID3D11Device** device, D3D_FEATURE_LEVEL* outLevel,

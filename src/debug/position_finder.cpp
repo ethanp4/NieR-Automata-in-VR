@@ -1,21 +1,9 @@
 // position_finder.cpp - [Debug] Shift+F11 finds where the game keeps 2B's position in memory, Ctrl+Shift+F11 tests what it found.
-//
-// Her feet (the ground under her hips, from her bones: first_person.cpp) are known each frame. The key
-// scans the game's writable memory for three floats near them (from a little below her feet to above
-// her head, so her centre counts too), side by side or 4 floats apart (a matrix's translation column). Then, while you move her around, every
-// candidate that doesn't keep the same offset from her is dropped. Once she has moved far enough (or
-// after a while) the survivors are logged, each with the pointer paths from the game exe's static memory
-// that lead to it, one or two steps (a path the mod can follow on every launch: heap addresses change).
-// Ctrl+Shift+CaptureKey (Ctrl+Shift+F11) then tests the survivors: the first press pushes them all 50 cm
-// along x, the next ones one at a time, and half a second later it logs whether she moved with it (the
-// game keeps several copies of her position; only the one it moves her from counts).
-// Memory is read with ReadProcessMemory (and written with WriteProcessMemory), so a page the game frees
-// meanwhile is skipped, not a crash.
 #include "debug/position_finder.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "debug/write_watch.h"
-#include "render/first_person.h"
+#include "game/first_person.h"
 #include <iterator>
 #include <math.h>
 #include <stdint.h>

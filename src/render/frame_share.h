@@ -1,6 +1,4 @@
-// frame_share.h - hand-off of finished game frames from the game's device to the VR thread's device
-// (g_share is defined in frame_handoff.cpp). The VR thread owns the shared textures (created on its
-// own device); the game thread asks for a size/format and opens whatever the VR thread publishes.
+// frame_share.h - hand-off of finished game frames from the game's device to the VR thread's (g_share: frame_handoff.cpp).
 #pragma once
 #include <d3d11.h>
 #include <stdint.h>

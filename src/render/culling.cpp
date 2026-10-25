@@ -1,11 +1,4 @@
 // culling.cpp - widens the field of view NieR culls (and lays out) its scene with.
-//
-// The game decides what to draw from its own camera: about 50 degrees tall, 16:9. In the headset
-// you see ~95 x 109 degrees and can look around, so things outside the game's view were missing
-// (NPC hair, screen contents, lights at the edges). While stereo is rendering, the game camera's
-// field-of-view setter is hooked to hand the game a wider value (CullingFov), so its own camera
-// update builds a wider culling frustum. The renderer's projection is replaced per eye anyway
-// (camera.cpp), so the VR image keeps its shape.
 #include "render/culling.h"
 #include "core/locks.h"
 #include "core/config.h"
@@ -42,14 +35,12 @@ extern void* nvr_post_orig;
 namespace {
 bool s_loggedEffect;  // the game camera was seen using the wide fov
 
-// ---------------------------------------------------------------------------------------------
 // The camera controller sets the fov every frame through a tiny setter,
 //   NieRAutomata.exe+0x27ace0:  mov rax,[rcx]; movss [rax+0x274],xmm1; mov dword [rax+0x284],1; ret
 // (fov at +0x274, "dirty" flag at +0x284). When the flag is set, the camera update (exe+0x27aaa2)
 // rebuilds the projection and the culling frustum from that fov, so a value written anywhere else is
 // overwritten before the next frame is culled: the setter is hooked instead. Only the main 16:9
 // cameras are widened (render-to-texture cameras are square), and only while stereo is rendering.
-// ---------------------------------------------------------------------------------------------
 typedef void (*PFN_SetFov)(void** cam, float fov);
 PFN_SetFov o_SetFov;
 std::atomic<bool> s_widening;
@@ -59,14 +50,12 @@ bool s_setterHooked;
 std::atomic<float> s_gameFov;  // the last field of view the game asked for (main camera, radians)
 bool s_readSitesHooked;    // the fov reads are redirected (else the stored fov itself is widened: lower model detail)
 
-// ---------------------------------------------------------------------------------------------
 // Head-direction culling. A symmetric frustum can't reach past 90 deg to a side (at CullingFov=170 it
 // reaches ~87), so turning your head more than ~35-40 deg away from where the game camera points took the
 // edge of your view out of it. The frustum builder after site B gets LookAt(eye, target, up) as three
 // pointers (r14, rbp, rsi); culling_stubs.S calls nvr_head_cull_builder right before that call, which
 // turns target and up by the eye's rotation relative to the game camera (StereoHeadRelative), so the
 // culling view looks where you look.
-// ---------------------------------------------------------------------------------------------
 std::atomic<int32_t> s_headCullTurned, s_headCullSkipped;
 bool s_headCullRefused, s_loggedFirstTurn;
 // The look-at is a temporary on this thread's stack, or a fixed block in the game's data: then the
@@ -132,11 +121,10 @@ extern "C" void nvr_head_cull_builder(float* eye, float* target, float* up) {
 		memcpy(turnedTarget, target, 12);
 		memcpy(turnedUp, up, 12);
 	}
-	float firstPersonEye[3], shift[3] = {0, 0, 0};
-	bool moved = g_cfg.firstPerson && StereoWatching() &&
-				 pure::first_person_pos(eye, target, g_cfg.fpHeight, g_cfg.fpForward, firstPersonEye);
+	float shift[3] = {0, 0, 0};
+	bool moved = g_cfg.firstPerson && StereoWatching();  // first person: your eyes at the target
 	if (moved)
-		for (int k = 0; k < 3; k++) shift[k] = firstPersonEye[k] - eye[k];
+		for (int k = 0; k < 3; k++) shift[k] = target[k] - eye[k];
 	if (!turn && !moved) return;
 	if (turn && !s_loggedFirstTurn) {
 		s_loggedFirstTurn = true;

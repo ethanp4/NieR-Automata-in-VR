@@ -1,6 +1,4 @@
-// code_dump.cpp - [Debug] Ctrl+CaptureKey (Ctrl+F11): writes the game's decrypted code to a file.
-// The exe on disk is encrypted by Steam's DRM wrapper; this writes the loaded image as
-// NieRVR_code_dump.exe, laid out so disassemblers (llvm-objdump, Ghidra) read it like the original.
+// code_dump.cpp - [Debug] Ctrl+F11: writes the game's decrypted code to NieRVR_code_dump.exe.
 #include "debug/code_dump.h"
 #include "core/config.h"
 #include "core/log.h"

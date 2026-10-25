@@ -1,11 +1,4 @@
-// xr_main.cpp - the VR thread: OpenXR instance, system and session, swapchains, events, and the
-// thread's loop. Each headset frame is in xr_frame.cpp, the thread's D3D11 device in xr_device.cpp.
-//
-// The VR thread runs at the headset's refresh rate, independent of the game's frame rate.
-// Stereo: the game renders the left and right eyes (camera.cpp); each headset frame submits the
-// newest left and right images in a projection layer, re-aimed to this frame's head pose (late warp,
-// xr_frame.cpp) or with the eye poses they were rendered from.
-// Flat: the newest game frame on a quad layer floating in front of the user (menus, F12, startup).
+// xr_main.cpp - the VR thread: OpenXR instance, system and session, swapchains, events, and the thread's loop.
 #include "xr/xr_main.h"
 #include "core/locks.h"
 #include "xr/xr_thread.h"
@@ -22,9 +15,7 @@ VrState g_vr;
 std::atomic<DWORD> g_xrThreadId;
 
 namespace {
-// ---------------------------------------------------------------------------------------------
 // Error helpers
-// ---------------------------------------------------------------------------------------------
 const char* XrStr(XrResult result) {
 	static char buf[XR_MAX_RESULT_STRING_SIZE + 16];
 	if (g_vr.instance && g_vr.xrResultToString && XR_SUCCEEDED(g_vr.xrResultToString(g_vr.instance, result, buf))) return buf;
@@ -43,9 +34,7 @@ bool XrCheck(XrResult result, const char* what, bool perFrame) {
 	return false;
 }
 namespace {
-// ---------------------------------------------------------------------------------------------
 // Instance & system
-// ---------------------------------------------------------------------------------------------
 bool InitInstance() {
 	g_vr.getProcAddr = XrLoadEntry();
 	if (!g_vr.getProcAddr) return false;
@@ -67,18 +56,22 @@ bool InitInstance() {
 		extensions[i].type = XR_TYPE_EXTENSION_PROPERTIES;
 	}
 	if (!XR_CHECK(enumExtensions(nullptr, extensionCount, &extensionCount, extensions))) return false;
-	bool hasD3D11 = false, hasPico = false;
+	bool hasD3D11 = false, hasPico = false, hasHandTracking = false;
 	for (uint32_t i = 0; i < extensionCount; i++) {
 		LogV("OpenXR extension: %s v%u", extensions[i].extensionName, extensions[i].extensionVersion);
 		if (!lstrcmpA(extensions[i].extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME)) hasD3D11 = true;
 		if (!lstrcmpA(extensions[i].extensionName, "XR_BD_controller_interaction")) hasPico = true;  // Pico 4 / Neo3 controllers
+		if (!lstrcmpA(extensions[i].extensionName, XR_EXT_HAND_TRACKING_EXTENSION_NAME)) hasHandTracking = true;  // finger curls
 	}
 	if (!hasD3D11) {
 		Log("ERROR: OpenXR runtime does not support Direct3D 11 (XR_KHR_D3D11_enable)");
 		return false;
 	}
 
-	const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME, "XR_BD_controller_interaction"};
+	const char* enabled[3] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+	uint32_t enabledCount = 1;
+	if (hasPico) enabled[enabledCount++] = "XR_BD_controller_interaction";
+	if (hasHandTracking) enabled[enabledCount++] = XR_EXT_HAND_TRACKING_EXTENSION_NAME;
 	XrInstanceCreateInfo createInfo = {};
 	createInfo.type = XR_TYPE_INSTANCE_CREATE_INFO;
 	lstrcpynA(createInfo.applicationInfo.applicationName, "NieRVR", XR_MAX_APPLICATION_NAME_SIZE);
@@ -86,7 +79,7 @@ bool InitInstance() {
 	lstrcpynA(createInfo.applicationInfo.engineName, "NieRVR", XR_MAX_ENGINE_NAME_SIZE);
 	createInfo.applicationInfo.engineVersion = 1;
 	createInfo.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-	createInfo.enabledExtensionCount = hasPico ? 2 : 1;
+	createInfo.enabledExtensionCount = enabledCount;
 	createInfo.enabledExtensionNames = enabled;
 	XrResult result = createInstance(&createInfo, &g_vr.instance);
 	if (result == XR_ERROR_API_VERSION_UNSUPPORTED) {
@@ -108,7 +101,7 @@ bool InitInstance() {
 	XR_INSTANCE_FUNCS(LOAD_FN)
 #undef LOAD_FN
 	if (!ok) return false;
-	VrInputInit(g_vr.getProcAddr, g_vr.instance, hasPico);
+	VrInputInit(g_vr.getProcAddr, g_vr.instance, hasPico, hasHandTracking);
 
 	XrInstanceProperties props = {};
 	props.type = XR_TYPE_INSTANCE_PROPERTIES;
@@ -195,9 +188,7 @@ bool CheckHeadsetGpu() {
 	return true;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Session
-// ---------------------------------------------------------------------------------------------
 void DestroySwap(Swapchain& swap) {
 	for (uint32_t i = 0; i < kMaxImages; i++) SafeRelease(swap.rtv[i]);
 	if (swap.handle) g_vr.xrDestroySwapchain(swap.handle);
@@ -354,6 +345,7 @@ bool EnsureSwap(Swapchain& swap, uint32_t width, uint32_t height, const char* wh
 	swap.count = imageCount;
 	swap.w = width;
 	swap.h = height;
+	swap.retryAt = GetTickCount();  // the 2 s wait is only for after a failure
 	Log("%s swapchain %ux%u, %u images", what, width, height, imageCount);
 	return true;
 }
@@ -376,9 +368,7 @@ bool RenderInto(Swapchain& swap, ID3D11ShaderResourceView* srv, ID3D11ShaderReso
 }
 
 namespace {
-// ---------------------------------------------------------------------------------------------
 // Events & frame loop
-// ---------------------------------------------------------------------------------------------
 const char* StateName(XrSessionState state) {
 	switch (state) {
 		case XR_SESSION_STATE_IDLE: return "IDLE";

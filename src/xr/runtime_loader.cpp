@@ -1,11 +1,4 @@
 // runtime_loader.cpp - locating the OpenXR runtime.
-//
-// Two ways in:
-//  1. The official Khronos openxr_loader.dll, if present next to the mod (or set via LoaderPath).
-//     This also enables OpenXR API layers such as OpenXR Toolkit.
-//  2. Otherwise we do what that loader would do for the runtime part: read the active runtime's
-//     manifest from the registry and negotiate with the runtime DLL directly. This needs no extra
-//     files and works with SteamVR, Meta/Oculus, Virtual Desktop (VDXR), Pimax, Pico, WMR, etc.
 #include "xr/runtime_loader.h"
 #include "core/config.h"
 #include "core/log.h"

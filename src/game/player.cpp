@@ -1,14 +1,10 @@
-// player.cpp - the game's 2B: where it keeps her position, moved by your real steps (first person).
-//
-// NieRAutomata.exe+0x1020948 points at her object (found with the position finder, debug/position_finder.cpp;
-// the 2021 Steam build), and her position is at +0x50 (x y z). Writing it moves her: the game's copies
-// of her position are rebuilt from it every frame. Before writing, the object's position has to be
-// where her bones are (first_person.cpp), so a different object (another character, a cutscene, another
-// version of the game) is never written. Memory goes through Read/WriteProcessMemory: an object freed
-// meanwhile is skipped, not a crash.
+// Player position and facing hooks.
 #include "game/player.h"
 #include "core/log.h"
-#include "render/first_person.h"
+#include "core/safe_memory.h"
+#include "game/facing_finder.h"
+#include "game/first_person.h"
+#include "input/gamepad.h"
 #include <math.h>
 #include <stdint.h>
 #include <windows.h>
@@ -16,50 +12,105 @@
 namespace {
 constexpr uintptr_t kPlayerPointer = 0x1020948;  // in the exe's own memory
 constexpr uintptr_t kPositionOffset = 0x50;
-constexpr float kSameSpot = 1.5f;  // her object's position this close to her bones (metres, each axis)
+constexpr float kSameSpot = 1.5f;       // the object's position this close to the character's bones (metres, each axis)
+constexpr DWORD kAttackFacingMs = 120;  // after an attack button goes down, the facing is set this long
+constexpr float kStillFacing = 0.6f;    // radians: the found facing must still agree with the hips this well to be written
+constexpr DWORD kFinderReportMs = 60000;
 
-bool s_loggedFound, s_loggedMismatch;
+bool s_loggedFound, s_loggedMismatch, s_loggedAttackFacing, s_loggedFacingDisagrees;
+pure::FacingFinder s_finder;
+DWORD s_finderReportTick;
+uintptr_t s_finderObject;  // the object the finder looked at (a new one starts it over)
 
-bool ReadOwn(uintptr_t at, void* to, size_t size) {
-	SIZE_T got = 0;
-	return ReadProcessMemory(GetCurrentProcess(), (const void*)at, to, size, &got) && got == size;
-}
-
-bool WriteOwn(uintptr_t at, const void* from, size_t size) {
-	SIZE_T wrote = 0;
-	return WriteProcessMemory(GetCurrentProcess(), (void*)at, from, size, &wrote) && wrote == size;
-}
-
-// Where her position is, if her object is there and where her bones are (0: not).
-uintptr_t HerPosition(pure::V3* position) {
+// Returns the player object only when its position matches the character's bones.
+uintptr_t CharacterObject(pure::V3* position) {
 	pure::V3 feet;
 	if (!FirstPersonFeet(&feet)) return 0;
 	uintptr_t object = 0;
-	if (!ReadOwn((uintptr_t)GetModuleHandleW(nullptr) + kPlayerPointer, &object, sizeof(object)) || !object) return 0;
+	if (!SafeRead((uintptr_t)GetModuleHandleW(nullptr) + kPlayerPointer, &object, sizeof(object)) || !object) return 0;
 	float at[3];
-	if (!ReadOwn(object + kPositionOffset, at, sizeof(at))) return 0;
+	if (!SafeRead(object + kPositionOffset, at, sizeof(at))) return 0;
 	if (!(fabsf(at[0] - feet.x) < kSameSpot && fabsf(at[1] - feet.y) < kSameSpot && fabsf(at[2] - feet.z) < kSameSpot)) {
 		if (!s_loggedMismatch) {
 			s_loggedMismatch = true;
-			Log("player: the object at NieRAutomata.exe+0x%llx is at %.2f %.2f %.2f, her bones at %.2f %.2f %.2f: not her (left alone)",
+			Log("player: the object at NieRAutomata.exe+0x%llx is at %.2f %.2f %.2f, the character's bones at %.2f %.2f %.2f: "
+				"not them (left alone)",
 				(unsigned long long)kPlayerPointer, (double)at[0], (double)at[1], (double)at[2], (double)feet.x, (double)feet.y, (double)feet.z);
 		}
 		return 0;
 	}
 	if (!s_loggedFound) {
 		s_loggedFound = true;
-		Log("player: found 2B's object (NieRAutomata.exe+0x%llx -> %llx), her position at +0x%llx", (unsigned long long)kPlayerPointer,
-			(unsigned long long)object, (unsigned long long)kPositionOffset);
+		Log("player: found the character's object (NieRAutomata.exe+0x%llx -> %llx), their position at +0x%llx",
+			(unsigned long long)kPlayerPointer, (unsigned long long)object, (unsigned long long)kPositionOffset);
 	}
 	*position = {at[0], at[1], at[2]};
-	return object + kPositionOffset;
+	return object;
+}
+
+// One frame of looking for the facing in `object`, with the hips' yaw. Only reads.
+void FindFacing(uintptr_t object, float hipsYaw) {
+	if (object != s_finderObject) {
+		if (s_finderObject && s_finder.offset < 0) Log("player: a new player object: looking for the facing again");
+		s_finderObject = object;
+		if (s_finder.offset < 0) s_finder = {};
+	}
+	if (s_finder.offset >= 0) return;
+	static float floats[pure::FacingFinder::kFloats];
+	if (!SafeRead(object, floats, sizeof(floats))) return;
+	if (s_finder.sample(floats, hipsYaw)) {
+		Log("player: found the character's facing at +0x%x (the game's angle = %sthe yaw about +y): attacks will go where you look",
+			s_finder.offset, s_finder.sign > 0 ? "" : "minus ");
+		return;
+	}
+	if (GetTickCount() - s_finderReportTick > kFinderReportMs) {
+		s_finderReportTick = GetTickCount();
+		float share = 0;
+		int32_t directions = 0, best = s_finder.best(&share, &directions);
+		Log("player: still looking for the character's facing (%u frames; best +0x%x agreed %.0f%%, facing %d of 8 ways). Turn "
+			"around now and then",
+			s_finder.samples, best, (double)(share * 100), directions);
+	}
+}
+
+// Sets the character's facing after an attack starts.
+void FaceForAttack(uintptr_t object, float hipsYaw, float yaw) {
+	if (s_finder.offset < 0 || object != s_finderObject) return;
+	uintptr_t at = object + (uintptr_t)s_finder.offset;
+	float now;
+	if (!SafeRead(at, &now, sizeof(now))) return;
+	if (fabsf(pure::wrap_angle(s_finder.sign * now - hipsYaw)) > kStillFacing) {  // not the facing any more: leave it
+		if (!s_loggedFacingDisagrees) {
+			s_loggedFacingDisagrees = true;
+			Log("player: the facing at +0x%x (%.2f) doesn't agree with the hips (%.2f): not turned for the attack", s_finder.offset,
+				(double)now, (double)hipsYaw);
+		}
+		return;
+	}
+	float value = s_finder.sign * yaw;
+	if (!SafeWrite(at, &value, sizeof(value))) return;
+	if (!s_loggedAttackFacing) {
+		s_loggedAttackFacing = true;
+		Log("player: an attack turned towards where you look (%.0f deg from where they faced)", (double)(pure::wrap_angle(yaw - hipsYaw) * 57.29578f));
+	}
 }
 }  // namespace
 
 bool PlayerMove(pure::V3 step) {
 	pure::V3 position;
-	uintptr_t at = HerPosition(&position);
-	if (!at) return false;
-	float x = position.x + step.x, z = position.z + step.z;  // x and z only: the game keeps her height (the ground)
-	return WriteOwn(at, &x, sizeof(x)) && WriteOwn(at + 8, &z, sizeof(z));
+	uintptr_t object = CharacterObject(&position);
+	if (!object) return false;
+	float x = position.x + step.x, z = position.z + step.z;  // x and z only: the game keeps their height (the ground)
+	return SafeWrite(object + kPositionOffset, &x, sizeof(x)) && SafeWrite(object + kPositionOffset + 8, &z, sizeof(z));
+}
+
+void PlayerUpdate(pure::V3 lookForward) {
+	float hipsYaw;
+	pure::V3 position;
+	if (!FirstPersonFacing(&hipsYaw)) return;
+	uintptr_t object = CharacterObject(&position);
+	if (!object) return;
+	FindFacing(object, hipsYaw);
+	if (GetTickCount() - GamepadAttackTick() < kAttackFacingMs && (lookForward.x != 0 || lookForward.z != 0))
+		FaceForAttack(object, hipsYaw, pure::yaw_of({lookForward.x, 0, lookForward.z}));
 }
