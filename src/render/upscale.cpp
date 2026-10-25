@@ -390,6 +390,10 @@ bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UIN
 	EnterCriticalSection(&g_share.lock);
 	UINT nativeW = g_share.nativeW, nativeH = g_share.nativeH;
 	LeaveCriticalSection(&g_share.lock);
+	if (!nativeW || !nativeH) {
+		nativeW = (UINT)g_cfg.headsetWidth;
+		nativeH = (UINT)g_cfg.headsetHeight;
+	}
 	UINT wantW = (UINT)(nativeW * g_cfg.upscaleOutput / 100), wantH = (UINT)(nativeH * g_cfg.upscaleOutput / 100);
 	if (!s_targetW || wantW > s_targetW * 1.03f || wantW * 1.03f < s_targetW || wantH > s_targetH * 1.03f || wantH * 1.03f < s_targetH)
 		s_targetW = wantW, s_targetH = wantH;

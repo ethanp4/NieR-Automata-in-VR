@@ -83,7 +83,7 @@ trackpads = sticks.
   Ctrl+F6 / F7    camera closer / farther (stronger / weaker 3D)
   Ctrl+F9 / F10   world bigger / smaller
   Ctrl+Shift+F5   head culling on/off
-Diagnostics: F11 frame capture.
+Diagnostics: F11 frame capture, Ctrl+F11 dump of the game's decrypted code.
 
 ## Notes
 

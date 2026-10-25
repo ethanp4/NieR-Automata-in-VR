@@ -4,6 +4,7 @@
 #include "core/config.h"
 #include "core/log.h"
 #include "core/pure.h"
+#include "input/waggle.h"
 #include "ui/menu.h"
 #include "xr/openxr.h"
 #include <atomic>
@@ -66,16 +67,19 @@ DWORD s_pulseTick[2];
 
 pure::MenuButton s_menuButton;  // Start / Back / D-pad from the left menu button
 
-// motion controls
-// pure::SwingDetector s_swingDetectors[2];
-// pure::HeadZone g_headZone[2];
-DWORD s_attackHeldUntil[2];                  // the attack button is held until then (100 ms per swing)
-XrVector3f s_lastHandPos[2], s_lastHeadPos;  // for speeds when the runtime gives no velocity
-XrTime s_lastTime;
-bool s_lastPosValid;
-uint32_t s_swingCount[2];
-float s_peakSpeed[2];
-DWORD s_peakResetTick;
+// motion controls (input/waggle.h)
+constexpr bool kStabAttacks = true;  // false: a forward poke never attacks, only slashes do
+pure::SwingAnalyser s_swings[2];
+DWORD s_attackHeldUntil[2];  // the attack button is held until then (100 ms per attack)
+uint32_t s_attackCount[2];
+DWORD s_infoTick;  // the Info page line, once a second
+// a hand's pose last frame, for the velocities a runtime doesn't give
+struct LastHand {
+	bool valid;
+	XrTime time;
+	XrPosef pose;
+};
+LastHand s_lastHand[2];
 // the stats overlay's hand numbers: peaks since VrInputTakeHandPeaks, and last frame's velocities
 HandPeaks s_handPeaks[2] = {{-1, -1, -1, -1}, {-1, -1, -1, -1}};
 XrVector3f s_lastVel[2], s_lastSpin[2];
@@ -409,7 +413,12 @@ void VrInputAttach(XrSession session) {
 			Log("vr controllers: no %s hand position (motion controls won't work)", hand ? "right" : "left");
 		}
 	}
-	s_lastPosValid = false;
+	for (int hand = 0; hand < 2; hand++) {
+		s_swings[hand] = {};
+		s_lastHand[hand] = {};
+	}
+	Log("motion controls: %s, %s sensitivity, %s", g_cfg.motionControls ? "on" : "off", g_cfg.swingSensitivity ? "normal" : "relaxed",
+		kStabAttacks ? "slashes and stabs attack" : "only slashes attack (stabs off)");
 }
 
 void VrInputDetach() {
@@ -534,21 +543,51 @@ void VrInputRumble(WORD left, WORD right) {
 }
 
 namespace {
-bool Locate(XrSpace space, XrSpace base, XrTime time, XrVector3f* pos, XrVector3f* vel, bool* velValid,
-			XrVector3f* spin = nullptr, bool* spinValid = nullptr) {
+// One space located at one time, with its velocities.
+struct Located {
+	bool valid;    // position and orientation known
+	bool tracked;  // and actually tracked, not guessed
+	XrPosef pose;
+	XrVector3f linear, angular;  // m/s, rad/s in the base space
+	bool linearValid, angularValid;
+};
+
+Located Locate(XrSpace space, XrSpace base, XrTime time) {
 	XrSpaceVelocity velocity = {XR_TYPE_SPACE_VELOCITY};
 	XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION, &velocity};
-	if (XR_FAILED(s_xr.xrLocateSpace(space, base, time, &location)) || !(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
-		return false;
-	*pos = location.pose.position;
-	*vel = velocity.linearVelocity;
-	*velValid = (velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0;
-	if (spin) {
-		*spin = velocity.angularVelocity;
-		*spinValid = (velocity.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) != 0;
-	}
-	return true;
+	Located out = {};
+	if (XR_FAILED(s_xr.xrLocateSpace(space, base, time, &location))) return out;
+	const XrSpaceLocationFlags known = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+	out.valid = (location.locationFlags & known) == known;
+	out.tracked = (location.locationFlags & XR_SPACE_LOCATION_POSITION_TRACKED_BIT) != 0;
+	out.pose = location.pose;
+	out.linear = velocity.linearVelocity;
+	out.angular = velocity.angularVelocity;
+	out.linearValid = (velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0;
+	out.angularValid = (velocity.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) != 0;
+	return out;
 }
+
+pure::V3 ToV3(XrVector3f v) { return {v.x, v.y, v.z}; }
+pure::Q ToQ(XrQuaternionf q) { return {q.x, q.y, q.z, q.w}; }
+
+// The velocities a runtime didn't give, from the change since last frame (zero when there is none).
+void FillMissingVelocities(Located& hand, const LastHand& last, double dt) {
+	bool usable = last.valid && dt > 0.001 && dt < 0.1;
+	if (!hand.linearValid) {
+		pure::V3 v = usable ? (ToV3(hand.pose.position) - ToV3(last.pose.position)) / (float)dt : pure::V3{};
+		hand.linear = {v.x, v.y, v.z};
+	}
+	if (!hand.angularValid) {
+		// the turn from last frame's orientation to this one; for small angles its axis times the angle is
+		// twice its vector part
+		pure::Q turn = pure::q_mul(ToQ(hand.pose.orientation), pure::conj(ToQ(last.pose.orientation)));
+		float shorterWay = turn.w < 0 ? -1.0f : 1.0f;
+		pure::V3 w = usable ? pure::V3{turn.x, turn.y, turn.z} * (2 * shorterWay / (float)dt) : pure::V3{};
+		hand.angular = {w.x, w.y, w.z};
+	}
+}
+
 float Length(XrVector3f v) { return pure::fsqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
 XrVector3f Sub(XrVector3f a, XrVector3f b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
 void Raise(float& peak, float value) {
@@ -581,10 +620,38 @@ void SwingPulse(int hand) {
 	vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
 	s_xr.xrApplyHapticFeedback(s_session, &hapticInfo, (const XrHapticBaseHeader*)&vibration);
 }
+
+// An attack: the hand's button (right = light attack X, left = heavy attack Y) for 100 ms, and a pulse.
+void Attack(int hand, DWORD now) {
+	s_attackHeldUntil[hand] = now + 100;
+	s_attackCount[hand]++;
+	SwingPulse(hand);
+	ExclusiveLock guard(&s_padLock);  // into the pad at once (VrInputSync adds it from then on)
+	s_gamepad.wButtons |= hand ? XINPUT_GAMEPAD_X : XINPUT_GAMEPAD_Y;
+	s_gamepadTick = now;
+}
+
+// "motion controls: right slash locked (angular acceleration 23.1, needs 20.0)" and so on: the log
+// shows each attack and why the ones that didn't fire were rejected.
+void LogSwing(int hand, const pure::SwingStep& step, float armLength) {
+	const char* side = hand ? "right" : "left";
+	const char* kind = pure::swing_kind_name(step.kind);
+	bool slash = step.kind == pure::SWING_SLASH;
+	float travelScale = slash ? 57.29578f : 100.0f;  // degrees or cm
+	const char* travelUnit = slash ? "deg" : "cm";
+	if (step.locked) Log("motion controls: %s %s locked (%s %.1f, needs %.1f)", side, kind, step.lockedBy, (double)step.value, (double)step.limit);
+	if (step.fired)
+		Log("motion controls: %s %s ATTACK after %.0f %s (needs %.0f), power %.2f, arm %.2f m", side, kind, (double)(step.travel * travelScale),
+			travelUnit, (double)(step.travelNeeded * travelScale), (double)step.power, (double)armLength);
+	if (step.ended && step.hadFired)
+		Log("motion controls: %s %s over (%s %.2f, limit %.2f), %.0f %s, power %.2f", side, kind, step.endedBy, (double)step.value,
+			(double)step.limit, (double)(step.travel * travelScale), travelUnit, (double)step.power);
+	else if (step.ended)
+		Log("motion controls: %s %s rejected: %s %.2f (limit %.2f) after %.0f of %.0f %s", side, kind, step.endedBy, (double)step.value,
+			(double)step.limit, (double)(step.travel * travelScale), (double)(step.travelNeeded * travelScale), travelUnit);
+}
 }  // namespace
 
-// Each VR frame after VrInputSync: motion controls. Hand speeds relative to the head (both located
-// in `local` at the frame's display time); a swing holds the attack button for 100 ms.
 void VrInputTakeHandPeaks(HandPeaks out[2]) {
 	for (int hand = 0; hand < 2; hand++) {
 		out[hand] = s_handPeaks[hand];
@@ -592,62 +659,46 @@ void VrInputTakeHandPeaks(HandPeaks out[2]) {
 	}
 }
 
+// Each VR frame after VrInputSync: motion controls. Both hands and the head are located in `local` at
+// the frame's display time; each hand's analyser turns its motion into slashes and stabs.
 void VrInputMotion(XrSpace local, XrSpace view, XrTime time, bool focused, bool flipped) {
 	if (!s_attached || !focused || !s_handSpace[0] || !s_handSpace[1] || !local || !view) return;
-	XrVector3f head, headVel, pos[2], vel[2], spin[2];
-	bool headVelValid, velValid[2], spinValid[2];
-	if (!Locate(view, local, time, &head, &headVel, &headVelValid)) return;
-	bool located[2];
-	for (int hand = 0; hand < 2; hand++)
-		located[hand] = Locate(s_handSpace[hand], local, time, &pos[hand], &vel[hand], &velValid[hand], &spin[hand], &spinValid[hand]);
-	// no velocity from the runtime: from the positions since the last frame
-	double dt = s_lastPosValid ? (double)(time - s_lastTime) / 1e9 : 0;
-	bool diffUsable = dt > 0.001 && dt < 0.1;
-	if (!headVelValid) headVel = diffUsable ? XrVector3f{(float)((head.x - s_lastHeadPos.x) / dt), (float)((head.y - s_lastHeadPos.y) / dt),
-														 (float)((head.z - s_lastHeadPos.z) / dt)}
-											: XrVector3f{0, 0, 0};
+	Located head = Locate(view, local, time);
+	if (!head.valid) return;
+	pure::SwingProfile profile = pure::swing_profile(g_cfg.swingSensitivity);
+	profile.stabs = kStabAttacks;
+	bool attacksOn = g_cfg.motionControls && g_cfg.vrControllers && !MenuIsOpen() && !s_keyboardMouseMode;
 	DWORD now = GetTickCount();
 	for (int hand = 0; hand < 2; hand++) {
-		if (!located[hand]) {
+		Located located = Locate(s_handSpace[hand], local, time);
+		LastHand& last = s_lastHand[hand];
+		if (!located.valid) {
+			last.valid = false;
 			s_lastVelValid[hand] = s_lastSpinValid[hand] = false;
 			continue;
 		}
-		if (!velValid[hand]) {
-			if (!diffUsable) {
-				s_lastVelValid[hand] = s_lastSpinValid[hand] = false;
-				continue;
-			}
-			vel[hand] = {(float)((pos[hand].x - s_lastHandPos[hand].x) / dt), (float)((pos[hand].y - s_lastHandPos[hand].y) / dt),
-						 (float)((pos[hand].z - s_lastHandPos[hand].z) / dt)};
-		}
-		TrackHandPeaks(hand, vel[hand], spinValid[hand] ? &spin[hand] : nullptr, dt);
-		XrVector3f relative = Sub(vel[hand], headVel);
-		float speed = Length(relative);
-		if (speed > s_peakSpeed[hand]) s_peakSpeed[hand] = speed;
-		bool swingsEnabled = g_cfg.motionControls && g_cfg.vrControllers && !MenuIsOpen() && !s_keyboardMouseMode;
-		// if (s_swingDetectors[hand].update(swingsEnabled ? speed : 0, now, g_cfg.swingSpeed) && swingsEnabled) {
-		// 	s_attackHeldUntil[hand] = now + 100;
-		// 	s_swingCount[hand]++;
-		// 	if (s_swingCount[0] + s_swingCount[1] == 1) Log("motion controls: first swing (%s hand, %.1f m/s)", hand ? "right" : "left", (double)speed);
-		// 	LogV("motion controls: %s swing %.1f m/s", hand ? "right" : "left", (double)speed);
-		// 	SwingPulse(hand);
-		// 	ExclusiveLock guard(&s_padLock);  // into the pad at once (VrInputSync adds it from then on)
-		// 	s_gamepad.wButtons |= hand ? XINPUT_GAMEPAD_X : XINPUT_GAMEPAD_Y;
-		// 	s_gamepadTick = now;
-		// }
+		double dt = last.valid ? (double)(time - last.time) / 1e9 : 0;
+		FillMissingVelocities(located, last, dt);
+		last = {true, time, located.pose};
+		TrackHandPeaks(hand, located.linear, &located.angular, dt);
+		pure::SwingSample sample = {time,
+									located.tracked,
+									ToV3(located.pose.position),
+									ToQ(located.pose.orientation),
+									ToV3(located.linear),
+									ToV3(located.angular),
+									ToV3(head.pose.position)};
+		pure::SwingStep step = s_swings[hand].update(sample, profile);
+		if (!attacksOn) continue;
+		if (step.locked || step.fired || step.ended) LogSwing(hand, step, s_swings[hand].armLength());
+		if (step.fired) Attack(hand, now);
 	}
-	for (int hand = 0; hand < 2; hand++) s_lastHandPos[hand] = pos[hand];
-	s_lastHeadPos = head;
-	s_lastTime = time;
-	s_lastPosValid = located[0] && located[1];
-	// the Info page: swings so far and the fastest hand speeds of the last second
-	if (now - s_peakResetTick >= 1000) {
-		s_peakResetTick = now;
+	if (now - s_infoTick >= 1000) {
+		s_infoTick = now;
 		char info[160];
-		snprintf(info, sizeof(info), "Motion controls %s: swings left %u, right %u; fastest last second %.1f / %.1f m/s (needs %.1f)",
-				 g_cfg.motionControls ? "on" : "off", s_swingCount[0], s_swingCount[1], (double)s_peakSpeed[0], (double)s_peakSpeed[1],
-				 (double)g_cfg.swingSpeed);
+		snprintf(info, sizeof(info), "Motion controls %s (%s): attacks left %u, right %u; arm length %.2f / %.2f m",
+				 g_cfg.motionControls ? "on" : "off", g_cfg.swingSensitivity ? "normal" : "relaxed", s_attackCount[0], s_attackCount[1],
+				 (double)s_swings[0].armLength(), (double)s_swings[1].armLength());
 		MenuSetInfo(INFO_MOTION_CONTROLS, info);
-		s_peakSpeed[0] = s_peakSpeed[1] = 0;
 	}
 }

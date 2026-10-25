@@ -27,8 +27,9 @@ struct FrameShare {
 	UINT requestW, requestH;
 	UINT requestSceneW, requestSceneH;  // the scene-only images: larger than the frame when upscaling
 	bool requestKey;                    // upscaling: also the scene images before upscaling (ringKey)
-	// written by the VR thread: the game-image size with the detail the headset recommends (0 = not
-	// known yet): the upscaler's output follows it
+	// written by the VR thread: the game-image size with the detail the headset recommends, in the
+	// headset's shape (0 = not seen yet: HeadsetWidth/HeadsetHeight from the ini). The upscaler's output
+	// is the current game image enlarged until it has that detail both ways
 	UINT nativeW, nativeH;
 	DXGI_FORMAT requestFormat;
 	// reply: written by the VR thread (under lock): a ring of shared textures

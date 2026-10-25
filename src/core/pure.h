@@ -285,17 +285,17 @@ inline bool level_reference(Q head, bool* flipped, Q* out) {
 	return true;
 }
 
-// Extra resolutions (extra_resolutions.cpp): 125-300% of the monitor's desktop size, rounded to 8
-// pixels, within Direct3D 11's 16384 limit, leaving out sizes the mode list already has (NVIDIA
-// DSR/DLDSR modes). `listed` holds (w << 16 | h). Returns how many sizes were written (at most
-// kSupersampleFactorCount).
-inline constexpr float kSupersampleFactors[] = {1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f};
-inline constexpr int32_t kSupersampleFactorCount = std::size(kSupersampleFactors);
-inline int supersample_sizes(uint32_t bw, uint32_t bh, const uint32_t* listed, int nlisted, uint32_t* ow, uint32_t* oh) {
+// Headset-shaped resolutions (extra_resolutions.cpp): 50-100% of the size that gives the headset its full
+// detail (fullW x fullH, saved from the last session), rounded to 8 pixels, from 640x480 to Direct3D
+// 11's 16384, leaving out sizes the mode list already has. `listed` holds (w << 16 | h). Returns how
+// many were written (at most kHeadsetScaleCount).
+inline constexpr float kHeadsetScales[] = {0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f};
+inline constexpr int32_t kHeadsetScaleCount = std::size(kHeadsetScales);
+inline int headset_sizes(uint32_t fullW, uint32_t fullH, const uint32_t* listed, int nlisted, uint32_t* ow, uint32_t* oh) {
 	int n = 0;
-	for (int k = 0; k < kSupersampleFactorCount; k++) {
-		uint32_t w = ((uint32_t)(bw * kSupersampleFactors[k] + 4)) & ~7u, h = ((uint32_t)(bh * kSupersampleFactors[k] + 4)) & ~7u;
-		if (w > 16384 || h > 16384) break;
+	for (float scale : kHeadsetScales) {
+		uint32_t w = ((uint32_t)(fullW * scale + 4)) & ~7u, h = ((uint32_t)(fullH * scale + 4)) & ~7u;
+		if (w < 640 || h < 480 || w > 16384 || h > 16384) continue;
 		uint32_t key = (w & 0xffff) << 16 | (h & 0xffff);
 		bool dup = false;
 		for (int j = 0; j < nlisted && !dup; j++) dup = listed[j] == key;

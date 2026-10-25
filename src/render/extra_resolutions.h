@@ -1,4 +1,4 @@
-// extra_resolutions.h - lets the game render above the monitor's resolution (extra_resolutions.cpp).
+// extra_resolutions.h - adds headset-shaped resolutions to the game's list (extra_resolutions.cpp).
 #pragma once
 #include <d3d11.h>
 

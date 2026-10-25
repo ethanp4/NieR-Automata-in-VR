@@ -1,105 +1,125 @@
-// Motion controls: a swing of a hand fires once (pure::SwingDetector).
+// Motion controls: slashes and stabs from a hand's motion (pure::SwingAnalyser, input/waggle.h).
+#include <cmath>
 #include <cstdio>
-#include "core/pure.h"
+#include <initializer_list>
+#include "input/waggle.h"
+
+using namespace pure;
+
 static int fails;
-static void check(bool c, const char* w) {
+static void check(bool c, const char* what) {
 	if (!c) {
-		std::printf("FAIL %s\n", w);
+		std::printf("FAIL %s\n", what);
 		fails++;
 	}
 }
-// Feeds speeds at 90 Hz (11 ms apart) starting at t, returns how many times it fired.
-static int run(pure::SwingDetector& d, const float* speeds, int n, uint32_t& t, float fire = 2.0f) {
-	int fires = 0;
-	for (int i = 0; i < n; i++, t += 11) fires += d.update(speeds[i], t, fire);
-	return fires;
-}
+
+// A simulated hand at 90 Hz. Each step moves it with a velocity in its own frame (-Z = where the fist
+// points) and turns it about an axis of its own frame, like a real wrist.
+struct Hand {
+	SwingAnalyser analyser;
+	SwingProfile profile = swing_profile(1);
+	int64_t timeNs = 1000000000;
+	V3 position = {0.2f, 1.2f, -0.4f};
+	Q rotation = {0, 0, 0, 1};
+	V3 head = {0, 1.6f, 0};  // about half a metre from the hand
+	bool tracked = true;
+	int fires = 0, slashes = 0, stabs = 0, rejected = 0;
+
+	void step(V3 localLinear, V3 localAngular) {
+		const float dt = 1.0f / 90;
+		V3 linear = rotate(rotation, localLinear), angular = rotate(rotation, localAngular);
+		position = position + linear * dt;
+		float angle = length(localAngular) * dt;
+		if (angle > 0) {
+			V3 axis = localAngular / length(localAngular);
+			float s = std::sin(angle / 2);
+			rotation = q_mul(rotation, Q{axis.x * s, axis.y * s, axis.z * s, std::cos(angle / 2)});
+		}
+		timeNs += 11111111;
+		SwingStep result = analyser.update({timeNs, tracked, position, rotation, linear, angular, head}, profile);
+		if (result.fired) {
+			fires++;
+			slashes += result.kind == SWING_SLASH;
+			stabs += result.kind == SWING_STAB;
+		}
+		if (result.ended && !result.hadFired) rejected++;
+	}
+	void still(int frames) {
+		for (int i = 0; i < frames; i++) step({}, {});
+	}
+	// a slash: turning about the hand's X axis, up to `speed` rad/s, held for `frames`
+	void slash(float speed, int frames, float sign = 1) {
+		for (float ramp : {0.3f, 0.6f, 0.9f}) step({0, 1.0f * sign, 0}, {speed * ramp * sign, 0, 0});
+		for (int i = 0; i < frames; i++) step({0, 1.5f * sign, 0}, {speed * sign, 0, 0});
+		for (float ramp : {0.5f, 0.2f}) step({0, 0.5f * sign, 0}, {speed * ramp * sign, 0, 0});
+	}
+};
+
 int main() {
-	{  // one swing: speed rises past 2 m/s and falls again -> one attack
-		pure::SwingDetector d;
-		uint32_t t = 1000;
-		const float s[] = {0.1f, 0.5f, 1.2f, 2.1f, 3.0f, 3.4f, 2.8f, 1.9f, 1.1f, 0.4f, 0.1f};
-		check(run(d, s, 11, t) == 1, "one swing fires once");
+	{
+		Hand h;
+		h.still(90);
+		check(h.fires == 0 && h.rejected == 0, "a still hand does nothing");
 	}
-	{  // slow movement never fires
-		pure::SwingDetector d;
-		uint32_t t = 1000;
-		const float s[] = {0.3f, 0.8f, 1.5f, 1.9f, 1.7f, 1.0f, 0.5f};
-		check(run(d, s, 7, t) == 0, "below the threshold: nothing");
+	{
+		Hand h;
+		h.still(10);
+		h.slash(9, 12);  // ~1 rad = 57 degrees
+		h.still(40);
+		check(h.fires == 1 && h.slashes == 1, "a clean slash attacks once");
 	}
-	{  // jitter around the threshold without slowing down: still one attack
-		pure::SwingDetector d;
-		uint32_t t = 1000;
-		const float s[] = {2.1f, 1.9f, 2.05f, 1.95f, 2.2f, 1.8f, 2.1f, 1.6f, 2.0f};
-		check(run(d, s, 9, t) == 1, "jitter at the threshold fires once");
+	{
+		Hand h;
+		h.still(10);
+		for (float ramp : {0.3f, 0.7f}) h.step({0, 0, -2.5f * ramp}, {});
+		for (int i = 0; i < 8; i++) h.step({0, 0, -2.5f}, {});  // 2.5 m/s along -Z: ~0.2 m
+		for (float ramp : {0.5f, 0.1f}) h.step({0, 0, -2.5f * ramp}, {});
+		h.still(40);
+		check(h.fires == 1 && h.stabs == 1, "a clean stab attacks once");
 	}
-	{  // two separate swings -> two attacks
-		pure::SwingDetector d;
-		uint32_t t = 1000;
-		const float s[] = {0.2f, 2.5f, 3.0f, 1.5f, 0.6f, 0.2f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
-						   0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 2.6f, 3.1f, 1.0f, 0.2f};
-		check(run(d, s, 29, t) == 2, "two swings fire twice");
+	{
+		Hand h;
+		h.profile.stabs = false;
+		h.still(10);
+		for (float ramp : {0.3f, 0.7f}) h.step({0, 0, -2.5f * ramp}, {});
+		for (int i = 0; i < 8; i++) h.step({0, 0, -2.5f}, {});
+		for (float ramp : {0.5f, 0.1f}) h.step({0, 0, -2.5f * ramp}, {});
+		h.still(40);
+		check(h.fires == 0, "with stabs off a stab doesn't attack");
 	}
-	{  // a quick back-and-forth inside the cooldown counts once
-		pure::SwingDetector d;
-		uint32_t t = 1000;
-		const float s[] = {2.5f, 0.5f, 2.5f, 0.5f, 2.5f};  // 44 ms: shorter than the 250 ms cooldown
-		check(run(d, s, 5, t) == 1, "back-and-forth within the cooldown fires once");
+	{
+		Hand h;
+		h.still(10);
+		for (int i = 0; i < 45; i++) h.step({0, 1.0f, 0}, {0.8f, 0, 0});  // half a second lifting the arm slowly
+		h.still(20);
+		check(h.fires == 0, "a slow lift is not an attack");
 	}
-	{  // a different threshold
-		pure::SwingDetector d;
-		uint32_t t = 1000;
-		const float s[] = {0.5f, 1.2f, 0.4f};
-		check(run(d, s, 3, t, 1.0f) == 1, "threshold 1.0 m/s");
+	{
+		Hand h;
+		h.still(10);
+		for (int i = 0; i < 20; i++) h.step({0, 0.5f, 0}, {(i % 2 ? -8.0f : 8.0f), 0, 0});  // fast but shaking back and forth
+		h.still(20);
+		check(h.fires == 0, "a wobbling wrist is not an attack");
+		check(h.rejected >= 1, "the wobble is rejected (and logged)");
 	}
-	{  // direction: upward swings are recognised, also in a flipped (+Y down) space
-		using pure::mostly_up;
-		check(mostly_up({0, 3, 0}, 1), "straight up");
-		check(mostly_up({1, 2, 0}, 1), "steeply up (63 deg)");
-		check(!mostly_up({2, 1, 0}, 1), "shallow up (27 deg) still counts as a swing");
-		check(!mostly_up({0, -3, 0}, 1), "straight down");
-		check(!mostly_up({3, 0, 1}, 1), "sideways");
-		check(!mostly_up({0, 0, 0}, 1), "not moving");
-		check(mostly_up({0, -3, 0}, -1), "flipped space: -Y is up");
-		check(!mostly_up({0, 3, 0}, -1), "flipped space: +Y is down");
+	{
+		Hand h;
+		h.still(10);
+		h.slash(9, 12);
+		h.still(50);  // over half a second later
+		h.slash(9, 12, -1);
+		h.still(40);
+		check(h.fires == 2, "two slashes attack twice");
 	}
-	{  // raise then swing down: the raise is ignored, the downswing attacks once
-		pure::SwingDetector d;
-		uint32_t t = 1000;
-		const pure::V3 v[] = {{0, 1, 0}, {0, 2.5f, 0}, {0, 3, 0.2f}, {0, 1, 0}, {0, 0.2f, 0}, {0, -1, 0.5f}, {0, -2.5f, 1}, {0, -3.5f, 1}, {0, -2, 0.5f}, {0, -0.5f, 0}};
-		int fires = 0;
-		for (const pure::V3& s : v) {
-			float speed = pure::fsqrt(s.x * s.x + s.y * s.y + s.z * s.z);
-			fires += d.update(pure::mostly_up(s, 1) ? 0 : speed, t, 2.0f);
-			t += 11;
-		}
-		check(fires == 1, "raise ignored, downswing fires once");
+	{
+		Hand h;
+		h.tracked = false;
+		h.still(10);
+		h.slash(9, 12);
+		h.still(40);
+		check(h.fires == 0, "an untracked hand never attacks");
 	}
-	{  // headset zone: hand at the head, then lowered quickly -> no attack; a normal swing later -> attack
-		pure::SwingDetector detector;
-		uint32_t t = 1000;
-		struct F {
-			float dist, speed;
-		};
-		const F f[] = {{0.5f, 0.5f}, {0.3f, 1.0f}, {0.2f, 0.8f}, {0.15f, 2.5f}, {0.15f, 2.2f}, {0.2f, 0.5f},  // adjusting
-					   {0.3f, 2.4f},
-					   {0.4f, 2.8f},
-					   {0.5f, 2.0f},
-					   {0.6f, 0.8f}};                                  // lowering
-		int fires = 0;
-		for (const F& s : f) {
-			fires += detector.update(s.speed, t, 2.0f);
-			t += 11;
-		}
-		check(fires == 0, "hand at the headset and lowered right after: no attack");
-		t += 500;  // later, a normal swing away from the head
-		const F g[] = {{0.5f, 1.0f}, {0.55f, 2.6f}, {0.6f, 3.2f}, {0.6f, 1.0f}};
-		for (const F& s : g) {
-			fires += detector.update(s.speed, t, 2.0f);
-			t += 11;
-		}
-		check(fires == 1, "normal swing after the headset zone fires");
-	}
-	if (!fails) std::printf("swing tests passed\n");
+	if (!fails) std::printf("swing: all passed\n");
 	return fails ? 1 : 0;
 }

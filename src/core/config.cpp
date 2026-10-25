@@ -68,15 +68,15 @@ constexpr Setting kSettings[] = {
 		1,
 		"1 = swing a VR controller to attack: right hand = light attack (X), left hand = heavy attack (Y).\n"
 		"The buttons keep working too"),
-	S_FLT(
+	S_INT(
 		"Input",
-		"SwingSpeed",
-		swingSpeed,
-		1.5f,
-		0.8f,
-		5.0f,
-		"How fast (metres per second, relative to your head) a hand must move to count as a swing.\n"
-		"Lower = easier to trigger; higher = only big swings. The Info page shows your swing speeds"),
+		"SwingSensitivity",
+		swingSensitivity,
+		1,
+		0,
+		1,
+		"Motion controls: 0 = relaxed (smaller, sloppier swings and stabs count), 1 = normal.\n"
+		"The log shows each attack, and why a swing that didn't attack was rejected"),
 	S_FLT(
 		"Screen",
 		"Distance",
@@ -206,7 +206,7 @@ constexpr Setting kSettings[] = {
 		"Stereo",
 		"Synchronized",
 		synchronized,
-		0,
+		1,
 		0,
 		1,
 		"Stereo mode: 0 = alternating (one eye per game frame), 1 = synchronized (both eyes every game\n"
@@ -341,9 +341,30 @@ constexpr Setting kSettings[] = {
 		1,
 		0,
 		2,
-		"EXPERIMENTAL supersampling: 1 = offer resolutions above your monitor's (125%-300%) in the game's\n"
-		"settings; 2 = also rewrite the game's built-in resolution list (try if 1 shows nothing new).\n"
+		"1 = offer resolutions in your headset's shape (50%-100% of its full detail, see HeadsetWidth) in the\n"
+		"game's settings; 2 = also rewrite the game's built-in resolution list (try if 1 shows nothing new).\n"
 		"Use the game's windowed/borderless mode with them. See the README."),
+	S_INT(
+		"Render",
+		"HeadsetWidth",
+		headsetWidth,
+		2160,
+		640,
+		16384,
+		"The game resolution that looks native in your headset (its full detail). It is larger than the\n"
+		"resolution your VR runtime asks for, because the game picture also covers a margin around your\n"
+		"view (FovScale) and the wider side of each eye's view. The game's resolution list offers 50%-100%\n"
+		"of it (your headset's shape, lighter sizes for slower graphics cards) when ExtraResolutions is on,\n"
+		"and DLSS enlarges to it. Written automatically each time the headset is used, so the list fits it\n"
+		"from the next start"),
+	S_INT(
+		"Render",
+		"HeadsetHeight",
+		headsetHeight,
+		2304,
+		480,
+		16384,
+		nullptr),
 	S_INT(
 		"Render",
 		"AmbientOcclusion",
@@ -559,7 +580,8 @@ constexpr Setting kSettings[] = {
 		"CaptureKey",
 		keyCapture,
 		VK_F11,
-		"Camera probe: press this key in game to record one frame for analysis (default F11)"),
+		"Camera probe: press this key in game to record one frame for analysis (default F11).\n"
+		"Ctrl+this key writes the game's decrypted code to NieRVR_code_dump.exe, for disassembly"),
 	S_INT(
 		"Debug",
 		"Probe",

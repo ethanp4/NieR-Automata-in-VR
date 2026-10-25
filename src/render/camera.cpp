@@ -59,6 +59,7 @@ bool s_synchronized;  // this frame: left eye live, right eye replayed
 bool s_secondEye;     // the replay is running (s_frame = the right eye)
 uint32_t s_frameNo;
 float s_backbufferAspect = 16.f / 9.f;
+float GameCameraAspect() { return s_backbufferAspect > kGameMinAspect ? s_backbufferAspect : kGameMinAspect; }
 pure::M4 s_lastCam;      // camera used for the last eye (after levelling), camera-to-world
 pure::M4 s_lastGameCam;  // the game's own camera, camera-to-world
 // Head-direction culling (culling.cpp, logic thread): the eye's pose relative to the game camera,
@@ -168,14 +169,14 @@ bool FirstPersonCamera(const pure::M4& C, pure::M4* out) {
 bool IsMainScene(const float* data) {
 	pure::ProjInfo proj;
 	if (!pure::classify_projection(data + 16, &proj) || proj.rowMajor || proj.wSign > 0) return false;
-	if (!NearlyEqual(proj.aspect, s_backbufferAspect, 0.03f)) return false;  // e.g. the 1:1 menu/model cameras
+	if (!NearlyEqual(proj.aspect, GameCameraAspect(), 0.03f)) return false;  // e.g. the 1:1 menu/model cameras
 	return pure::m4_is_rigid(LoadMatrix(data), 1e-2f);
 }
 
 bool IsCamParam(const float* data) {
 	// tangents up to 200: with CullingFov=170 the game uploads tan(hfov/2) ~ 20
 	return data[0] > 0.001f && data[0] < 10 && data[1] > 100 && data[2] > 0.05f && data[2] < 200 && data[3] > 0.05f && data[3] < 200 &&
-		   NearlyEqual(data[2] / data[3], s_backbufferAspect, 0.03f);
+		   NearlyEqual(data[2] / data[3], GameCameraAspect(), 0.03f);
 }
 
 void PatchScene(float* data) {

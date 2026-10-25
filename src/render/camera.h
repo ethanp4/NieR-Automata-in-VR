@@ -18,6 +18,10 @@ struct StereoShared {  // written by the VR thread, read by the game thread
 };
 extern StereoShared g_stereo;
 
+// NieR's camera is never narrower than 5:4: at a taller backbuffer (the headset's shape) its projection
+// keeps aspect 1.25, and its final pass letterboxes the image into a 5:4 box (hud_layer.cpp).
+constexpr float kGameMinAspect = 1.25f;
+
 void StereoSetAspect(float aspect);
 void StereoBeginFrame();
 void StereoGetFrameTag(FrameTag* tag);

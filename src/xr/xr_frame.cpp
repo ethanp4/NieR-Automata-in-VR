@@ -33,6 +33,20 @@ bool KeyPressed(int vk) {
 }
 
 namespace {
+// The game resolution with the headset's full detail, for the headset-shaped sizes in the game's
+// resolution list (extra_resolutions.cpp) from the next start. Saved when it changes by over 2%.
+void SaveHeadsetSize(float width, float height) {
+	int32_t w = ((int32_t)width + 4) & ~7, h = ((int32_t)height + 4) & ~7;
+	if (w < 640 || h < 480 || w > 16384 || h > 16384) return;
+	auto within2Percent = [](int32_t a, int32_t b) { return a * 50 > b * 49 && a * 50 < b * 51; };
+	if (within2Percent(w, g_cfg.headsetWidth) && within2Percent(h, g_cfg.headsetHeight)) return;
+	g_cfg.headsetWidth = w;
+	g_cfg.headsetHeight = h;
+	ConfigSave(&g_cfg.headsetWidth);
+	ConfigSave(&g_cfg.headsetHeight);
+	Log("headset: %dx%d gives it full detail; saved, the game's resolution list offers 50-100%% of it from the next start", w, h);
+}
+
 void HandleHotkeys() {
 	bool foreground = GameIsForeground();
 	bool changed = false;
@@ -450,17 +464,16 @@ void Frame() {
 					// directions can differ a lot (on a Quest: 144% across, 79% up-down)
 					g_vr.sharpnessPctX = 100.f * imgW / needW;
 					g_vr.sharpnessPctY = 100.f * imgH / needH;
-					// keep the game's 16:9 shape: the larger of the two needs decides (the game's
-					// resolution: when upscaling, the image shown is that much larger)
-					float scale = needW / imgW > needH / imgH ? needW / imgW : needH / imgH;
-					g_vr.suggestedGameW = ((UINT)(g_vr.gameW * scale) + 4) & ~7u;
-					g_vr.suggestedGameH = ((UINT)(g_vr.gameH * scale) + 4) & ~7u;
-					// the upscaler's output follows this: the game image's shape with the headset's detail
-					float nativeScale = needW / g_vr.gameW > needH / g_vr.gameH ? needW / g_vr.gameW : needH / g_vr.gameH;
-					UINT nativeW = ((UINT)(g_vr.gameW * nativeScale) + 1) & ~1u, nativeH = ((UINT)(g_vr.gameH * nativeScale) + 1) & ~1u;
-					SectionLock guard(&g_share.lock);
-					g_share.nativeW = nativeW;
-					g_share.nativeH = nativeH;
+					// the game resolution with the headset's detail, in its shape (the game renders any
+					// shape; the upscaler's output follows it)
+					g_vr.suggestedGameW = ((UINT)needW + 4) & ~7u;
+					g_vr.suggestedGameH = ((UINT)needH + 4) & ~7u;
+					{
+						SectionLock guard(&g_share.lock);
+						g_share.nativeW = ((UINT)needW + 1) & ~1u;
+						g_share.nativeH = ((UINT)needH + 1) & ~1u;
+					}
+					SaveHeadsetSize(needW, needH);
 				}
 			}
 			static int lateLogged = -1;
@@ -523,7 +536,10 @@ void Frame() {
 					hud.subImage.imageRect.offset = {0, 0};
 					hud.subImage.imageRect.extent = {(int32_t)g_vr.hudSwap.w, (int32_t)g_vr.hudSwap.h};
 					hud.pose = g_vr.quadPose;
-					hud.size = {g_cfg.width, g_cfg.width * (float)g_vr.gameH / (float)g_vr.gameW};
+					// the game lays out its UI for a 5:4 box at least (below that its final pass squeezes it in)
+					float hudAspect = (float)g_vr.gameW / (float)g_vr.gameH;
+					if (hudAspect < kGameMinAspect) hudAspect = kGameMinAspect;
+					hud.size = {g_cfg.width, g_cfg.width / hudAspect};
 					layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&hud;
 				}
 			}

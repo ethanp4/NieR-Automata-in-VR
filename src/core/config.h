@@ -39,6 +39,7 @@ struct Config {
 	int32_t keyFirstPerson;      // [Keys] FirstPerson
 	// [Render]
 	int32_t extraResolutions;
+	int32_t headsetWidth, headsetHeight;  // [Render] the game resolution with the headset's full detail (saved when seen)
 	int32_t ambientOcclusion;
 	int32_t shadows;  // 0 = NieR's screen-space shadow mask cleared to "lit" (diagnostic)
 	int32_t vignette;
@@ -67,7 +68,7 @@ struct Config {
 	int32_t vrControllers;            // VR controllers act as an XInput gamepad
 	int32_t vrRumble;                 // the game's rumble goes to the VR controllers
 	int32_t motionControls;           // swing a hand to attack (vr_controllers.cpp)
-	float swingSpeed;                 // m/s a hand must move (relative to the head) to count as a swing
+	int32_t swingSensitivity;         // motion controls: 0 = relaxed, 1 = normal (input/waggle.h)
 	int32_t iniAdded;                 // settings added to an older ini at startup
 	int32_t flatBelowDraws;           // frames with fewer draws than this render mono (title screen); 0 = off
 	int32_t topDownFlat;              // 1 = steep top-down views are shown on the flat screen

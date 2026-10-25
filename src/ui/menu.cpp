@@ -400,7 +400,7 @@ Item kRender[] = {
 		2,
 		"%d",
 		F_RESTART,
-		"Adds resolutions above your monitor's to the game's list (1), and also patches its table (2).",
+		"Adds resolutions in your headset's shape to the game's list (1), and also patches its table (2).",
 	},
 };
 Item kCull[] = {
@@ -563,15 +563,15 @@ Item kInput[] = {
 		"A short rumble confirms each swing. The buttons keep working too.",
 	},
 	{
-		"Swing speed needed",
-		T_FLOAT,
-		&g_cfg.swingSpeed,
-		0.8f,
-		5.0f,
-		"%.1f m/s",
+		"Swing sensitivity",
+		T_CHOICE,
+		&g_cfg.swingSensitivity,
 		0,
-		"How fast a hand must move (relative to your head) to count as a swing. Lower = easier; higher = only big "
-		"swings. The Info page shows how fast your swings are.",
+		1,
+		"Relaxed|Normal",
+		0,
+		"Relaxed also counts smaller, sloppier slashes and stabs; Normal wants clean ones. A slash is a turn of the "
+		"wrist and arm, a stab a push along where your fist points.",
 	},
 };
 

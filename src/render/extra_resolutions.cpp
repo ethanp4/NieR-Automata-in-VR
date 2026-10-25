@@ -1,4 +1,4 @@
-// extra_resolutions.cpp - lets the game render above the monitor's resolution.
+// extra_resolutions.cpp - adds headset-shaped resolutions to the game's list.
 #include "render/extra_resolutions.h"
 #include "core/com.h"
 #include "core/config.h"
@@ -52,19 +52,15 @@ int32_t s_earlyHookCount;                   // user32/dxgi hooks installed at lo
 std::atomic<int32_t> s_factoryLogs, s_systemMetricsLogs, s_monitorInfoLogs, s_currentModeLogs, s_userModeListLogs;
 std::atomic<int32_t> s_dxgiModeListLogs, s_findClosestLogs, s_swapChainLogs, s_fullscreenLogs, s_resizeTargetLogs, s_windowClampLogs;
 
-// Extra sizes go up to 300% of the monitor: a 1080p monitor reaches 5760x3240, for high-resolution headsets.
-using pure::kSupersampleFactorCount;
-using pure::kSupersampleFactors;
+// The extra sizes: the headset's own shape, 50-100% of its full detail (pure::headset_sizes).
+constexpr int32_t kMaxExtraSizes = pure::kHeadsetScaleCount;
 
-UINT RoundTo8(float v) { return ((UINT)(v + 4)) & ~7u; }
-// how many of the factors fit Direct3D 11's 16384-pixel texture limit for this base size
-int FittingFactorCount(UINT width, UINT height) {
-	int count = 0;
-	while (count < kSupersampleFactorCount && RoundTo8(width * kSupersampleFactors[count]) <= 16384 &&
-		   RoundTo8(height * kSupersampleFactors[count]) <= 16384)
-		count++;
-	return count;
-}
+// The headset sizes offered this session (the ini can change while the game runs; the game picked
+// from these).
+struct HeadsetSizes {
+	uint32_t width[pure::kHeadsetScaleCount], height[pure::kHeadsetScaleCount];
+	int32_t count;
+} s_headsetSizes;
 
 bool CalledFromGame(void* returnAddress) { return (uintptr_t)returnAddress >= s_exeBase && (uintptr_t)returnAddress < s_exeEnd; }
 
@@ -87,6 +83,21 @@ bool LargerThanMonitor(HWND hwnd, UINT width, UINT height) {
 	return (int)width > monitor.width || (int)height > monitor.height;
 }
 
+bool IsHeadsetSize(UINT width, UINT height) {
+	for (int i = 0; i < s_headsetSizes.count; i++)
+		if (s_headsetSizes.width[i] == width && s_headsetSizes.height[i] == height) return true;
+	return false;
+}
+
+// A size only the mod offers (the headset's shape, or anything above the monitor): the monitor can't
+// show it as a display mode, so it stays windowed and isn't snapped to a real mode.
+bool IsExtraSize(HWND hwnd, UINT width, UINT height) { return LargerThanMonitor(hwnd, width, height) || IsHeadsetSize(width, height); }
+
+// The headset sizes the list doesn't have yet.
+int HeadsetSizesNotListed(const uint32_t* listed, int listedCount, uint32_t* extraW, uint32_t* extraH) {
+	return pure::headset_sizes((uint32_t)g_cfg.headsetWidth, (uint32_t)g_cfg.headsetHeight, listed, listedCount, extraW, extraH);
+}
+
 // --- DXGI mode list --------------------------------------------------------------------------
 // The output's current desktop size (the monitor's own resolution, whatever DSR modes it also lists).
 void OutputDesktopSize(IDXGIOutput* output, UINT* width, UINT* height) {
@@ -104,10 +115,9 @@ void OutputDesktopSize(IDXGIOutput* output, UINT* width, UINT* height) {
 		}
 	}
 }
-// Extra sizes are 125-300% of the monitor's *desktop* resolution (desktopW x desktopH; 0 = unknown, then
-// the largest listed mode). Not of the largest listed mode: with NVIDIA DSR/DLDSR on, the list itself
-// already goes above the monitor (5760x3240 on a 4K monitor), and sizes in between would be missing.
-// Sizes the list already has are not added twice.
+// The headset sizes follow the real list, copied from its desktop-size mode (desktopW x desktopH; 0 =
+// unknown, then the largest mode) for the format and refresh rate. Sizes the list already has are not
+// added twice.
 template <typename DESC, typename ORIG>
 HRESULT ModeListWithExtras(const char* api, void* returnAddress, ORIG getModes, DXGI_FORMAT format, UINT flags, UINT* count, DESC* modes,
 						   UINT desktopW, UINT desktopH) {
@@ -125,7 +135,7 @@ HRESULT ModeListWithExtras(const char* api, void* returnAddress, ORIG getModes, 
 	UINT nativeCount = 0;
 	HRESULT hr = getModes(&nativeCount, (DESC*)nullptr);
 	if (FAILED(hr) || nativeCount == 0) return getModes(count, modes);
-	DESC* all = (DESC*)HeapAlloc(GetProcessHeap(), 0, (nativeCount + kSupersampleFactorCount) * sizeof(DESC));
+	DESC* all = (DESC*)HeapAlloc(GetProcessHeap(), 0, (nativeCount + kMaxExtraSizes) * sizeof(DESC));
 	if (!all) return getModes(count, modes);
 	hr = getModes(&nativeCount, all);
 	if (FAILED(hr)) {
@@ -147,13 +157,13 @@ HRESULT ModeListWithExtras(const char* api, void* returnAddress, ORIG getModes, 
 		}
 	}
 	if (!haveBase) base = largest;
-	UINT baseW = all[base].Width, baseH = all[base].Height;
+	UINT baseW = all[base].Width, baseH = all[base].Height;  // logged
 	uint32_t* listedSizes = (uint32_t*)HeapAlloc(GetProcessHeap(), 0, nativeCount * sizeof(uint32_t));
-	uint32_t extraW[kSupersampleFactorCount], extraH[kSupersampleFactorCount];
+	uint32_t extraW[kMaxExtraSizes], extraH[kMaxExtraSizes];
 	int extraCount = 0;
 	if (listedSizes) {
 		for (UINT i = 0; i < nativeCount; i++) listedSizes[i] = (all[i].Width & 0xffff) << 16 | (all[i].Height & 0xffff);
-		extraCount = pure::supersample_sizes(baseW, baseH, listedSizes, (int)nativeCount, extraW, extraH);
+		extraCount = HeadsetSizesNotListed(listedSizes, (int)nativeCount, extraW, extraH);
 		HeapFree(GetProcessHeap(), 0, listedSizes);
 	}
 	for (int k = 0; k < extraCount; k++) {
@@ -165,10 +175,9 @@ HRESULT ModeListWithExtras(const char* api, void* returnAddress, ORIG getModes, 
 	if (LogBudget(s_dxgiModeListLogs, 8)) {
 		char caller[300];
 		DescribeAddress(returnAddress, caller, sizeof(caller));
-		Log("display: %s from %s (format %d, %s): %u native modes up to %ux%u; supersampling base %ux%u (%s) + %d "
-			"modes up to %ux%u",
+		Log("display: %s from %s (format %d, %s): %u native modes up to %ux%u (base %ux%u, %s) + %d headset-shaped",
 			api, caller, (int)format, modes ? "list" : "count", nativeCount, all[largest].Width, all[largest].Height, baseW, baseH,
-			haveBase ? "desktop size" : "largest mode", extraCount, extraCount ? all[total - 1].Width : 0, extraCount ? all[total - 1].Height : 0);
+			haveBase ? "desktop size" : "largest mode", extraCount);
 	}
 	if (!modes) {
 		*count = total;
@@ -199,8 +208,8 @@ HRESULT STDMETHODCALLTYPE H_FindClosestMatchingMode(IDXGIOutput* output, const D
 													IUnknown* device) {
 	HRESULT hr = o_FindClosestMatchingMode(output, wanted, closest, device);
 	if (g_cfg.extraResolutions && wanted && closest && SUCCEEDED(hr) && wanted->Width && wanted->Height &&
-		LargerThanMonitor(nullptr, wanted->Width, wanted->Height)) {
-		// keep the requested supersampling size instead of snapping to a native mode
+		IsExtraSize(nullptr, wanted->Width, wanted->Height)) {
+		// keep the requested size instead of snapping to a native mode
 		DXGI_MODE_DESC mode = *closest;
 		mode.Width = wanted->Width;
 		mode.Height = wanted->Height;
@@ -218,8 +227,8 @@ HRESULT STDMETHODCALLTYPE H_CreateSwapChain(IDXGIFactory* factory, IUnknown* dev
 	if (desc && desc->BufferDesc.Width >= 640) {
 		s_gameWindow = desc->OutputWindow;
 		if (g_cfg.extraResolutions && !desc->Windowed &&
-			LargerThanMonitor(desc->OutputWindow, desc->BufferDesc.Width, desc->BufferDesc.Height)) {
-			Log("display: %ux%u is above the monitor's resolution - creating the swapchain windowed instead of "
+			IsExtraSize(desc->OutputWindow, desc->BufferDesc.Width, desc->BufferDesc.Height)) {
+			Log("display: %ux%u is not one of the monitor's modes - creating the swapchain windowed instead of "
 				"exclusive fullscreen",
 				desc->BufferDesc.Width, desc->BufferDesc.Height);
 			desc->Windowed = TRUE;
@@ -237,8 +246,8 @@ HRESULT STDMETHODCALLTYPE H_CreateSwapChain(IDXGIFactory* factory, IUnknown* dev
 HRESULT STDMETHODCALLTYPE H_SetFullscreenState(IDXGISwapChain* swapChain, BOOL fullscreen, IDXGIOutput* target) {
 	if (fullscreen && g_cfg.extraResolutions) {
 		DXGI_SWAP_CHAIN_DESC desc;
-		if (SUCCEEDED(swapChain->GetDesc(&desc)) && LargerThanMonitor(desc.OutputWindow, desc.BufferDesc.Width, desc.BufferDesc.Height)) {
-			Log("display: refusing exclusive fullscreen at %ux%u (above the monitor's resolution); staying windowed",
+		if (SUCCEEDED(swapChain->GetDesc(&desc)) && IsExtraSize(desc.OutputWindow, desc.BufferDesc.Width, desc.BufferDesc.Height)) {
+			Log("display: refusing exclusive fullscreen at %ux%u (not one of the monitor's modes); staying windowed",
 				desc.BufferDesc.Width, desc.BufferDesc.Height);
 			o_SetFullscreenState(swapChain, FALSE, nullptr);
 			return S_OK;
@@ -254,7 +263,7 @@ HRESULT STDMETHODCALLTYPE H_ResizeTarget(IDXGISwapChain* swapChain, const DXGI_M
 	if (mode && g_cfg.extraResolutions) {
 		DXGI_SWAP_CHAIN_DESC desc;
 		HWND window = SUCCEEDED(swapChain->GetDesc(&desc)) ? desc.OutputWindow : nullptr;
-		if (LargerThanMonitor(window, mode->Width, mode->Height)) {
+		if (IsExtraSize(window, mode->Width, mode->Height)) {
 			MonitorArea monitor = GetMonitorArea(window);
 			clamped = *mode;
 			clamped.Width = (UINT)monitor.width;
@@ -271,13 +280,13 @@ HRESULT STDMETHODCALLTYPE H_ResizeTarget(IDXGISwapChain* swapChain, const DXGI_M
 // --- user32 mode list -------------------------------------------------------------------------
 template <typename DEVMODE_T>
 struct EnumState {
-	DEVMODE_T base;  // the base for the extra sizes: the current (desktop) mode, else the largest
+	DEVMODE_T base;  // the extra sizes are copies of it: the current (desktop) mode, else the largest
 	bool haveBase;
 	bool baseIsCurrent;         // base is the device's current mode
 	DWORD firstExtraIndex;      // index of the first call past the real list
 	uint32_t listedSizes[512];  // listed sizes (w << 16 | h), so extra sizes aren't listed twice
 	int32_t listedCount;
-	UINT extraW[kSupersampleFactorCount], extraH[kSupersampleFactorCount];  // the extra sizes not already listed (made when the real list ends)
+	UINT extraW[kMaxExtraSizes], extraH[kMaxExtraSizes];  // the extra sizes not already listed (made when the real list ends)
 	int32_t extraCount;
 };
 EnumState<DEVMODEW> s_enumW;
@@ -299,13 +308,13 @@ BOOL EnumWithExtras(EnumState<DEVMODE_T>& state, const char* api, DWORD index, D
 			DescribeAddress(returnAddress, caller, sizeof(caller));
 			Log("display: %s(%s) from %s -> %ux%u @%u Hz%s", api, index == ENUM_CURRENT_SETTINGS ? "current" : "registry",
 				caller, realW, realH, ok && mode ? (unsigned)mode->dmDisplayFrequency : 0,
-				spoof ? " (reported to the game as the supersampling maximum)" : "");
+				spoof ? " (reported to the game as large enough for the headset sizes)" : "");
 		}
 		if (spoof && index == ENUM_CURRENT_SETTINGS) {
 			static bool loggedSpoof;
 			if (!loggedSpoof) {
 				loggedSpoof = true;
-				Log("display: telling the game the desktop is %ux%u so it offers resolutions above %ux%u", s_spoofedDesktopW,
+				Log("display: telling the game the desktop is %ux%u so it offers the headset sizes above %ux%u", s_spoofedDesktopW,
 					s_spoofedDesktopH, realW, realH);
 			}
 		}
@@ -338,11 +347,10 @@ BOOL EnumWithExtras(EnumState<DEVMODE_T>& state, const char* api, DWORD index, D
 	}
 	// end of the real list: the extra sizes it doesn't have yet follow it
 	bool addExtras = g_cfg.extraResolutions && state.haveBase && mode && fromGame;
-	int factorCount = state.haveBase ? FittingFactorCount(state.base.dmPelsWidth, state.base.dmPelsHeight) : 0;
 	if (!state.firstExtraIndex) {
 		state.firstExtraIndex = index;
-		uint32_t extraW[kSupersampleFactorCount], extraH[kSupersampleFactorCount];
-		state.extraCount = state.haveBase ? pure::supersample_sizes(state.base.dmPelsWidth, state.base.dmPelsHeight, state.listedSizes, state.listedCount, extraW, extraH) : 0;
+		uint32_t extraW[kMaxExtraSizes], extraH[kMaxExtraSizes];
+		state.extraCount = state.haveBase ? HeadsetSizesNotListed(state.listedSizes, state.listedCount, extraW, extraH) : 0;
 		for (int extraIndex = 0; extraIndex < state.extraCount; extraIndex++) {
 			state.extraW[extraIndex] = extraW[extraIndex];
 			state.extraH[extraIndex] = extraH[extraIndex];
@@ -360,10 +368,9 @@ BOOL EnumWithExtras(EnumState<DEVMODE_T>& state, const char* api, DWORD index, D
 	if (LogBudget(s_userModeListLogs, 4)) {
 		char caller[300];
 		DescribeAddress(returnAddress, caller, sizeof(caller));
-		Log("display: %s list from %s: %u modes; supersampling base %ux%u (%s), %d new sizes up to %d%%", api, caller,
-			(unsigned)state.firstExtraIndex, state.haveBase ? (unsigned)state.base.dmPelsWidth : 0,
-			state.haveBase ? (unsigned)state.base.dmPelsHeight : 0, state.baseIsCurrent ? "desktop size" : "largest mode",
-			addExtras ? state.extraCount : 0, addExtras && factorCount ? (int)(kSupersampleFactors[factorCount - 1] * 100 + 0.5f) : 0);
+		Log("display: %s list from %s: %u modes (base %ux%u, %s), %d headset-shaped", api, caller, (unsigned)state.firstExtraIndex,
+			state.haveBase ? (unsigned)state.base.dmPelsWidth : 0, state.haveBase ? (unsigned)state.base.dmPelsHeight : 0,
+			state.baseIsCurrent ? "desktop size" : "largest mode", addExtras ? state.extraCount : 0);
 	}
 	return FALSE;
 }
@@ -457,7 +464,7 @@ BOOL WINAPI H_GetMonitorInfoW(HMONITOR monitor, LPMONITORINFO info) {
 // --- the game's built-in resolution table -----------------------------------------------------
 // Looks for runs of (width, height) int32 pairs with a fixed stride in the exe image, e.g.
 // {1280,720},{1600,900},{1920,1080},... Logged always; with ExtraResolutions=2 the smallest entries
-// of the single convincing table are replaced by the supersampling sizes.
+// of the single convincing table are replaced by the headset sizes.
 bool PlausibleResolution(int32_t width, int32_t height) {
 	return width >= 640 && width <= 16384 && height >= 360 && height <= 8640 && width > height && width * 10 <= height * 36 && width * 10 >= height * 12 &&
 		   (width % 8) == 0 && (height % 2) == 0;
@@ -557,6 +564,7 @@ void LogAndPatchTables(bool patch) {
 	// replace the smallest entries, keeping 1600x900 / 1920x1080 / the monitor size / anything bigger
 	MonitorArea monitor = GetMonitorArea(nullptr);
 	int mw = monitor.width, mh = monitor.height;
+	if (!s_headsetSizes.count) return;
 	ResolutionTable& table = tables[chosen];
 	DWORD oldProtect;
 	if (!VirtualProtect((void*)table.addr, (SIZE_T)table.count * table.stride, PAGE_READWRITE, &oldProtect)) {
@@ -564,7 +572,7 @@ void LogAndPatchTables(bool patch) {
 		return;
 	}
 	int replaced = 0;
-	for (int k = 0; k < FittingFactorCount((UINT)mw, (UINT)mh); k++) {
+	for (int k = 0; k < s_headsetSizes.count; k++) {
 		int smallest = -1;
 		int64_t smallestArea = 0;
 		for (int j = 0; j < table.count; j++) {
@@ -579,7 +587,7 @@ void LogAndPatchTables(bool patch) {
 		}
 		if (smallest < 0) break;
 		int32_t* entry = (int32_t*)(table.addr + (uintptr_t)smallest * table.stride);
-		int32_t newW = (int32_t)RoundTo8(mw * kSupersampleFactors[k]), newH = (int32_t)RoundTo8(mh * kSupersampleFactors[k]);
+		int32_t newW = (int32_t)s_headsetSizes.width[k], newH = (int32_t)s_headsetSizes.height[k];
 		Log("display: resolution table entry %d: %dx%d -> %dx%d", smallest, entry[0], entry[1], newW, newH);
 		entry[0] = newW;
 		entry[1] = newH;
@@ -706,15 +714,26 @@ void ExtraResolutionsInstallHooks() {
 	MonitorArea monitor = GetMonitorArea(nullptr);
 	int mw = monitor.width, mh = monitor.height;
 	if (g_cfg.extraResolutions) {
-		int factorCount = FittingFactorCount((UINT)mw, (UINT)mh);
-		if (factorCount > 0) {
-			s_spoofedDesktopW = RoundTo8(mw * kSupersampleFactors[factorCount - 1]);
-			s_spoofedDesktopH = RoundTo8(mh * kSupersampleFactors[factorCount - 1]);
+		s_headsetSizes.count = pure::headset_sizes((uint32_t)g_cfg.headsetWidth, (uint32_t)g_cfg.headsetHeight, nullptr, 0,
+												   s_headsetSizes.width, s_headsetSizes.height);
+		// the game only offers sizes up to the desktop's: report one large enough for the biggest
+		for (int i = 0; i < s_headsetSizes.count; i++) {
+			UINT width = s_headsetSizes.width[i] > (UINT)mw ? s_headsetSizes.width[i] : (UINT)mw;
+			UINT height = s_headsetSizes.height[i] > (UINT)mh ? s_headsetSizes.height[i] : (UINT)mh;
+			if (width > s_spoofedDesktopW) s_spoofedDesktopW = width;
+			if (height > s_spoofedDesktopH) s_spoofedDesktopH = height;
 		}
+		if (s_spoofedDesktopW == (UINT)mw && s_spoofedDesktopH == (UINT)mh) s_spoofedDesktopW = s_spoofedDesktopH = 0;  // no need
+		char sizes[200] = "";
+		size_t used = 0;
+		for (int i = 0; i < s_headsetSizes.count && used + 16 < sizeof(sizes); i++)
+			used += (size_t)snprintf(sizes + used, sizeof(sizes) - used, "%s%ux%u", i ? " " : "", s_headsetSizes.width[i], s_headsetSizes.height[i]);
+		Log("display: headset-shaped resolutions (50-100%% of %dx%d, HeadsetWidth/HeadsetHeight): %s", g_cfg.headsetWidth,
+			g_cfg.headsetHeight, sizes);
 	}
 	Log("display: monitor %dx%d; extra resolutions %s; %d display hooks in place from load time%s", mw, mh,
-		g_cfg.extraResolutions >= 2 ? "ON + resolution table patch (125-300%, use windowed/borderless)"
-		: g_cfg.extraResolutions    ? "ON (125-300%, use windowed/borderless)"
+		g_cfg.extraResolutions >= 2 ? "ON + resolution table patch (headset-shaped, use windowed/borderless)"
+		: g_cfg.extraResolutions    ? "ON (headset-shaped, use windowed/borderless)"
 									: "off",
 		s_earlyHookCount, s_dxgiLoadedEarly ? "" : " (dxgi.dll was not loaded yet at that point)");
 	LogAndPatchTables(g_cfg.extraResolutions >= 2);

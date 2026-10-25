@@ -23,6 +23,10 @@
 // another full-size texture, then draws pieces of that copy back over the UI target, shifted and
 // tinted. On the HUD layer that is a flat copy of the whole screen flashing in front of the 3D view.
 // In stereo those draws are skipped (DistortionEffects=0) or kept in the 3D image (=1).
+//
+// Below 5:4 (the headset-shaped resolutions) the final pass squeezes the frame into a centred 5:4 box,
+// with its quad's corners, to undo the game's own 5:4 camera. In stereo the mod's camera already fills
+// the whole frame, so the final pass is drawn with a viewport stretched by the same amount instead.
 #include "render/hud_layer.h"
 #include "core/com.h"
 #include "core/config.h"
@@ -187,6 +191,24 @@ void ReplayInto(ID3D11DeviceContext* c, ID3D11RenderTargetView* target, const Dr
 		OriginalSetRenderTargets(c, 1, rtv.GetAddressOf(), dsv.Get());
 		if (derived) c->OMSetBlendState(gameBlend.Get(), factor, sampleMask);
 	}
+}
+
+// In stereo below 5:4: sets a viewport taller than the backbuffer, so the final pass's 5:4 box covers
+// all of it, and returns true with the game's viewport in `previous` (to put back afterwards).
+bool StretchFinalPass(ID3D11DeviceContext* c, D3D11_VIEWPORT* previous) {
+	float width = (float)s_backbufferDesc.Width, height = (float)s_backbufferDesc.Height;
+	if (!StereoActive() || height <= 0 || width / height >= kGameMinAspect - 0.01f) return false;
+	UINT count = 1;
+	c->RSGetViewports(&count, previous);
+	if (count == 0) return false;
+	float boxHeight = width / kGameMinAspect;  // the rows the game's box covers
+	D3D11_VIEWPORT stretched = *previous;
+	stretched.TopLeftX = 0;
+	stretched.Width = width;
+	stretched.Height = height * height / boxHeight;
+	stretched.TopLeftY = (height - stretched.Height) / 2;
+	c->RSSetViewports(1, &stretched);
+	return true;
 }
 
 // Full-screen white overlay at the centre of the 1600x900 UI canvas, unscaled: a screen effect.
@@ -496,9 +518,17 @@ void UiAfterDraw(ID3D11DeviceContext* c, const DrawArgs& args) {
 			s_finalPassSlot = slot;
 			s_finalPassArgs = args;
 		}
+		D3D11_VIEWPORT gameViewport;
+		bool stretched = StretchFinalPass(c, &gameViewport);
+		if (stretched) {  // the game's own pass again, over the whole backbuffer
+			const FLOAT black[4] = {0, 0, 0, 1};
+			c->ClearRenderTargetView(rtv.Get(), black);
+			OriginalDraw(c, args);
+		}
 		c->PSSetShaderResources(slot, 1, &s_preUiSrv);
 		ReplayInto(c, s_sceneRtv, args, 1);
 		c->PSSetShaderResources(slot, 1, &srvs[slot]);
+		if (stretched) c->RSSetViewports(1, &gameViewport);
 		s_sceneReady = true;
 		if (!s_loggedWorking) {
 			s_loggedWorking = true;
@@ -522,6 +552,9 @@ bool UiSecondEyeScene(ID3D11DeviceContext* c) {
 	c->ClearRenderTargetView(s_sceneRtv, zero);
 	ReplayApplyFinalPassState(c);
 	c->PSSetShaderResources((UINT)s_finalPassSlot, 1, &s_preUiSrv);
+	D3D11_VIEWPORT gameViewport;
+	bool stretched = StretchFinalPass(c, &gameViewport);
 	ReplayInto(c, s_sceneRtv, s_finalPassArgs, 1);
+	if (stretched) c->RSSetViewports(1, &gameViewport);
 	return true;
 }

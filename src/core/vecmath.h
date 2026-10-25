@@ -1,4 +1,4 @@
-// vecmath.h - small vector, quaternion and 4x4 matrix math, without a math library.
+// vecmath.h - small vector, quaternion and 4x4 matrix math.
 // No Windows dependencies; unit-tested on the build host with pure.h, and in the same namespace.
 #pragma once
 
@@ -16,6 +16,13 @@ struct Q {
 
 inline bool near0(float v, float eps = 1e-4f) { return v > -eps && v < eps; }
 inline float fsqrt(float v) { return v <= 0 ? 0 : __builtin_sqrtf(v); }
+inline V3 operator+(V3 a, V3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+inline V3 operator-(V3 a, V3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+inline V3 operator*(V3 v, float s) { return {v.x * s, v.y * s, v.z * s}; }
+inline V3 operator/(V3 v, float s) { return {v.x / s, v.y / s, v.z / s}; }
+inline float dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+inline float length(V3 v) { return fsqrt(dot(v, v)); }
+inline Q conj(Q q) { return {-q.x, -q.y, -q.z, q.w}; }  // the inverse rotation (unit quaternions)
 inline V3 cross(V3 a, V3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
 inline V3 rotate(Q q, V3 v) {
 	V3 u{q.x, q.y, q.z};

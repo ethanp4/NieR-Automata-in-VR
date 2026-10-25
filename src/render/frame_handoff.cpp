@@ -8,6 +8,7 @@
 #include "core/hook.h"
 #include "core/log.h"
 #include "core/main.h"
+#include "debug/code_dump.h"
 #include "debug/frame_capture.h"
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
@@ -411,6 +412,7 @@ HRESULT PresentCommon(int hookIndex, void* returnAddress, IDXGISwapChain* swapCh
 			ReplayStop(false);  // Synchronized: the game's frame is complete
 			if (s_context) GpuTimingMark(s_context, "present");
 			CaptureBeforePresent();
+			CodeDumpPoll();
 			CaptureFrame(swapChain);
 			if (s_context) GpuTimingFrameEnd(s_context);
 		}
