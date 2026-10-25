@@ -9,10 +9,12 @@
 #include "core/log.h"
 #include "core/main.h"
 #include "debug/code_dump.h"
+#include "debug/position_finder.h"
 #include "debug/frame_capture.h"
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
 #include "render/d3d_hooks.h"
+#include "render/first_person.h"
 #include "render/extra_resolutions.h"
 #include "render/frame_share.h"
 #include "render/game_effects.h"
@@ -265,6 +267,7 @@ void CaptureFrame(IDXGISwapChain* swapChain) {
 		ExtraResolutionsOnFirstPresent(swapChain);
 	}
 	StereoSetAspect((float)desc.Width / (float)desc.Height);
+	FirstPersonSetGameSize(desc.Width, desc.Height);
 	UiSetBackbuffer(backbuffer.Get());
 	ReprojectSetBackbufferSize(desc.Width, desc.Height);
 	UINT sceneW, sceneH;  // size of this frame's scene-only images
@@ -413,6 +416,7 @@ HRESULT PresentCommon(int hookIndex, void* returnAddress, IDXGISwapChain* swapCh
 			if (s_context) GpuTimingMark(s_context, "present");
 			CaptureBeforePresent();
 			CodeDumpPoll();
+			PositionFinderPoll();
 			CaptureFrame(swapChain);
 			if (s_context) GpuTimingFrameEnd(s_context);
 		}

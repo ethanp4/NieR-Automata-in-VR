@@ -20,6 +20,8 @@ struct HandPeaks {
 	float speed, spin, accel, spinAccel;
 };
 void VrInputTakeHandPeaks(HandPeaks out[2]);
+// A hand's grip pose in `base` at `time` (first person's arms); false = not known.
+bool VrInputLocateHand(int hand, XrSpace base, XrTime time, XrPosef* out);
 void VrInputProfileChanged();                                                              // interaction profile changed event
 void VrInputDetach();
 void VrInputShutdown();

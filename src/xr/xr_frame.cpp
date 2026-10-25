@@ -57,7 +57,7 @@ void HandleHotkeys() {
 	if (!foreground) return;
 	if (toggleFirstPerson) {
 		g_cfg.firstPerson = !g_cfg.firstPerson;
-		Log("first person %s", g_cfg.firstPerson ? "ON (prototype)" : "OFF");
+		Log("first person %s", g_cfg.firstPerson ? "ON" : "OFF");
 		ConfigSave(&g_cfg.firstPerson);
 	}
 	if (f5) {
@@ -298,8 +298,20 @@ void UpdateEyePoses(XrTime time) {
 	uint32_t count = 0;
 	const XrViewStateFlags need = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
 	bool ok = XR_SUCCEEDED(g_vr.xrLocateViews(g_vr.session, &locateInfo, &viewState, 2, &count, views)) && count == 2 && (viewState.viewStateFlags & need) == need;
+	XrPosef hands[2];
+	bool handValid[2] = {VrInputLocateHand(0, g_vr.localSpace, locateInfo.displayTime, &hands[0]),
+						 VrInputLocateHand(1, g_vr.localSpace, locateInfo.displayTime, &hands[1])};
 	{
 		ExclusiveLock guard(&g_stereo.lock);
+		for (int hand = 0; hand < 2; hand++) {
+			g_stereo.handValid[hand] = ok && handValid[hand];
+			if (!g_stereo.handValid[hand]) continue;
+			const XrPosef& pose = hands[hand];
+			const float pos[3] = {pose.position.x, pose.position.y, pose.position.z};
+			const float rot[4] = {pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w};
+			memcpy(g_stereo.handPos[hand], pos, sizeof(pos));
+			memcpy(g_stereo.handRot[hand], rot, sizeof(rot));
+		}
 		g_stereo.valid = ok;
 		if (ok) g_stereo.poseBase = time;
 		if (ok) {

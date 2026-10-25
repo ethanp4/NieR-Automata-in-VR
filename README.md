@@ -1,33 +1,21 @@
 # NieR-Automata-in-VR
 A mod that converts the game NieR: Automata into a VR mod!
 
-### Easy to install
+## Features
 
-Drop one file (d3d11.dll) into the game folder; no injector needed
+- Easily install by dragging and dropping one dll and launching the game
 
-### Easy resolution control with dlss
+- Easy resolution and performance control with dlss
 
-Automatically upscale to a percentage of your headsets native resolution using dlss, or render at native
-with dlaa only
+- First person mode (work in progress)
 
-### First person mode (work in progress)
+- Vr controller support with optional waggle controls (work in progress)
 
-### Vr controller support with optional waggle controls (work in progress)
+- In-headset mod menu
 
-Get immersed in the experience. Regular controls and other controllers still work as before
+- In game performance overlay
 
-### In-headset mod menu
-
-In game mod menu for editing mod specific options 
-
-### In game performance overlay
-
-Shows stats in game (with a graph)
-
-### Broad headset support (theoretically)
-
-I've only tested on Virtual desktop with Quest 3s, so open an issue if support on another headset is broken.
-The original author had tested this on many headsets and runtimes
+- Broad headset and runtime support
 
 ## Install
 1. Download the the latest release. Open the game folder: in Steam, right-click NieR:Automata > Manage > Browse local files
@@ -85,12 +73,8 @@ trackpads = sticks.
   Ctrl+Shift+F5   head culling on/off
 Diagnostics: F11 frame capture, Ctrl+F11 dump of the game's decrypted code.
 
-## Notes
+## Useful resources
 
-- Visuals can appear at low framerates or be jittery. Some post processing looks weird in VR (water)
-- DLSS and the stereo mode (alternating / synchronized) can affect the visuals and performance greatly
-
-## Problems?
-
-Open an issue with NieRVR.log (the previous run's is NieRVR.prev.log), NieRVR_crash.dmp
-if the game crashed, and explain what happened.
+- https://github.com/aracielVR/NieR-Automata-in-VR
+- https://github.com/Crementif/BotW-BetterVR
+- https://github.com/Asiern/NieRHook

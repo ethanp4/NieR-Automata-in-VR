@@ -13,6 +13,8 @@
 #include "core/log.h"
 #include "core/pure.h"
 #include "render/culling.h"
+#include "render/first_person.h"
+#include "game/player.h"
 #include "render/frame_share.h"
 #include "render/replay.h"
 #include "render/upscale.h"
@@ -27,6 +29,8 @@ struct FrameState {
 	bool active;      // this frame renders an eye
 	int32_t eye;      // 0 left, 1 right
 	pure::M4 eyeRel;  // eye pose relative to the reference (metres)
+	bool handValid[2];
+	pure::M4 handRel[2];  // the controllers' grip poses relative to the reference (metres)
 	float halfW, halfH;
 	float localPos[3], localRot[4];  // eye pose in LOCAL space, for submission
 	bool patchedScene, patchedCam;
@@ -121,13 +125,28 @@ pure::M4 LoadMatrix(const float* floats) {
 	return matrix;
 }
 
-// First person (prototype): this frame's camera stands at the game camera's look-at target.
+// First person: this frame's camera is at 2B's eyes (first_person.cpp), or else at the point the game
+// camera follows.
 bool s_firstPerson;
-uint32_t s_fpOwnLookAt, s_fpNewestLookAt, s_fpNoLookAt;
+bool s_fpOnHead;  // ... at her eyes
+float s_fpSteadyLift;  // how far steady height moved this camera from her eyes (up)
+uint32_t s_fpHead, s_fpOwnLookAt, s_fpNewestLookAt, s_fpNoLookAt;
 DWORD s_fpReportTick;
-bool s_loggedFirstPerson;
-
+bool s_loggedFirstPerson, s_loggedHeadCamera;
 float WorldScale() { return s_firstPerson ? g_cfg.fpWorldScale : g_cfg.worldScale; }
+
+// First person walking (FirstPersonWalk): your real steps move 2B (game/player.cpp), so the camera
+// doesn't move with them a second time: its sideways place from her eyes is `offset` (what wasn't
+// walked: when she can't be moved) instead of your head's place in the room. Your height still counts.
+constexpr float kRecentredJump = 0.3f;  // your head moving this far in one frame was recentred, not a step
+constexpr float kCatchUp = 0.02f;       // what wasn't walked goes to her this much per frame once she can be moved
+struct Walking {
+	bool active;
+	pure::V3 lastHead;  // your head in the room (scaled like the eyes) last frame
+	pure::V3 offset;    // the camera's sideways place from her eyes (camera axes)
+	pure::V3 shift;     // this frame: added to the eyes' place (offset less your head's place)
+} s_walk;
+bool s_loggedWalking;
 
 pure::M4 EyeMatrixScaled() {
 	pure::M4 eye = s_frame.eyeRel;
@@ -135,12 +154,103 @@ pure::M4 EyeMatrixScaled() {
 	eye.at(0, 3) *= scale;
 	eye.at(1, 3) *= scale;
 	eye.at(2, 3) *= scale;
+	if (s_walk.active) {
+		eye.at(0, 3) += s_walk.shift.x;
+		eye.at(2, 3) += s_walk.shift.z;
+	}
 	return eye;
 }
 
-// First person: the camera at the point the game camera follows (+ offsets), facing the way it faces
-// with a level horizon. False if the look-at isn't known (head culling's hook in culling.cpp delivers it).
+// A controller relative to the camera, scaled and shifted like the eyes (false: not tracked).
+bool HandMatrixScaled(int hand, pure::M4* out) {
+	if (!s_frame.handValid[hand]) return false;
+	*out = s_frame.handRel[hand];
+	float scale = WorldScale();
+	for (int k = 0; k < 3; k++) out->at(k, 3) *= scale;
+	if (s_walk.active) {
+		out->at(0, 3) += s_walk.shift.x;
+		out->at(2, 3) += s_walk.shift.z;
+	}
+	return true;
+}
+
+// Your head's centre in the room (scaled like the eyes): this eye moved half the eye distance towards the other.
+pure::V3 HeadInRoom() {
+	const pure::M4& eye = s_frame.eyeRel;
+	float scale = WorldScale(), toCentre = (s_frame.eye == 0 ? 0.5f : -0.5f) * s_frame.ipd;  // the left eye is left of it
+	return {(eye.at(0, 3) + eye.at(0, 0) * toCentre) * scale, (eye.at(1, 3) + eye.at(1, 0) * toCentre) * scale,
+			(eye.at(2, 3) + eye.at(2, 0) * toCentre) * scale};
+}
+
+// Once per game frame, the first person camera `cam` (camera-to-world, level) known: your head's
+// sideways movement since last frame goes to her.
+void UpdateWalking(const pure::M4& cam) {
+	pure::V3 head = HeadInRoom();
+	if (!g_cfg.fpWalk || !s_firstPerson || !s_fpOnHead) {
+		s_walk.active = false;
+		return;
+	}
+	if (!s_walk.active) s_walk = {true, head, {0, 0, 0}, {}};  // starting: the camera on her eyes
+	pure::V3 step = {head.x - s_walk.lastHead.x, 0, head.z - s_walk.lastHead.z};
+	s_walk.lastHead = head;
+	if (pure::length(step) >= kRecentredJump) step = {};
+	float behind = pure::length(s_walk.offset);
+	pure::V3 catchUp = behind > kCatchUp ? s_walk.offset * (kCatchUp / behind) : s_walk.offset;
+	pure::V3 move = step + catchUp;
+	if (pure::length(move) > 0) {
+		pure::V3 world = {cam.at(0, 0) * move.x + cam.at(0, 2) * move.z, 0, cam.at(2, 0) * move.x + cam.at(2, 2) * move.z};
+		if (PlayerMove(world)) {
+			s_walk.offset = s_walk.offset - catchUp;
+			if (!s_loggedWalking) {
+				s_loggedWalking = true;
+				Log("first person: your real steps move 2B");
+			}
+		} else {
+			s_walk.offset = s_walk.offset + step;  // not walked: the camera moves instead
+		}
+	}
+	s_walk.shift = {s_walk.offset.x - head.x, 0, s_walk.offset.z - head.z};
+}
+
+// First person at 2B's eyes (+ the height / forward offsets), level. It turns with the game camera (the
+// right stick), or with her facing (FirstPersonFollowFacing); your headset turns you on top. With
+// FirstPersonSteadyHeight, running bob doesn't move you up and down (jumps still do).
+bool HeadCamera(const pure::HeadPose& head, const pure::M4& C, pure::M4* out) {
+	pure::V3 eye = head.eye;
+	float steadyY;
+	if (g_cfg.fpSteadyHeight && FirstPersonSteadyEyeHeight(&steadyY)) eye.y = steadyY;
+	s_fpSteadyLift = eye.y - head.eye.y;
+	eye.y += g_cfg.fpHeight;
+	if (!g_cfg.fpFollowFacing || !pure::m4_level_camera_facing(head.forward, eye, out)) *out = pure::m4_level_camera(C);
+	pure::V3 forward = {-out->at(0, 2), -out->at(1, 2), -out->at(2, 2)};
+	eye = eye + forward * g_cfg.fpForward;
+	out->at(0, 3) = eye.x;
+	out->at(1, 3) = eye.y;
+	out->at(2, 3) = eye.z;
+	if (!s_loggedHeadCamera) {
+		s_loggedHeadCamera = true;
+		Log("first person: camera at 2B's eyes, turning with %s", g_cfg.fpFollowFacing ? "her facing" : "the game camera and your headset");
+	}
+	return true;
+}
+
+// First person: at 2B's eyes when her head is known, else at the point the game camera follows (+
+// offsets), facing the way it faces with a level horizon. False if neither is known (head culling's
+// hook in culling.cpp delivers the look-at).
 bool FirstPersonCamera(const pure::M4& C, pure::M4* out) {
+	if (GetTickCount() - s_fpReportTick > 30000) {
+		s_fpReportTick = GetTickCount();
+		Log("first person: last 30 s: %u frames at 2B's eyes; %u at the camera's look-at (%u with their own, %u the "
+			"newest), %u without",
+			s_fpHead, s_fpOwnLookAt + s_fpNewestLookAt, s_fpOwnLookAt, s_fpNewestLookAt, s_fpNoLookAt);
+		s_fpHead = s_fpOwnLookAt = s_fpNewestLookAt = s_fpNoLookAt = 0;
+	}
+	pure::HeadPose head;
+	s_fpOnHead = FirstPersonHead(&head) && HeadCamera(head, C, out);
+	if (s_fpOnHead) {
+		s_fpHead++;
+		return true;
+	}
 	float cam[3] = {C.at(0, 3), C.at(1, 3), C.at(2, 3)}, eye[3], target[3], eyePos[3];
 	bool matched = false;
 	if (!CullingLookAt(cam, eye, target, &matched) ||
@@ -154,14 +264,9 @@ bool FirstPersonCamera(const pure::M4& C, pure::M4* out) {
 	if (!s_loggedFirstPerson) {
 		s_loggedFirstPerson = true;
 		float dx = target[0] - eye[0], dy = target[1] - eye[1], dz = target[2] - eye[2];
-		Log("first person: on; the camera follows a point %.2f units away (%.2f up), eyes at %.2f %.2f %.2f",
+		Log("first person: 2B's bones not found (yet); the camera follows a point %.2f units away (%.2f up), eyes at "
+			"%.2f %.2f %.2f",
 			(double)pure::fsqrt(dx * dx + dy * dy + dz * dz), (double)dy, (double)eyePos[0], (double)eyePos[1], (double)eyePos[2]);
-	}
-	if (GetTickCount() - s_fpReportTick > 30000) {
-		s_fpReportTick = GetTickCount();
-		Log("first person: last 30 s: %u frames with their own look-at, %u with the newest, %u without", s_fpOwnLookAt,
-			s_fpNewestLookAt, s_fpNoLookAt);
-		s_fpOwnLookAt = s_fpNewestLookAt = s_fpNoLookAt = 0;
 	}
 	return true;
 }
@@ -198,8 +303,9 @@ void PatchScene(float* data) {
 		}
 	}
 	if (!s_secondEye) NotePitch(pure::camera_pitch_deg(C));
-	pure::M4 fpCam;
+	pure::M4 fpCam = {};
 	s_firstPerson = g_cfg.firstPerson && FirstPersonCamera(C, &fpCam);
+	FirstPersonSetHiding(s_firstPerson && s_fpOnHead);
 	if (s_firstPerson) {
 		// s_lastCameraOffset: the camera's move away from the game's, also for CamParam's position
 		for (int k = 0; k < 3; k++) s_lastCameraOffset[k] = fpCam.at(k, 3) - C.at(k, 3);
@@ -214,7 +320,24 @@ void PatchScene(float* data) {
 	}
 	s_lastCam = C0;
 	s_haveCamera = true;
+	if (!s_secondEye) UpdateWalking(C0);
 	pure::M4 Ce = pure::m4_mul(C0, EyeMatrixScaled());
+	if (s_firstPerson && s_fpOnHead && !s_secondEye) {  // your head, between your eyes: her body follows it
+		pure::M4 head = Ce;
+		float toCentre = (s_frame.eye == 0 ? 0.5f : -0.5f) * s_frame.ipd * WorldScale();  // the left eye is left of it
+		for (int k = 0; k < 3; k++) head.at(k, 3) += head.at(k, 0) * toCentre;
+		// where your head is from hers: from the camera's own place, less its height / forward offsets
+		pure::V3 offset = {head.at(0, 3) - C0.at(0, 3), head.at(1, 3) - C0.at(1, 3) + s_fpSteadyLift, head.at(2, 3) - C0.at(2, 3)};
+		FirstPersonSetViewer(head, offset);
+		pure::M4 hands[2];
+		bool handValid[2];
+		for (int hand = 0; hand < 2; hand++) {
+			pure::M4 rel;
+			handValid[hand] = HandMatrixScaled(hand, &rel);
+			if (handValid[hand]) hands[hand] = pure::m4_mul(C0, rel);
+		}
+		FirstPersonSetHands(handValid, hands);
+	}
 	// Diagnostics: the eye separation applied (both eyes from the same head pose, in game units),
 	// logged when it changes, i.e. after Ctrl+F9/F10.
 	{
@@ -323,6 +446,12 @@ void FillEye(FrameState& frame, int eyeIndex) {
 	const float* eyePos = g_stereo.eyePos[frame.eye];
 	pure::M4 eye = pure::m4_from_pose({eyeRot[0], eyeRot[1], eyeRot[2], eyeRot[3]}, {eyePos[0], eyePos[1], eyePos[2]});
 	frame.eyeRel = pure::m4_relative(ref, eye);
+	for (int hand = 0; hand < 2; hand++) {
+		frame.handValid[hand] = g_stereo.handValid[hand];
+		const float* p = g_stereo.handPos[hand];
+		const float* q = g_stereo.handRot[hand];
+		if (frame.handValid[hand]) frame.handRel[hand] = pure::m4_relative(ref, pure::m4_from_pose({q[0], q[1], q[2], q[3]}, {p[0], p[1], p[2]}));
+	}
 	memcpy(frame.refRot, g_stereo.refRot, 16);
 	{
 		const float* p0 = g_stereo.eyePos[0];
@@ -403,6 +532,8 @@ void StereoBeginFrame() {
 	ReleaseSRWLockShared(&g_stereo.lock);
 	frame.active = on;
 	s_frame = frame;
+	FirstPersonNewFrame();
+	FirstPersonSetHiding(false);  // until this frame's camera is at her eyes
 	if (!on) s_synchronized = false;
 	s_rightEyeFrame.active = on;
 	s_rightEyeFrame.observe = false;

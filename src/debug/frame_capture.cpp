@@ -325,8 +325,8 @@ void CaptureBeforePresent() {
 	int vk = g_cfg.probe ? g_cfg.keyCapture : 0;
 	if (vk > 0 && vk < 256) {
 		bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
-		bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;  // Ctrl+key is another hotkey
-		if (down && !s_keyWasDown && !ctrl) {
+		bool modified = (GetAsyncKeyState(VK_CONTROL) & 0x8000) || (GetAsyncKeyState(VK_SHIFT) & 0x8000);  // Ctrl/Shift+key are other hotkeys
+		if (down && !s_keyWasDown && !modified) {
 			HWND window = GetForegroundWindow();
 			DWORD pid = 0;
 			if (window) GetWindowThreadProcessId(window, &pid);

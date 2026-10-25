@@ -70,7 +70,7 @@ void WriteDump() {
 void CodeDumpPoll() {
 	int vk = g_cfg.probe ? g_cfg.keyCapture : 0;
 	if (vk <= 0 || vk >= 256) return;
-	bool down = (GetAsyncKeyState(vk) & 0x8000) && (GetAsyncKeyState(VK_CONTROL) & 0x8000);
+	bool down = (GetAsyncKeyState(vk) & 0x8000) && (GetAsyncKeyState(VK_CONTROL) & 0x8000) && !(GetAsyncKeyState(VK_SHIFT) & 0x8000);  // Ctrl+Shift: the position test
 	if (down && !s_keyWasDown) {
 		HWND window = GetForegroundWindow();
 		DWORD pid = 0;

@@ -12,6 +12,7 @@
 #include "debug/frame_capture.h"
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
+#include "render/first_person.h"
 #include "render/frame_handoff.h"
 #include "render/game_effects.h"
 #include "render/hud_layer.h"
@@ -114,7 +115,10 @@ constexpr RecStage kRecStageOf[4] = {RS_VS, RS_PS, RS_GS, RS_CS};  // by ShaderS
 template <int Stage>
 void STDMETHODCALLTYPE H_SetConstantBuffers(ID3D11DeviceContext* c, UINT start, UINT count, ID3D11Buffer* const* buffers) {
 	if (g_replaying) return o_SetConstantBuffers[Stage](c, start, count, buffers);
-	if (Stage == ST_VS && c == s_context && buffers) UiOnSetVSConstantBuffers(start, count, buffers);
+	if (Stage == ST_VS && c == s_context && buffers) {
+		UiOnSetVSConstantBuffers(start, count, buffers);
+		FirstPersonOnSetVSConstantBuffers(c, start, count, buffers);
+	}
 	if (ShouldRecord(c)) RecSetCB(kRecStageOf[Stage], start, count, buffers);
 	if (CaptureRecording(c)) CaptureSetConstantBuffers((ShaderStage)Stage, start, count, buffers);
 	o_SetConstantBuffers[Stage](c, start, count, buffers);
@@ -150,6 +154,7 @@ void STDMETHODCALLTYPE H_PSSetShader(ID3D11DeviceContext* c, void* shader, ID3D1
 bool BeforeDraw(ID3D11DeviceContext* c) {
 	CapturePollMidFrame();
 	StereoCountDraw();
+	if (FirstPersonSkipDraw()) return true;
 	if (GameEffectsBeforeDraw(c, s_psClass)) return true;
 	if (UiBeforeDraw(c)) return true;
 	if (s_psClass == PS_EFFECT && GameEffectsSkipEffectDraw(c, s_psSampledSlots, s_psHash)) return true;
@@ -212,6 +217,7 @@ HRESULT STDMETHODCALLTYPE H_Map(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
 	if (c != s_context || FAILED(hr) || !mapped || !res || type == D3D11_MAP_READ) return hr;
 	if (!IsConstantBuffer(res, &byteWidth)) return hr;
 	if (StereoWatching()) StereoOnMap(res, mapped->pData, byteWidth);
+	FirstPersonOnMap(res, mapped->pData, byteWidth);
 	GameEffectsOnMap(res, mapped->pData, byteWidth);
 	UiOnMap(res, mapped->pData, byteWidth);
 	if (CaptureRecording(c)) CaptureMap(res, mapped->pData, byteWidth);
@@ -220,7 +226,8 @@ HRESULT STDMETHODCALLTYPE H_Map(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
 
 void STDMETHODCALLTYPE H_Unmap(ID3D11DeviceContext* c, ID3D11Resource* res, UINT sub) {
 	if (g_replaying) return o_Unmap(c, res, sub);
-	if (ShouldRecord(c) && res) RecUnmap(res, sub);  // the game's own data, before the camera is patched in
+	if (c == s_context && res) FirstPersonBeforeUnmap(res);  // her hairband hidden: recorded so for both eyes
+	if (ShouldRecord(c) && res) RecUnmap(res, sub);          // the game's own data, before the camera is patched in
 	if (c == s_context && res) {
 		StereoBeforeUnmap(res);  // patch the camera for this frame's eye
 		UiBeforeUnmap(res);      // remember UI draw parameters
@@ -253,6 +260,7 @@ void STDMETHODCALLTYPE H_OMSetRenderTargets(ID3D11DeviceContext* c, UINT count, 
 	if (c == s_context) {
 		GpuTimingTargets(c, count, rtvs, dsv, "");
 		if (dsv) ReprojectNoteDsv(dsv);
+		FirstPersonOnSetRenderTargets(count, rtvs, dsv);
 	}
 	if (CaptureRecording(c)) CaptureSetRenderTargets(count, rtvs, dsv);
 	o_OMSetRenderTargets(c, count, rtvs, dsv);

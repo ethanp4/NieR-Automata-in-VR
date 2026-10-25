@@ -10,6 +10,8 @@ struct StereoShared {  // written by the VR thread, read by the game thread
 	bool valid;                        // eye poses below are current
 	float eyePos[2][3], eyeRot[2][4];  // LOCAL space
 	float eyeTan[2][4];                // tan of angleLeft, angleRight, angleUp, angleDown
+	bool handValid[2];                 // the controllers' grip poses (left, right), LOCAL space, same time as the eyes
+	float handPos[2][3], handRot[2][4];
 	bool menuMode;                     // the UI covers the screen: render flat (mono)
 	bool refValid;                     // recentred reference (yaw-only head pose)
 	float refPos[3], refRot[4];

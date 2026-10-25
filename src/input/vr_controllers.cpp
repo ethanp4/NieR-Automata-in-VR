@@ -659,6 +659,14 @@ void VrInputTakeHandPeaks(HandPeaks out[2]) {
 	}
 }
 
+bool VrInputLocateHand(int hand, XrSpace base, XrTime time, XrPosef* out) {
+	if (!s_attached || hand < 0 || hand > 1 || !s_handSpace[hand] || !base) return false;
+	Located located = Locate(s_handSpace[hand], base, time);
+	if (!located.valid) return false;
+	*out = located.pose;
+	return true;
+}
+
 // Each VR frame after VrInputSync: motion controls. Both hands and the head are located in `local` at
 // the frame's display time; each hand's analyser turns its motion into slashes and stabs.
 void VrInputMotion(XrSpace local, XrSpace view, XrTime time, bool focused, bool flipped) {

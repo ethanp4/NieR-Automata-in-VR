@@ -84,15 +84,15 @@ Item kView[] = {
 		"Moves the camera along its line of sight towards the character (positive) for stronger 3D. Also Ctrl+F6 / Ctrl+F7.",
 	},
 	{
-		"First person (prototype)",
+		"First person",
 		T_BOOL,
 		&g_cfg.firstPerson,
 		0,
 		1,
 		nullptr,
 		0,
-		"Your eyes go to the point the game camera follows (around 2B) instead of behind her; the right stick still "
-		"turns you. 2B's head isn't hidden yet: move out of it with the settings below. Also F3.",
+		"You see through 2B's eyes, her head hidden and her body still there; the right stick and your headset turn "
+		"you. Also F3.",
 	},
 	{
 		"First person: height",
@@ -102,7 +102,7 @@ Item kView[] = {
 		1.5f,
 		"%.2f m",
 		0,
-		"Moves your eyes up (positive) or down from the point the camera follows.",
+		"Moves your eyes up (positive) or down from 2B's eyes.",
 	},
 	{
 		"First person: forward",
@@ -112,7 +112,73 @@ Item kView[] = {
 		1.5f,
 		"%.2f m",
 		0,
-		"Moves your eyes forward (positive), the way the camera faces, e.g. out of 2B's head.",
+		"Moves your eyes forward (positive) or back, the way you face.",
+	},
+	{
+		"First person: turn with 2B",
+		T_BOOL,
+		&g_cfg.fpFollowFacing,
+		0,
+		1,
+		nullptr,
+		0,
+		"The view turns with the way 2B faces instead of with the right stick. She has no walking backwards, so "
+		"pulling the stick back turns her, and you, around: strong motion sickness.",
+	},
+	{
+		"First person: body follows your head",
+		T_BOOL,
+		&g_cfg.fpBody,
+		0,
+		1,
+		nullptr,
+		0,
+		"Her head is where yours is, her waist bends to reach it, and all of her slides along when you step further "
+		"away. Her legs keep the game's animation. Only what you see changes: the game still thinks she's where it put her. "
+		"Off while the first person height or forward offset isn't 0.",
+	},
+	{
+		"First person: walk for real",
+		T_BOOL,
+		&g_cfg.fpWalk,
+		0,
+		1,
+		nullptr,
+		0,
+		"Your real steps and leaning move 2B in the game, so enemies, hits and walls see her where you are. "
+		"Off: your steps move only your view.",
+	},
+	{
+		"First person: arms follow your controllers",
+		T_BOOL,
+		&g_cfg.fpArms,
+		0,
+		1,
+		nullptr,
+		0,
+		"Her hands are where yours are, as far as her arms reach, turned like your controllers. Needs \"body follows "
+		"your head\".",
+	},
+	{
+		"First person: show her head",
+		T_BOOL,
+		&g_cfg.fpShowHead,
+		0,
+		1,
+		nullptr,
+		0,
+		"Her head is drawn: you see the inside of it. Off: her head is hidden from your eyes (her shadow keeps it).",
+	},
+	{
+		"First person: steady height",
+		T_BOOL,
+		&g_cfg.fpSteadyHeight,
+		0,
+		1,
+		nullptr,
+		0,
+		"Your height doesn't bob with her running and attacks; it follows the ground under her (jumps, stairs) and, "
+		"slowly, her posture. Off: exactly her eyes' height.",
 	},
 	{
 		"First person: world scale",
