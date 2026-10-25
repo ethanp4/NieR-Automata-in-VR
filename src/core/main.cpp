@@ -7,6 +7,7 @@
 #include "render/extra_resolutions.h"
 #include "render/frame_share.h"
 #include "xr/xr_main.h"
+#include <atomic>
 #include <stdio.h>
 #include <dbghelp.h>
 
@@ -14,8 +15,10 @@ HMODULE g_hSelf;
 wchar_t g_modDir[MAX_PATH];
 wchar_t g_iniPath[MAX_PATH];
 
-static INIT_ONCE s_initOnce = INIT_ONCE_STATIC_INIT;
-volatile bool g_initDone;
+namespace {
+INIT_ONCE s_initOnce = INIT_ONCE_STATIC_INIT;
+}  // namespace
+std::atomic<bool> g_initDone;
 
 // ---------------------------------------------------------------------------------------------
 // Small helpers
@@ -31,7 +34,7 @@ void DescribeAddress(void* addr, char* out, size_t cap) {
 		const wchar_t* base = name;
 		for (const wchar_t* c = name; *c; c++)
 			if (*c == L'\\' || *c == L'/') base = c + 1;
-		snprintf(out, cap, "%s+0x%llx", Utf8(base).s, (unsigned long long)((char*)addr - (char*)module));
+		snprintf(out, cap, "%s+0x%llx", Utf8(base).s, (uint64_t)((char*)addr - (char*)module));
 	} else {
 		snprintf(out, cap, "%p (no module)", addr);
 	}
@@ -45,15 +48,16 @@ void DescribeAddress(void* addr, char* out, size_t cap) {
 typedef BOOL(WINAPI* PFN_MiniDumpWriteDump)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE, PMINIDUMP_EXCEPTION_INFORMATION,
 											PMINIDUMP_USER_STREAM_INFORMATION, PMINIDUMP_CALLBACK_INFORMATION);
 
-static LPTOP_LEVEL_EXCEPTION_FILTER s_prevFilter;
-static HANDLE s_crashRequest, s_crashDone;
-static EXCEPTION_POINTERS* volatile s_crashPointers;
-static volatile DWORD s_crashThread;
-static volatile LONG s_crashReported;
-static PFN_MiniDumpWriteDump s_writeDump;
-static DWORD s_reporterThreadId;
+namespace {
+LPTOP_LEVEL_EXCEPTION_FILTER s_prevFilter;
+HANDLE s_crashRequest, s_crashDone;
+std::atomic<EXCEPTION_POINTERS*> s_crashPointers;
+std::atomic<DWORD> s_crashThread;
+std::atomic<bool> s_crashReported;
+PFN_MiniDumpWriteDump s_writeDump;
+DWORD s_reporterThreadId;
 
-static void WriteCrashReport(EXCEPTION_POINTERS* pointers, DWORD threadId) {
+void WriteCrashReport(EXCEPTION_POINTERS* pointers, DWORD threadId) {
 	EXCEPTION_RECORD* record = pointers->ExceptionRecord;
 	char where[512];
 	DescribeAddress(record->ExceptionAddress, where, sizeof(where));
@@ -109,7 +113,7 @@ static void WriteCrashReport(EXCEPTION_POINTERS* pointers, DWORD threadId) {
 	CloseHandle(file);
 }
 
-static DWORD WINAPI CrashReporterThread(void*) {
+DWORD WINAPI CrashReporterThread(void*) {
 	while (true) {
 		WaitForSingleObject(s_crashRequest, INFINITE);
 		if (s_crashPointers) WriteCrashReport(s_crashPointers, s_crashThread);
@@ -118,8 +122,8 @@ static DWORD WINAPI CrashReporterThread(void*) {
 }
 
 // Uses almost no stack: hands the work to the reporter thread and waits.
-static void ReportCrash(EXCEPTION_POINTERS* pointers) {
-	if (!pointers || !pointers->ExceptionRecord || InterlockedExchange(&s_crashReported, 1) != 0) return;
+void ReportCrash(EXCEPTION_POINTERS* pointers) {
+	if (!pointers || !pointers->ExceptionRecord || s_crashReported.exchange(true) != 0) return;
 	s_crashPointers = pointers;
 	s_crashThread = GetCurrentThreadId();
 	if (s_crashRequest && s_crashThread != s_reporterThreadId) {  // the reporter can't wait on itself
@@ -128,17 +132,18 @@ static void ReportCrash(EXCEPTION_POINTERS* pointers) {
 	}
 }
 
-static LONG WINAPI CrashFilter(EXCEPTION_POINTERS* pointers) {
+LONG WINAPI CrashFilter(EXCEPTION_POINTERS* pointers) {
 	ReportCrash(pointers);
 	return s_prevFilter ? s_prevFilter(pointers) : EXCEPTION_CONTINUE_SEARCH;
 }
 
 // Stack overflows are never meant to be survived; catch them first-chance in case the game's
 // own handler swallows them before our unhandled-exception filter sees them.
-static LONG WINAPI StackOverflowWatcher(EXCEPTION_POINTERS* pointers) {
+LONG WINAPI StackOverflowWatcher(EXCEPTION_POINTERS* pointers) {
 	if (pointers && pointers->ExceptionRecord && pointers->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) ReportCrash(pointers);
 	return EXCEPTION_CONTINUE_SEARCH;
 }
+}  // namespace
 
 void InstallCrashHandler() {
 	if (!s_crashRequest) {
@@ -160,7 +165,8 @@ void InstallCrashHandler() {
 // ---------------------------------------------------------------------------------------------
 typedef LONG(WINAPI* PFN_RtlGetVersion)(OSVERSIONINFOW*);
 
-static void LogEnvironment() {
+namespace {
+void LogEnvironment() {
 	wchar_t exe[MAX_PATH];
 	GetModuleFileNameW(nullptr, exe, MAX_PATH);
 	Log("NieRVR %s (built %s %s)", NIERVR_VERSION, __DATE__, __TIME__);
@@ -223,7 +229,7 @@ static void LogEnvironment() {
 	}
 }
 
-static BOOL CALLBACK InitOnceCallback(PINIT_ONCE, PVOID, PVOID*) {
+BOOL CALLBACK InitOnceCallback(PINIT_ONCE, PVOID, PVOID*) {
 	GetModuleFileNameW(g_hSelf, g_modDir, MAX_PATH);
 	wchar_t* slash = g_modDir;
 	for (wchar_t* c = g_modDir; *c; c++)
@@ -248,6 +254,7 @@ static BOOL CALLBACK InitOnceCallback(PINIT_ONCE, PVOID, PVOID*) {
 	g_initDone = true;
 	return TRUE;
 }
+}  // namespace
 
 void EnsureInit() { InitOnceExecuteOnce(&s_initOnce, InitOnceCallback, nullptr, nullptr); }
 

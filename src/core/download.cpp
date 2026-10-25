@@ -38,8 +38,8 @@ struct Inet {
 };
 }  // namespace
 
-bool HttpDownload(const wchar_t* url, const wchar_t* path, const char* sha256, volatile LONG64* got,
-				  volatile LONG64* total, volatile LONG* cancel, char* err, size_t errCap) {
+bool HttpDownload(const wchar_t* url, const wchar_t* path, const char* sha256, std::atomic<int64_t>* got,
+				  std::atomic<int64_t>* total, const std::atomic<bool>* cancel, char* err, size_t errCap) {
 	*got = 0;
 	*total = 0;
 	err[0] = 0;
@@ -85,7 +85,7 @@ bool HttpDownload(const wchar_t* url, const wchar_t* path, const char* sha256, v
 		return false;
 	}
 	Sha256 hash;
-	static char buf[1 << 16];
+	char buf[1 << 16];  // 64 KB of the download thread's stack
 	bool ok = true;
 	while (true) {
 		if (*cancel) {
@@ -106,7 +106,7 @@ bool HttpDownload(const wchar_t* url, const wchar_t* path, const char* sha256, v
 			ok = false;
 			break;
 		}
-		InterlockedAdd64(got, read);
+		*got += read;
 	}
 	CloseHandle(file);
 	char hex[65];
@@ -127,7 +127,7 @@ bool FileSha256(const wchar_t* path, char hex[65]) {
 							  FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
 	if (file == INVALID_HANDLE_VALUE) return false;
 	Sha256 hash;
-	static char buf[1 << 16];
+	char buf[1 << 16];  // 64 KB of the hashing thread's stack
 	DWORD read = 0;
 	bool ok = true;
 	while (true) {

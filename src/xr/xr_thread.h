@@ -3,6 +3,7 @@
 // and xr_frame.cpp (each headset frame). Only the VR thread uses any of it.
 #pragma once
 #include "core/pure.h"
+#include "core/com.h"
 #include "render/frame_share.h"
 #include "ui/stats_overlay.h"
 #include "xr/openxr.h"
@@ -37,9 +38,9 @@
 	X(xrLocateViews)                  \
 	X(xrEnumerateViewConfigurations)  \
 	X(xrEnumerateViewConfigurationViews)
-// clang-format on
+                  
 
-const uint32_t kMaxImages = 8;
+constexpr uint32_t kMaxImages = 8;
 
 struct Swapchain {
 	XrSwapchain handle;
@@ -64,7 +65,7 @@ struct GameView {
 	ID3D11ShaderResourceView* sceneSrv;
 	ID3D11Texture2D* keyTex;  // upscaling: the scene image the HUD is cut out against (else null)
 	ID3D11ShaderResourceView* keySrv;
-	LONG seq;
+	int32_t seq;
 	FrameTag tag;
 	bool hasFrame;
 };
@@ -112,8 +113,8 @@ struct VrState {
 	bool menuPlaced;
 
 	// game frames, on our device
-	LONG servedRequestGen;  // last game request we answered
-	LONG publishedGen;
+	int32_t servedRequestGen;  // last game request we answered
+	int32_t publishedGen;
 	ID3D11Texture2D* ring[kRingSize];       // shared with the game device: full frames
 	ID3D11Texture2D* ringScene[kRingSize];  // scene-only frames (UI removed)
 	ID3D11Texture2D* ringKey[kRingSize];    // upscaling: scene-only frames before upscaling (HUD key)
@@ -127,13 +128,13 @@ struct VrState {
 	ID3D11RenderTargetView* coverageRtv;
 	ID3D11Texture2D* coverageStaging[3];
 	bool coveragePending[3];
-	int coverageNext;
-	LONG coverageMeasuredSeq;
-	int menuVotes;           // >0 towards menu, <0 towards gameplay
-	int framesWithoutScene;  // consecutive eye frames without a scene-only image
-	unsigned statSceneFrames;
+	int32_t coverageNext;
+	int32_t coverageMeasuredSeq;
+	int32_t menuVotes;           // >0 towards menu, <0 towards gameplay
+	int32_t framesWithoutScene;  // consecutive eye frames without a scene-only image
+	uint32_t statSceneFrames;
 	float statCoverageSum, statCoverageMax;
-	unsigned statCoverageCount;
+	uint32_t statCoverageCount;
 	bool menuMode;
 
 	// screen placement
@@ -141,32 +142,24 @@ struct VrState {
 	bool recenterRequested;
 	XrPosef quadPose;
 	pure::Q lastScreenYaw;
-	bool spaceFlipped;     // the runtime's LOCAL space has its +Y pointing down (Virtual Desktop)
-	int upsideDownFrames;  // consecutive headset frames the head's up points against the reference's up
-	float lastHeadPos[3];  // head position last frame (silent space changes show as jumps)
+	bool spaceFlipped;         // the runtime's LOCAL space has its +Y pointing down (Virtual Desktop)
+	int32_t upsideDownFrames;  // consecutive headset frames the head's up points against the reference's up
+	float lastHeadPos[3];      // head position last frame (silent space changes show as jumps)
 	bool lastHeadValid;
 	bool keyDown[256];
 
 	// stats
-	unsigned statFrames, statQuadFrames, statStereoFrames, statGameFrames[3];
-	// the same counts over half a second, for the stats overlay
-	unsigned overlayFrames, overlayGameFrames[3];
-	LARGE_INTEGER overlayStart, overlayDrawn, overlayLastFrame;
-	OverlayStats overlayStats;
-	char overlayMode[32];
-	char overlayUpscaler[128];
-	float overlayFrameMs[180];  // headset frame times (two seconds at 90 Hz), ring buffer
-	int overlayFrameNext;
-	LARGE_INTEGER statStart, qpcFrequency;
-	unsigned errorCount;
+	uint32_t statFrames, statQuadFrames, statStereoFrames, statGameFrames[3];
+	double statStartMs;  // NowMs() when these counts started
+	uint32_t errorCount;
 
 	// head pose prediction: how long after the VR frame whose display time the game's pose was
 	// predicted from (poseBase) its images are actually on screen, averaged
 	double poseLagMs;  // running average
 	bool poseLagValid;
-	long long predictionNs;  // extra prediction handed to the game thread
+	int64_t predictionNs;  // extra prediction handed to the game thread
 	double statLagSum;
-	unsigned statLagCount;
+	uint32_t statLagCount;
 	float displayEyeRot[2][4];  // eye orientations at this VR frame's display time
 	bool displayPoseValid;
 	XrView displayViews[2];               // both eyes at this VR frame's display time (late warp submits these)
@@ -177,7 +170,7 @@ struct VrState {
 	// how far the shown image's pose is from the head at display (what the margin must cover)
 	double statTurnSum;
 	float statTurnMax;
-	unsigned statTurnCount, statTurnOverMargin;  // over: frames where it exceeded the rendered margin
+	uint32_t statTurnCount, statTurnOverMargin;  // over: frames where it exceeded the rendered margin
 	float marginDeg;
 };
 extern VrState g_vr;
@@ -186,12 +179,6 @@ extern VrState g_vr;
 bool XrCheck(XrResult result, const char* what, bool perFrame = false);
 #define XR_CHECK(call) XrCheck((call), #call)
 #define XR_CHECK_FRAME(call) XrCheck((call), #call, true)
-
-template <typename T>
-void SafeRelease(T*& p) {
-	if (p) p->Release();
-	p = nullptr;
-}
 
 inline bool IsSrgb(int64_t format) {
 	return format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ||

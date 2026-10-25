@@ -1,10 +1,12 @@
 // vr_controllers.cpp - the VR controllers as an XInput gamepad, plus motion controls.
 #include "input/vr_controllers.h"
+#include "core/locks.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "core/pure.h"
 #include "ui/menu.h"
 #include "xr/openxr.h"
+#include <atomic>
 #include <stdio.h>
 #include <string.h>
 #include <xinput.h>
@@ -58,22 +60,26 @@ SRWLOCK s_padLock = SRWLOCK_INIT;
 XINPUT_GAMEPAD s_gamepad;
 DWORD s_gamepadTick;                        // when s_gamepad was last updated with an active controller
 bool s_anyActive, s_everActive;             // everActive: for the log
-volatile LONG s_rumbleLeft, s_rumbleRight;  // 0..65535 from XInputSetState
+std::atomic<int32_t> s_rumbleLeft, s_rumbleRight;  // 0..65535 from XInputSetState
 float s_lastAmplitude[2];
 DWORD s_pulseTick[2];
 
 pure::MenuButton s_menuButton;  // Start / Back / D-pad from the left menu button
 
 // motion controls
-pure::SwingDetector s_swingDetectors[2];
+// pure::SwingDetector s_swingDetectors[2];
 // pure::HeadZone g_headZone[2];
 DWORD s_attackHeldUntil[2];                  // the attack button is held until then (100 ms per swing)
 XrVector3f s_lastHandPos[2], s_lastHeadPos;  // for speeds when the runtime gives no velocity
 XrTime s_lastTime;
 bool s_lastPosValid;
-unsigned s_swingCount[2];
+uint32_t s_swingCount[2];
 float s_peakSpeed[2];
 DWORD s_peakResetTick;
+// the stats overlay's hand numbers: peaks since VrInputTakeHandPeaks, and last frame's velocities
+HandPeaks s_handPeaks[2] = {{-1, -1, -1, -1}, {-1, -1, -1, -1}};
+XrVector3f s_lastVel[2], s_lastSpin[2];
+bool s_lastVelValid[2], s_lastSpinValid[2];
 
 // Keyboard / mouse handoff: a key or mouse button pressed in the game pauses the VR
 // controllers (the game sees a neutral pad, no rumble) until a button, trigger or stick on them is
@@ -82,7 +88,7 @@ bool s_keyboardMouseMode;
 bool s_keyWasDown[256];
 WORD s_prevVrButtons;
 float s_prevTrigger[2];
-unsigned s_toKeyboardCount, s_toControllersCount;
+uint32_t s_toKeyboardCount, s_toControllersCount;
 
 bool IsHandoffKey(int vk) {
 	if (vk >= VK_F1 && vk <= VK_F24) return false;  // the mod's hotkeys
@@ -160,8 +166,8 @@ void SuggestBindings(const char* profile, const Binding (&bindings)[N]) {
 
 #define L "/user/hand/left/"
 #define R "/user/hand/right/"
-// Touch controllers; Pico 4 controllers have the same buttons
-const Binding kTouch[] = {
+
+constexpr Binding kTouch[] = {
 	{ACT_STICK, L "input/thumbstick"},
 	{ACT_STICK, R "input/thumbstick"},
 	{ACT_STICK_CLICK, L "input/thumbstick/click"},
@@ -180,7 +186,7 @@ const Binding kTouch[] = {
 	{ACT_HAND_POSE, L "input/grip/pose"},
 	{ACT_HAND_POSE, R "input/grip/pose"},
 };
-const Binding kIndex[] = {
+constexpr Binding kIndex[] = {
 	{ACT_STICK, L "input/thumbstick"},
 	{ACT_STICK, R "input/thumbstick"},
 	{ACT_STICK_CLICK, L "input/thumbstick/click"},
@@ -199,8 +205,8 @@ const Binding kIndex[] = {
 	{ACT_HAND_POSE, L "input/grip/pose"},
 	{ACT_HAND_POSE, R "input/grip/pose"},
 };
-// Vive wands have few buttons: right trackpad click = A, right menu = B, left trackpad click = L3.
-const Binding kVive[] = {
+
+constexpr Binding kVive[] = {
 	{ACT_STICK, L "input/trackpad"},
 	{ACT_STICK, R "input/trackpad"},
 	{ACT_STICK_CLICK, L "input/trackpad/click"},
@@ -216,7 +222,7 @@ const Binding kVive[] = {
 	{ACT_HAND_POSE, L "input/grip/pose"},
 	{ACT_HAND_POSE, R "input/grip/pose"},
 };
-const Binding kWmr[] = {
+constexpr Binding kWmr[] = {
 	{ACT_STICK, L "input/thumbstick"},
 	{ACT_STICK, R "input/thumbstick"},
 	{ACT_STICK_CLICK, L "input/thumbstick/click"},
@@ -234,7 +240,7 @@ const Binding kWmr[] = {
 	{ACT_HAND_POSE, L "input/grip/pose"},
 	{ACT_HAND_POSE, R "input/grip/pose"},
 };
-const Binding kSimple[] = {
+constexpr Binding kSimple[] = {
 	{ACT_TRIGGER, L "input/select/click"},
 	{ACT_TRIGGER, R "input/select/click"},
 	{ACT_MENU, L "input/menu/click"},
@@ -416,9 +422,8 @@ void VrInputDetach() {
 	s_session = XR_NULL_HANDLE;
 	s_lastAmplitude[0] = s_lastAmplitude[1] = 0;
 	s_profileName[0][0] = s_profileName[1][0] = 0;
-	AcquireSRWLockExclusive(&s_padLock);
+	ExclusiveLock guard(&s_padLock);
 	s_anyActive = s_everActive = false;
-	ReleaseSRWLockExclusive(&s_padLock);
 }
 
 void VrInputShutdown() {
@@ -462,8 +467,8 @@ void VrInputSync(bool focused, bool foreground) {
 	// left menu button: tap = Start, hold = Back, + left stick = D-pad (pure.h, test_vr_controllers)
 	DWORD now = GetTickCount();
 	buttons |= s_menuButton.update(GetBool(ACT_MENU, 0), &leftStick.x, &leftStick.y, now);
-	if ((LONG)(s_attackHeldUntil[1] - now) > 0) buttons |= XINPUT_GAMEPAD_X;  // motion controls (VrInputMotion)
-	if ((LONG)(s_attackHeldUntil[0] - now) > 0) buttons |= XINPUT_GAMEPAD_Y;
+	if ((int32_t)(s_attackHeldUntil[1] - now) > 0) buttons |= XINPUT_GAMEPAD_X;  // motion controls (VrInputMotion)
+	if ((int32_t)(s_attackHeldUntil[0] - now) > 0) buttons |= XINPUT_GAMEPAD_Y;
 	// handoff between keyboard/mouse and the VR controllers
 	{
 		WORD pressed = buttons & ~s_prevVrButtons & ~(XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER);
@@ -489,19 +494,20 @@ void VrInputSync(bool focused, bool foreground) {
 	pad.sThumbLY = ToAxis(leftStick.y);
 	pad.sThumbRX = ToAxis(rightStick.x);
 	pad.sThumbRY = ToAxis(rightStick.y);
-	AcquireSRWLockExclusive(&s_padLock);
-	s_gamepad = pad;
-	s_anyActive = active;
-	if (active) {
-		s_gamepadTick = now;
-		if (!s_everActive) Log("vr controllers: in use as gamepad %s", g_cfg.vrControllers ? "(on)" : "(off in the settings)");
-		s_everActive = true;
+	{
+		ExclusiveLock guard(&s_padLock);
+		s_gamepad = pad;
+		s_anyActive = active;
+		if (active) {
+			s_gamepadTick = now;
+			if (!s_everActive) Log("vr controllers: in use as gamepad %s", g_cfg.vrControllers ? "(on)" : "(off in the settings)");
+			s_everActive = true;
+		}
 	}
-	ReleaseSRWLockExclusive(&s_padLock);
 	if (g_cfg.vrControllers && g_cfg.vrRumble && !s_keyboardMouseMode) UpdateRumble();
 	else if (s_lastAmplitude[0] > 0.02f || s_lastAmplitude[1] > 0.02f) {
-		InterlockedExchange(&s_rumbleLeft, 0);
-		InterlockedExchange(&s_rumbleRight, 0);
+		s_rumbleLeft = 0;
+		s_rumbleRight = 0;
 		UpdateRumble();  // stops them
 	}
 }
@@ -512,22 +518,24 @@ void VrInputSync(bool focused, bool foreground) {
 // never sees a pad come and go, and finds it even if it only looks for pads at startup.
 // The settings menu reads them even when they are off for the game, so they can be turned back on.
 bool VrInputPad(XINPUT_GAMEPAD* out, bool evenIfOff) {
-	memset(out, 0, sizeof(*out));
+	*out = {};
 	if ((!g_cfg.vrControllers && !evenIfOff) || !g_cfg.enabled) return false;
-	AcquireSRWLockShared(&s_padLock);
-	if (s_attached && s_anyActive && GetTickCount() - s_gamepadTick < 300 && (evenIfOff || !s_keyboardMouseMode)) *out = s_gamepad;
-	ReleaseSRWLockShared(&s_padLock);
+	{
+		SharedLock guard(&s_padLock);
+		if (s_attached && s_anyActive && GetTickCount() - s_gamepadTick < 300 && (evenIfOff || !s_keyboardMouseMode)) *out = s_gamepad;
+	}
 	return true;
 }
 
 // Game thread (XInputSetState hook): rumble.
 void VrInputRumble(WORD left, WORD right) {
-	InterlockedExchange(&s_rumbleLeft, left);
-	InterlockedExchange(&s_rumbleRight, right);
+	s_rumbleLeft = left;
+	s_rumbleRight = right;
 }
 
 namespace {
-bool Locate(XrSpace space, XrSpace base, XrTime time, XrVector3f* pos, XrVector3f* vel, bool* velValid) {
+bool Locate(XrSpace space, XrSpace base, XrTime time, XrVector3f* pos, XrVector3f* vel, bool* velValid,
+			XrVector3f* spin = nullptr, bool* spinValid = nullptr) {
 	XrSpaceVelocity velocity = {XR_TYPE_SPACE_VELOCITY};
 	XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION, &velocity};
 	if (XR_FAILED(s_xr.xrLocateSpace(space, base, time, &location)) || !(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
@@ -535,12 +543,36 @@ bool Locate(XrSpace space, XrSpace base, XrTime time, XrVector3f* pos, XrVector3
 	*pos = location.pose.position;
 	*vel = velocity.linearVelocity;
 	*velValid = (velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0;
+	if (spin) {
+		*spin = velocity.angularVelocity;
+		*spinValid = (velocity.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) != 0;
+	}
 	return true;
 }
 float Length(XrVector3f v) { return pure::fsqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
 XrVector3f Sub(XrVector3f a, XrVector3f b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+void Raise(float& peak, float value) {
+	if (value > peak) peak = value;
+}
 
-// A short pulse on one hand: the swing registered.
+// The stats overlay's peaks for one hand this frame. dt = seconds since the last frame (0 = unknown);
+// spin = null when the runtime gave no angular velocity.
+void TrackHandPeaks(int hand, XrVector3f vel, const XrVector3f* spin, double dt) {
+	constexpr float kDeg = 57.29578f;
+	HandPeaks& peaks = s_handPeaks[hand];
+	bool dtUsable = dt > 0.001 && dt < 0.1;
+	Raise(peaks.speed, Length(vel));
+	if (dtUsable && s_lastVelValid[hand]) Raise(peaks.accel, Length(Sub(vel, s_lastVel[hand])) / (float)dt);
+	s_lastVel[hand] = vel;
+	s_lastVelValid[hand] = true;
+	if (spin) {
+		Raise(peaks.spin, Length(*spin) * kDeg);
+		if (dtUsable && s_lastSpinValid[hand]) Raise(peaks.spinAccel, Length(Sub(*spin, s_lastSpin[hand])) * kDeg / (float)dt);
+		s_lastSpin[hand] = *spin;
+	}
+	s_lastSpinValid[hand] = spin != nullptr;
+}
+
 void SwingPulse(int hand) {
 	XrHapticActionInfo hapticInfo = {XR_TYPE_HAPTIC_ACTION_INFO, nullptr, s_actions[ACT_RUMBLE], s_handPaths[hand]};
 	XrHapticVibration vibration = {XR_TYPE_HAPTIC_VIBRATION};
@@ -553,13 +585,21 @@ void SwingPulse(int hand) {
 
 // Each VR frame after VrInputSync: motion controls. Hand speeds relative to the head (both located
 // in `local` at the frame's display time); a swing holds the attack button for 100 ms.
+void VrInputTakeHandPeaks(HandPeaks out[2]) {
+	for (int hand = 0; hand < 2; hand++) {
+		out[hand] = s_handPeaks[hand];
+		s_handPeaks[hand] = {-1, -1, -1, -1};
+	}
+}
+
 void VrInputMotion(XrSpace local, XrSpace view, XrTime time, bool focused, bool flipped) {
 	if (!s_attached || !focused || !s_handSpace[0] || !s_handSpace[1] || !local || !view) return;
-	XrVector3f head, headVel, pos[2], vel[2];
-	bool headVelValid, velValid[2];
+	XrVector3f head, headVel, pos[2], vel[2], spin[2];
+	bool headVelValid, velValid[2], spinValid[2];
 	if (!Locate(view, local, time, &head, &headVel, &headVelValid)) return;
 	bool located[2];
-	for (int hand = 0; hand < 2; hand++) located[hand] = Locate(s_handSpace[hand], local, time, &pos[hand], &vel[hand], &velValid[hand]);
+	for (int hand = 0; hand < 2; hand++)
+		located[hand] = Locate(s_handSpace[hand], local, time, &pos[hand], &vel[hand], &velValid[hand], &spin[hand], &spinValid[hand]);
 	// no velocity from the runtime: from the positions since the last frame
 	double dt = s_lastPosValid ? (double)(time - s_lastTime) / 1e9 : 0;
 	bool diffUsable = dt > 0.001 && dt < 0.1;
@@ -568,27 +608,33 @@ void VrInputMotion(XrSpace local, XrSpace view, XrTime time, bool focused, bool 
 											: XrVector3f{0, 0, 0};
 	DWORD now = GetTickCount();
 	for (int hand = 0; hand < 2; hand++) {
-		if (!located[hand]) continue;
+		if (!located[hand]) {
+			s_lastVelValid[hand] = s_lastSpinValid[hand] = false;
+			continue;
+		}
 		if (!velValid[hand]) {
-			if (!diffUsable) continue;
+			if (!diffUsable) {
+				s_lastVelValid[hand] = s_lastSpinValid[hand] = false;
+				continue;
+			}
 			vel[hand] = {(float)((pos[hand].x - s_lastHandPos[hand].x) / dt), (float)((pos[hand].y - s_lastHandPos[hand].y) / dt),
 						 (float)((pos[hand].z - s_lastHandPos[hand].z) / dt)};
 		}
+		TrackHandPeaks(hand, vel[hand], spinValid[hand] ? &spin[hand] : nullptr, dt);
 		XrVector3f relative = Sub(vel[hand], headVel);
 		float speed = Length(relative);
 		if (speed > s_peakSpeed[hand]) s_peakSpeed[hand] = speed;
 		bool swingsEnabled = g_cfg.motionControls && g_cfg.vrControllers && !MenuIsOpen() && !s_keyboardMouseMode;
-		if (s_swingDetectors[hand].update(swingsEnabled ? speed : 0, now, g_cfg.swingSpeed) && swingsEnabled) {
-			s_attackHeldUntil[hand] = now + 100;
-			s_swingCount[hand]++;
-			if (s_swingCount[0] + s_swingCount[1] == 1) Log("motion controls: first swing (%s hand, %.1f m/s)", hand ? "right" : "left", (double)speed);
-			LogV("motion controls: %s swing %.1f m/s", hand ? "right" : "left", (double)speed);
-			SwingPulse(hand);
-			AcquireSRWLockExclusive(&s_padLock);  // into the pad at once (VrInputSync adds it from then on)
-			s_gamepad.wButtons |= hand ? XINPUT_GAMEPAD_X : XINPUT_GAMEPAD_Y;
-			s_gamepadTick = now;
-			ReleaseSRWLockExclusive(&s_padLock);
-		}
+		// if (s_swingDetectors[hand].update(swingsEnabled ? speed : 0, now, g_cfg.swingSpeed) && swingsEnabled) {
+		// 	s_attackHeldUntil[hand] = now + 100;
+		// 	s_swingCount[hand]++;
+		// 	if (s_swingCount[0] + s_swingCount[1] == 1) Log("motion controls: first swing (%s hand, %.1f m/s)", hand ? "right" : "left", (double)speed);
+		// 	LogV("motion controls: %s swing %.1f m/s", hand ? "right" : "left", (double)speed);
+		// 	SwingPulse(hand);
+		// 	ExclusiveLock guard(&s_padLock);  // into the pad at once (VrInputSync adds it from then on)
+		// 	s_gamepad.wButtons |= hand ? XINPUT_GAMEPAD_X : XINPUT_GAMEPAD_Y;
+		// 	s_gamepadTick = now;
+		// }
 	}
 	for (int hand = 0; hand < 2; hand++) s_lastHandPos[hand] = pos[hand];
 	s_lastHeadPos = head;

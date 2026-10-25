@@ -1,5 +1,7 @@
 // replay.cpp - rerender draw calls from the other eyes perspective
 #include "render/replay.h"
+#include "core/com.h"
+#include "core/locks.h"
 #include "core/config.h"
 #include "core/hook.h"
 #include "core/log.h"
@@ -8,16 +10,18 @@
 #include "render/hud_layer.h"
 #include "render/viewfix.h"
 #include "ui/menu.h"
+#include <atomic>
+#include <iterator>
 #include <stdio.h>
 #include <string.h>
 #include "render/d3d_hooks.h"
 #include <smmintrin.h>
 #include <d3d11_1.h>
 
-volatile bool g_replaying;           // playback in progress: every hook passes straight through
-volatile LONG g_recording;           // the recorder is taking calls
+std::atomic<bool> g_replaying;           // playback in progress: every hook passes straight through
+std::atomic<bool> g_recording;           // the recorder is taking calls
 ID3D11DeviceContext* g_gameContext;  // the game's immediate context
-volatile LONG g_modCallsInProgress;  // mod-internal calls in progress (not recorded)
+std::atomic<int32_t> g_modCallsInProgress;  // mod-internal calls in progress (not recorded)
 
 namespace {
 enum Op : uint16_t {
@@ -76,9 +80,9 @@ struct CmdHeader {
 	uint32_t payloadSize;  // payload bytes after this header
 };
 
-const size_t kArenaBytes = 192u << 20;  // per frame: commands + uploaded data
-const size_t kMaxRefs = 1 << 18;
-const UINT kMaxUploadBytes = 16u << 20;  // a single Map/Update larger than this cancels the frame
+constexpr size_t kArenaBytes = 192u << 20;  // per frame: commands + uploaded data
+constexpr size_t kMaxRefs = 1 << 18;
+constexpr UINT kMaxUploadBytes = 16u << 20;  // a single Map/Update larger than this cancels the frame
 
 uint8_t* s_arena;
 size_t s_arenaUsed;
@@ -89,31 +93,23 @@ bool s_hooksReady;           // hooks installed, memory allocated
 bool s_recordingValid;       // the recording can be played back
 const char* s_cancelReason;  // why not (logged)
 bool s_stoppedAtUi;          // recording ended at the first UI draw
-unsigned s_opCounts[OP_COUNT];
-unsigned s_frameCommands;
+uint32_t s_opCounts[OP_COUNT];
+uint32_t s_frameCommands;
 double s_uploadCopyMs;  // time spent copying upload data while recording (this frame)
 
 // ---- statistics, logged every 30 s -----------------------------------------------------------
-unsigned s_statFrames, s_statReplayed, s_statCancelled, s_statNoCamera;
+uint32_t s_statFrames, s_statReplayed, s_statCancelled, s_statNoCamera;
 double s_statReplayMs, s_statReplayMaxMs, s_statCopyMs, s_statCommands, s_statBytes, s_statShadowDrawsSkipped;
 DWORD s_lastReportTick;
 char s_lastCancelReason[160];
 bool s_loggedFirstFrame;
-
-LARGE_INTEGER s_qpcFrequency;
-double NowMs() {
-	LARGE_INTEGER now;
-	QueryPerformanceCounter(&now);
-	if (!s_qpcFrequency.QuadPart) QueryPerformanceFrequency(&s_qpcFrequency);
-	return (double)now.QuadPart * 1000.0 / (double)s_qpcFrequency.QuadPart;
-}
 
 void CancelRecording(const char* reason) {
 	if (s_recordingValid) {
 		s_recordingValid = false;
 		s_cancelReason = reason;
 	}
-	InterlockedExchange(&g_recording, 0);
+	g_recording = false;
 }
 
 // ---- arena -----------------------------------------------------------------------------------
@@ -508,16 +504,16 @@ struct Generation {
 	bool open;
 };
 Generation s_generations[1024];
-int s_generationCount;
+int32_t s_generationCount;
 struct PooledBuffer {
 	UINT byteWidth, bind, misc, stride;
 	ID3D11Buffer* buffer;
 	bool inUse;
 };
 PooledBuffer s_pool[1024];
-int s_poolCount;
+int32_t s_poolCount;
 size_t s_poolBytes;
-const size_t kPoolMaxBytes = 768u << 20;
+constexpr size_t kPoolMaxBytes = 768u << 20;
 
 bool IsDynamicBuffer(ID3D11Resource* res, D3D11_BUFFER_DESC* desc) {
 	D3D11_RESOURCE_DIMENSION dim;
@@ -539,11 +535,10 @@ ID3D11Buffer* TakePooledBuffer(const D3D11_BUFFER_DESC& desc) {
 	D3D11_BUFFER_DESC defaultDesc = desc;
 	defaultDesc.Usage = D3D11_USAGE_DEFAULT;
 	defaultDesc.CPUAccessFlags = 0;
-	ID3D11Device* device = nullptr;
+	ComPtr<ID3D11Device> device;
 	g_gameContext->GetDevice(&device);
 	ID3D11Buffer* buffer = nullptr;
 	HRESULT hr = device ? device->CreateBuffer(&defaultDesc, nullptr, &buffer) : E_FAIL;
-	if (device) device->Release();
 	if (FAILED(hr) || !buffer) return nullptr;
 	s_pool[s_poolCount++] = {desc.ByteWidth, desc.BindFlags, desc.MiscFlags, desc.StructureByteStride, buffer, true};
 	s_poolBytes += desc.ByteWidth;
@@ -553,9 +548,9 @@ ID3D11Buffer* TakePooledBuffer(const D3D11_BUFFER_DESC& desc) {
 void CloseGeneration(Generation& gen) {
 	if (!gen.open) return;
 	gen.open = false;
-	InterlockedIncrement(&g_modCallsInProgress);
+	++g_modCallsInProgress;
 	g_gameContext->CopyResource(gen.snapshot, gen.buffer);
-	InterlockedDecrement(&g_modCallsInProgress);
+	--g_modCallsInProgress;
 }
 Generation* OpenGenerationOf(ID3D11Resource* res) {
 	for (int i = s_generationCount - 1; i >= 0; i--)
@@ -675,7 +670,7 @@ typedef void(STDMETHODCALLTYPE* PFN_SetSlots)(ID3D11DeviceContext* c, UINT, UINT
 typedef void(STDMETHODCALLTYPE* PFN_SetShader)(ID3D11DeviceContext* c, void*, ID3D11ClassInstance* const*, UINT);
 // slot setters: op, stage, vtable index
 struct SlotHook {
-	int op, stage, index;
+	int32_t op, stage, index;
 	const char* name;
 	PFN_SetSlots orig;
 };
@@ -693,14 +688,14 @@ SlotHook s_slotHooks[] = {
 	{OP_SET_CB, RS_DS, 66, "DSSetConstantBuffers", nullptr},
 	{OP_SET_SAMPLERS, RS_CS, 70, "CSSetSamplers", nullptr},
 };
-static_assert(sizeof(s_slotHooks) / sizeof(s_slotHooks[0]) == 12, "H_Slots<0..11> below");
+static_assert(std::size(s_slotHooks) == 12, "H_Slots<0..11> below");
 template <int I>
 void STDMETHODCALLTYPE H_Slots(ID3D11DeviceContext* c, UINT startSlot, UINT count, void* const* objs) {
 	if (ShouldRecord(c)) RecSetSlots(s_slotHooks[I].op, s_slotHooks[I].stage, startSlot, count, objs);
 	s_slotHooks[I].orig(c, startSlot, count, objs);
 }
 struct ShaderHook {
-	int stage, index;
+	int32_t stage, index;
 	const char* name;
 	PFN_SetShader orig;
 };
@@ -1112,16 +1107,11 @@ void STDMETHODCALLTYPE H_Ctx1(ID3D11DeviceContext* c, void* a0, void* a1, void* 
 	((void(STDMETHODCALLTYPE*)(ID3D11DeviceContext * c, void*, void*, void*, void*, void*, void*, void*, void*, void*, void*)) o_Ctx1[I])(
 		c, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
 }
-}  // namespace
 
-// ---------------------------------------------------------------------------------------------
-// Pipeline state snapshot
-// ---------------------------------------------------------------------------------------------
-namespace {
-const UINT kSrvSlots = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;      // 128
-const UINT kCbSlots = D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT;  // 14
-const UINT kSamplerSlots = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;         // 16
-const UINT kUavSlots = D3D11_PS_CS_UAV_REGISTER_COUNT;                    // 8 (feature level 11.0)
+constexpr UINT kSrvSlots = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;      // 128
+constexpr UINT kCbSlots = D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT;  // 14
+constexpr UINT kSamplerSlots = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;         // 16
+constexpr UINT kUavSlots = D3D11_PS_CS_UAV_REGISTER_COUNT;                    // 8 (feature level 11.0)
 struct StageState {
 	ID3D11DeviceChild* shader;
 	ID3D11ClassInstance* classInstances[16];
@@ -1168,11 +1158,6 @@ void ReleaseAll(T** arr, UINT count) {
 			arr[i] = nullptr;
 		}
 }
-template <typename T>
-void SafeRelease(T*& p) {
-	if (p) p->Release();
-	p = nullptr;
-}
 void ReleasePipelineState(PipelineState& state) {
 	if (!state.valid) return;
 	SafeRelease(state.inputLayout);
@@ -1199,7 +1184,7 @@ void ReleasePipelineState(PipelineState& state) {
 
 void CapturePipelineState(ID3D11DeviceContext* c, PipelineState& state) {
 	ReleasePipelineState(state);
-	memset(&state, 0, sizeof(state));
+	state = {};
 	c->IAGetInputLayout(&state.inputLayout);
 	c->IAGetVertexBuffers(0, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, state.vertexBuffers, state.strides, state.offsets);
 	c->IAGetIndexBuffer(&state.indexBuffer, &state.indexFormat, &state.indexOffset);
@@ -1321,14 +1306,14 @@ struct Substitute {
 	ID3D11Buffer* snapshot;
 };
 Substitute s_substitutes[256];
-int s_substituteCount;
+int32_t s_substituteCount;
 struct SnapshotView {
 	ID3D11ShaderResourceView* gameView;
 	ID3D11Buffer* snapshot;
 	ID3D11ShaderResourceView* view;
 };
 SnapshotView s_snapshotViews[256];
-int s_snapshotViewCount;
+int32_t s_snapshotViewCount;
 struct GameBindings {
 	ID3D11Buffer* vertexBuffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
 	UINT strides[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT], offsets[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
@@ -1347,21 +1332,19 @@ ID3D11Buffer* SubstituteBuffer(ID3D11Buffer* buffer) {
 }
 ID3D11ShaderResourceView* SubstituteView(ID3D11ShaderResourceView* view) {
 	if (!view || !s_substituteCount) return view;
-	ID3D11Resource* res = nullptr;
+	ComPtr<ID3D11Resource> res;
 	view->GetResource(&res);
-	if (res) res->Release();  // the view keeps it alive
-	ID3D11Buffer* snapshot = SubstituteBuffer((ID3D11Buffer*)res);
-	if (snapshot == (ID3D11Buffer*)res) return view;
+	ID3D11Buffer* snapshot = SubstituteBuffer((ID3D11Buffer*)res.Get());
+	if (snapshot == (ID3D11Buffer*)res.Get()) return view;
 	for (int i = 0; i < s_snapshotViewCount; i++)
 		if (s_snapshotViews[i].gameView == view && s_snapshotViews[i].snapshot == snapshot) return s_snapshotViews[i].view;
 	if (s_snapshotViewCount >= 256) return view;
 	D3D11_SHADER_RESOURCE_VIEW_DESC desc;
 	view->GetDesc(&desc);
-	ID3D11Device* device = nullptr;
+	ComPtr<ID3D11Device> device;
 	g_gameContext->GetDevice(&device);
 	ID3D11ShaderResourceView* own = nullptr;
 	if (!device || FAILED(device->CreateShaderResourceView(snapshot, &desc, &own))) own = nullptr;
-	if (device) device->Release();
 	if (!own) return view;
 	s_snapshotViews[s_snapshotViewCount++] = {view, snapshot, own};
 	return own;
@@ -1392,10 +1375,9 @@ void RebindBuffer(ID3D11DeviceContext* c, ID3D11Buffer* buffer) {
 		for (UINT i = 0; i < kSrvSlots; i++) {
 			ID3D11ShaderResourceView* view = s_gameBindings.srvs[stage][i];
 			if (!view) continue;
-			ID3D11Resource* res = nullptr;
+			ComPtr<ID3D11Resource> res;
 			view->GetResource(&res);
-			if (res) res->Release();
-			if ((ID3D11Buffer*)res != buffer) continue;
+			if ((ID3D11Buffer*)res.Get() != buffer) continue;
 			ID3D11ShaderResourceView* substituted = SubstituteView(view);
 			SetShaderResources(c, stage, i, 1, &substituted);
 		}
@@ -1409,22 +1391,22 @@ struct DsvKind {
 	bool isShadowMap;
 };
 DsvKind s_dsvCache[32];
-int s_dsvCount;
-unsigned s_skippedShadowDraws;
+int32_t s_dsvCount;
+uint32_t s_skippedShadowDraws;
 bool s_loggedShadowReuse;
 bool IsShadowDsv(ID3D11DepthStencilView* view) {
 	if (!view) return false;
 	for (int i = 0; i < s_dsvCount; i++)
 		if (s_dsvCache[i].view == view) return s_dsvCache[i].isShadowMap;
 	bool isShadow = false;
-	ID3D11Resource* res = nullptr;
+	ComPtr<ID3D11Resource> res;
 	view->GetResource(&res);
 	if (res) {
 		D3D11_RESOURCE_DIMENSION dim;
 		res->GetType(&dim);
 		if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
 			D3D11_TEXTURE2D_DESC desc;
-			((ID3D11Texture2D*)res)->GetDesc(&desc);
+			((ID3D11Texture2D*)res.Get())->GetDesc(&desc);
 			isShadow = desc.Width == desc.Height && desc.Width >= 512;
 			if (isShadow && !s_loggedShadowReuse) {
 				s_loggedShadowReuse = true;
@@ -1432,7 +1414,6 @@ bool IsShadowDsv(ID3D11DepthStencilView* view) {
 					desc.Height, (int)desc.Format);
 			}
 		}
-		res->Release();
 	}
 	if (s_dsvCount < 32) s_dsvCache[s_dsvCount++] = {view, isShadow};
 	return isShadow;
@@ -1449,7 +1430,7 @@ void PlayRecording(ID3D11DeviceContext* c) {
 	s_dsvCount = 0;
 	s_skippedShadowDraws = 0;
 	s_substituteCount = 0;
-	memset(&s_gameBindings, 0, sizeof(s_gameBindings));
+	s_gameBindings = {};
 	memcpy(s_gameBindings.vertexBuffers, s_recordStartState.vertexBuffers, sizeof(s_gameBindings.vertexBuffers));
 	memcpy(s_gameBindings.strides, s_recordStartState.strides, sizeof(s_gameBindings.strides));
 	memcpy(s_gameBindings.offsets, s_recordStartState.offsets, sizeof(s_gameBindings.offsets));
@@ -1690,17 +1671,16 @@ void PlayRecording(ID3D11DeviceContext* c) {
 			case OP_PREDICATION: c->SetPredication(Read<ID3D11Predicate*>(payload, 0), header.arg ? TRUE : FALSE); break;
 			case OP_CLEAR_STATE:
 				c->ClearState();
-				memset(&s_gameBindings, 0, sizeof(s_gameBindings));
+				s_gameBindings = {};
 				break;
 			case OP_DISCARD_RES:
 			case OP_DISCARD_VIEW: {
-				ID3D11DeviceContext1* context1 = nullptr;
-				if (SUCCEEDED(c->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&context1))) {
+				ComPtr<ID3D11DeviceContext1> context1;
+				if (SUCCEEDED(c->QueryInterface(__uuidof(ID3D11DeviceContext1), &context1))) {
 					if (header.op == OP_DISCARD_RES)
 						context1->DiscardResource(Read<ID3D11Resource*>(payload, 0));
 					else
 						context1->DiscardView(Read<ID3D11View*>(payload, 0));
-					context1->Release();
 				}
 				break;
 			}
@@ -1770,9 +1750,9 @@ void ReplayInstall(ID3D11DeviceContext* ctx) {
 	HOOK(55, H_SetResourceMinLOD, o_SetResourceMinLOD, "SetResourceMinLOD");
 	HOOK(57, H_Resolve, o_Resolve, "ResolveSubresource");
 	HOOK(110, H_ClearState, o_ClearState, "ClearState");
-	ID3D11DeviceContext1* context1 = nullptr;
-	if (SUCCEEDED(ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&context1)) && context1) {
-		void** vtable1 = *(void***)context1;
+	ComPtr<ID3D11DeviceContext1> context1;
+	if (SUCCEEDED(ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), &context1)) && context1) {
+		void** vtable1 = *(void***)context1.Get();
 #define HOOK1(index, hook, original, name) \
 	total++;                               \
 	hooked += HookFunction(vtable1[index], (void*)&hook, (void**)&original, name)
@@ -1787,7 +1767,6 @@ void ReplayInstall(ID3D11DeviceContext* ctx) {
 		HOOK1(131, H_Ctx1<6>, o_Ctx1[6], "SwapDeviceContextState");
 		HOOK1(122, H_Ctx1<7>, o_Ctx1[7], "GSSetConstantBuffers1");
 #undef HOOK1
-		context1->Release();
 	}
 #undef HOOK
 	s_hooksReady = hooked == total;
@@ -1797,8 +1776,10 @@ void ReplayInstall(ID3D11DeviceContext* ctx) {
 
 bool ReplayAvailable() { return s_hooksReady; }
 
+namespace {
 // Our own drawing at Present (depth reprojection): the game's state is saved and put back.
-static PipelineState s_modDrawState;
+PipelineState s_modDrawState;
+}  // namespace
 void StateSaveTemp(ID3D11DeviceContext* c) { CapturePipelineState(c, s_modDrawState); }
 void StateRestoreTemp(ID3D11DeviceContext* c) {
 	ApplyPipelineState(c, s_modDrawState);
@@ -1810,8 +1791,8 @@ void StateRestoreTemp(ID3D11DeviceContext* c) {
 // target view makes ResizeBuffers fail and the game freezes.
 void ReplayRelease() {
 	if (!s_hooksReady) return;
-	AcquireSRWLockExclusive(&s_recordLock);
-	InterlockedExchange(&g_recording, 0);
+	ExclusiveLock guard(&s_recordLock);
+	g_recording = false;
 	s_recordingValid = false;
 	for (auto& o : s_openMaps) o.res = nullptr;
 	ReleaseHeldRefs();
@@ -1820,7 +1801,6 @@ void ReplayRelease() {
 	ReleasePipelineState(s_recordStartState);
 	ReleasePipelineState(s_presentState);
 	ReleasePipelineState(s_finalPassState);
-	ReleaseSRWLockExclusive(&s_recordLock);
 }
 
 // Right after Present (StereoBeginFrame has decided whether this frame is synchronized).
@@ -1831,32 +1811,33 @@ void ReplayFrameStart(ID3D11DeviceContext* c, bool synchronized) {
 		return;
 	}
 	ReleasePipelineState(s_finalPassState);
-	AcquireSRWLockExclusive(&s_recordLock);
-	InterlockedExchange(&g_recording, 0);
-	for (auto& o : s_openMaps) o.res = nullptr;
-	ReleaseHeldRefs();
-	s_arenaUsed = 0;
-	s_frameCommands = 0;
-	s_uploadCopyMs = 0;
-	memset(s_opCounts, 0, sizeof(s_opCounts));
-	s_recordingValid = synchronized;
-	s_cancelReason = nullptr;
-	s_stoppedAtUi = false;
-	s_generationCount = 0;
-	for (int i = 0; i < s_poolCount; i++) s_pool[i].inUse = false;
-	ReleaseSnapshotViews();
-	ReleaseSRWLockExclusive(&s_recordLock);
+	{
+		ExclusiveLock guard(&s_recordLock);
+		g_recording = false;
+		for (auto& o : s_openMaps) o.res = nullptr;
+		ReleaseHeldRefs();
+		s_arenaUsed = 0;
+		s_frameCommands = 0;
+		s_uploadCopyMs = 0;
+		memset(s_opCounts, 0, sizeof(s_opCounts));
+		s_recordingValid = synchronized;
+		s_cancelReason = nullptr;
+		s_stoppedAtUi = false;
+		s_generationCount = 0;
+		for (int i = 0; i < s_poolCount; i++) s_pool[i].inUse = false;
+		ReleaseSnapshotViews();
+	}
 	if (!synchronized) return;
 	CapturePipelineState(c, s_recordStartState);
-	InterlockedExchange(&g_recording, 1);
+	g_recording = true;
 }
 
 // At the first UI draw (fromUi) or at Present.
 void ReplayStop(bool fromUi) {
 	if (!g_recording) return;
-	AcquireSRWLockExclusive(&s_recordLock);
+	ExclusiveLock guard(&s_recordLock);
 	if (g_recording) {
-		InterlockedExchange(&g_recording, 0);
+		g_recording = false;
 		s_stoppedAtUi = fromUi;
 		for (int i = 0; i < s_generationCount; i++) CloseGeneration(s_generations[i]);
 		for (auto& o : s_openMaps)
@@ -1865,7 +1846,6 @@ void ReplayStop(bool fromUi) {
 				s_cancelReason = "a resource stayed mapped across the end of the recording";
 			}
 	}
-	ReleaseSRWLockExclusive(&s_recordLock);
 }
 
 // The final pass (UI target -> backbuffer) as the game drew it, for the second eye's scene image.
@@ -1936,7 +1916,7 @@ void ReplayReport() {
 	if (now - s_lastReportTick < 30000) return;
 	s_lastReportTick = now;
 	if (!s_statFrames) return;
-	unsigned drawnTwice = s_statReplayed + s_statNoCamera;
+	uint32_t drawnTwice = s_statReplayed + s_statNoCamera;
 	Log("synchronized: %u frames, %u drawn twice (%u without the camera found), %u cancelled%s%s; second eye %.1f ms "
 		"of CPU time on average (max %.1f), recording copies %.2f ms, %.0f calls and %.0f KB per frame, %.0f shadow "
 		"draws reused per frame",

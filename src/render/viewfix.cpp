@@ -1,5 +1,6 @@
 // viewfix.cpp - keeps NieR's CPU-computed *view-space* data consistent with the eye camera.
 #include "render/viewfix.h"
+#include "core/com.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "core/pure.h"
@@ -12,7 +13,7 @@
 #include <d3dcompiler.h>
 
 namespace {
-const char kCSLights[] = R"(
+constexpr char kCSLights[] = R"(
 cbuffer P : register(b0) { row_major float4x4 T; row_major float4x4 Tinv; uint first; uint count; uint2 pad; };
 struct L { float4 a, b, c; };
 StructuredBuffer<L> inL : register(t0);
@@ -24,7 +25,7 @@ RWStructuredBuffer<L> outL : register(u0);
 	outL[first + id.x] = l;
 }
 )";
-const char kCSProbes[] = R"(
+constexpr char kCSProbes[] = R"(
 cbuffer P : register(b0) {
 	row_major float4x4 T; row_major float4x4 Tinv; uint first; uint count; uint2 pad;
 	uint4 on0; uint4 on1;   // GI volumes: bit per slot that stays on (others are marked empty)
@@ -53,7 +54,7 @@ struct Fix {
 	ID3D11UnorderedAccessView* uav;
 	D3D11_BUFFER_DESC desc;
 	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
-	int slot;  // the game's SRV slot for this data
+	int32_t slot;  // the game's SRV slot for this data
 	UINT stride;
 	const char* name;
 	bool logged, failed;
@@ -61,9 +62,7 @@ struct Fix {
 Fix s_fixes[2] = {{nullptr, {}, nullptr, nullptr, nullptr, {}, {}, 5, 48, "point lights", false, false},
 				  {nullptr, {}, nullptr, nullptr, nullptr, {}, {}, 1, 96, "reflection probes", false, false}};
 
-// read-back of the game's GI volume buffer: a ring of staging copies, one per frame, each read
-// (without waiting) a few frames later
-const int kGiRing = 4;
+constexpr int32_t kGiRing = 4;
 struct GiCopy {
 	ID3D11Buffer* buf;
 	bool pending;
@@ -71,23 +70,17 @@ struct GiCopy {
 };
 GiCopy s_giRing[kGiRing];
 UINT s_giStagingSize;
-int s_giNext;
+int32_t s_giNext;
 pure::GiPick s_giPick;  // the latest decision
 bool s_giHave;          // s_giPick is valid
 DWORD s_giLogTick, s_giInfoTick;
-int s_giUsedMin = 9999, s_giUsedMax = -1, s_giHighMax = -1, s_giLenMin = 9999, s_giLenMax = -1, s_giSlots;
+int32_t s_giUsedMin = 9999, s_giUsedMax = -1, s_giHighMax = -1, s_giLenMin = 9999, s_giLenMax = -1, s_giSlots;
 float s_giEntries[256 * 24];
 
 ID3D11Buffer* s_fixConstants;
 bool s_shadersReady, s_shadersFailed;
 ID3D11ShaderResourceView* s_restoreSrv;
-int s_restoreSlot = -1;
-
-template <typename T>
-void SafeRelease(T*& p) {
-	if (p) p->Release();
-	p = nullptr;
-}
+int32_t s_restoreSlot = -1;
 
 bool CreateShaders(ID3D11Device* device) {
 	if (s_shadersReady || s_shadersFailed) return s_shadersReady;
@@ -122,14 +115,13 @@ bool EnsureCopy(ID3D11Device* device, Fix& fix, ID3D11ShaderResourceView* src, U
 	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
 	src->GetDesc(&srvDesc);
 	if (srvDesc.ViewDimension != D3D11_SRV_DIMENSION_BUFFER && srvDesc.ViewDimension != D3D11_SRV_DIMENSION_BUFFEREX) return false;
-	ID3D11Resource* res = nullptr;
+	ComPtr<ID3D11Resource> res;
 	src->GetResource(&res);
 	if (!res) return false;
 	D3D11_RESOURCE_DIMENSION dim;
 	res->GetType(&dim);
 	D3D11_BUFFER_DESC desc = {};
-	if (dim == D3D11_RESOURCE_DIMENSION_BUFFER) ((ID3D11Buffer*)res)->GetDesc(&desc);
-	res->Release();
+	if (dim == D3D11_RESOURCE_DIMENSION_BUFFER) ((ID3D11Buffer*)res.Get())->GetDesc(&desc);
 	if (dim != D3D11_RESOURCE_DIMENSION_BUFFER || desc.StructureByteStride != fix.stride ||
 		!(desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED))
 		return false;
@@ -190,11 +182,11 @@ void GiReadback(ID3D11DeviceContext* c, ID3D11Device* device, ID3D11ShaderResour
 		copy.pending = false;
 	}
 	// this frame's copy
-	ID3D11Resource* res = nullptr;
+	ComPtr<ID3D11Resource> res;
 	src->GetResource(&res);
 	if (!res) return;
 	D3D11_BUFFER_DESC desc;
-	((ID3D11Buffer*)res)->GetDesc(&desc);
+	((ID3D11Buffer*)res.Get())->GetDesc(&desc);
 	if (s_giStagingSize != desc.ByteWidth) {
 		for (auto& copy : s_giRing) {
 			SafeRelease(copy.buf);
@@ -222,13 +214,12 @@ void GiReadback(ID3D11DeviceContext* c, ID3D11Device* device, ID3D11ShaderResour
 	}
 	GiCopy& copy = s_giRing[s_giNext];
 	if (s_giStagingSize && !copy.pending) {
-		c->CopyResource(copy.buf, res);
+		c->CopyResource(copy.buf, res.Get());
 		copy.pending = true;
 		copy.first = first;
 		copy.count = count;
 		s_giNext = (s_giNext + 1) % kGiRing;
 	}
-	res->Release();
 }
 
 void GiReport() {
@@ -268,27 +259,25 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 	if (!view) {
 		for (int i = 0; i < 16; i++) T[i] = Tinv[i] = (i % 5 == 0) ? 1.f : 0.f;
 	}
-	ID3D11Device* device = nullptr;
+	ComPtr<ID3D11Device> device;
 	c->GetDevice(&device);
 	if (!device) return;
 	Fix& fix = s_fixes[kind - 1];
-	ID3D11ShaderResourceView* src = nullptr;
+	ComPtr<ID3D11ShaderResourceView> src;
 	UINT first = 0, count = 0;
-	bool ok = CreateShaders(device);
+	bool ok = CreateShaders(device.Get());
 	if (ok) {
 		c->CSGetShaderResources(fix.slot, 1, &src);
-		ok = src && EnsureCopy(device, fix, src, &first, &count) && count > 0;
+		ok = src.Get() && EnsureCopy(device.Get(), fix, src.Get(), &first, &count) && count > 0;
 	}
 	if (!ok) {
-		device->Release();
-		if (src) src->Release();
 		if (!fix.failed && s_shadersReady) {
 			fix.failed = true;
 			Log("view fix: %s buffer not in the expected format; left unchanged", fix.name);
 		}
 		return;
 	}
-	if (isGi && !g_replaying) GiReadback(c, device, src, first, count);  // the replay reuses this frame's pick
+	if (isGi && !g_replaying) GiReadback(c, device.Get(), src.Get(), first, count);  // the replay reuses this frame's pick
 	if (isGi) GiReport();
 	// GI volumes: the view the game's pass gets ends after the last slot left on
 	ID3D11ShaderResourceView* use = fix.srv;
@@ -310,9 +299,7 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 			trim = false;
 		}
 	}
-	device->Release();
 	if (!view && !trim) {  // flat frame, nothing to change yet
-		src->Release();
 		return;
 	}
 	struct {
@@ -330,22 +317,22 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 	c->UpdateSubresource(s_fixConstants, 0, nullptr, &constants, 0, 0);
 
 	// save the game's compute state we touch
-	ID3D11ComputeShader* gameCs = nullptr;
+	ComPtr<ID3D11ComputeShader> gameCs;
 	ID3D11ClassInstance* classInstances[8] = {};
 	UINT classInstanceCount = 8;
 	c->CSGetShader(&gameCs, classInstances, &classInstanceCount);
-	ID3D11ShaderResourceView* gameSrv0 = nullptr;
+	ComPtr<ID3D11ShaderResourceView> gameSrv0;
 	c->CSGetShaderResources(0, 1, &gameSrv0);
-	ID3D11UnorderedAccessView* gameUav0 = nullptr;
+	ComPtr<ID3D11UnorderedAccessView> gameUav0;
 	c->CSGetUnorderedAccessViews(0, 1, &gameUav0);
-	ID3D11Buffer* gameCb0 = nullptr;
+	ComPtr<ID3D11Buffer> gameCb0;
 	c->CSGetConstantBuffers(0, 1, &gameCb0);
 
 	ID3D11ShaderResourceView* none = nullptr;
 	c->CSSetShaderResources(0, 1, &none);  // the game's t0 may alias nothing of ours, but be safe
 	c->CSSetShader(fix.cs, nullptr, 0);
 	c->CSSetConstantBuffers(0, 1, &s_fixConstants);
-	c->CSSetShaderResources(0, 1, &src);
+	c->CSSetShaderResources(0, 1, src.GetAddressOf());
 	UINT keepCounts = (UINT)-1;
 	c->CSSetUnorderedAccessViews(0, 1, &fix.uav, &keepCounts);
 	OriginalDispatch(c, (count + 63) / 64, 1, 1);
@@ -353,19 +340,15 @@ void ViewFixBeforeDispatch(ID3D11DeviceContext* c, int kind) {
 	c->CSSetUnorderedAccessViews(0, 1, &noUav, &keepCounts);
 
 	// restore, and let the game's pass read our copy
-	c->CSSetShader(gameCs, classInstances, classInstanceCount);
-	c->CSSetConstantBuffers(0, 1, &gameCb0);
-	c->CSSetShaderResources(0, 1, &gameSrv0);
-	c->CSSetUnorderedAccessViews(0, 1, &gameUav0, &keepCounts);
+	c->CSSetShader(gameCs.Get(), classInstances, classInstanceCount);
+	c->CSSetConstantBuffers(0, 1, gameCb0.GetAddressOf());
+	c->CSSetShaderResources(0, 1, gameSrv0.GetAddressOf());
+	c->CSSetUnorderedAccessViews(0, 1, gameUav0.GetAddressOf(), &keepCounts);
 	c->CSSetShaderResources(fix.slot, 1, &use);
-	s_restoreSrv = src;  // keeps our reference until after the dispatch
+	s_restoreSrv = src.Detach();  // keeps our reference until after the dispatch
 	s_restoreSlot = fix.slot;
-	if (gameCs) gameCs->Release();
 	for (UINT i = 0; i < classInstanceCount && i < 8; i++)
 		if (classInstances[i]) classInstances[i]->Release();
-	if (gameSrv0) gameSrv0->Release();
-	if (gameUav0) gameUav0->Release();
-	if (gameCb0) gameCb0->Release();
 	if (!fix.logged && view) {
 		fix.logged = true;
 		Log("view fix: %s moved into the eye's view space (%u entries) for the game's compute pass", fix.name, count);

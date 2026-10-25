@@ -2,6 +2,7 @@
 // of its bytecode. Passes are recognised by the cbuffer and variable names in the bytecode's
 // reflection data.
 #include "render/shader_table.h"
+#include "core/locks.h"
 #include "core/pure.h"
 #include <string.h>
 
@@ -22,7 +23,7 @@ struct ShaderEntry {
 	ComputeShaderClass computeClass;
 	uint32_t sampled;  // texture registers it samples (bit mask)
 };
-const uint32_t kSlots = 1 << 16;
+constexpr uint32_t kSlots = 1 << 16;
 ShaderEntry* s_shaders;
 SRWLOCK s_tableLock = SRWLOCK_INIT;
 uint32_t s_count;
@@ -65,7 +66,7 @@ void ShaderTableRemember(void* shader, const void* bytecode, SIZE_T len, ShaderS
 	uint8_t* copy = (uint8_t*)HeapAlloc(GetProcessHeap(), 0, len);
 	if (!copy) return;
 	memcpy(copy, bytecode, len);
-	AcquireSRWLockExclusive(&s_tableLock);
+	ExclusiveLock guard(&s_tableLock);
 	uint32_t slot = SlotFor(shader);
 	for (uint32_t probe = 0; probe < kSlots; probe++, slot = (slot + 1) & (kSlots - 1)) {
 		ShaderEntry& entry = s_shaders[slot];
@@ -95,10 +96,8 @@ void ShaderTableRemember(void* shader, const void* bytecode, SIZE_T len, ShaderS
 			entry.vignette = Contains(copy, size, "g_VignettoParam");
 			entry.effect = Contains(copy, size, "EffectParameterIndex");
 		}
-		ReleaseSRWLockExclusive(&s_tableLock);
 		return;
 	}
-	ReleaseSRWLockExclusive(&s_tableLock);
 	HeapFree(GetProcessHeap(), 0, copy);  // table full
 }
 
@@ -136,24 +135,24 @@ ComputeShaderClass ShaderTableClassifyCompute(void* computeShader) {
 }
 
 void ShaderTableMarkUsed(void* shader) {
-	AcquireSRWLockShared(&s_tableLock);
+	SharedLock guard(&s_tableLock);
 	ShaderEntry* entry = Find(shader);
 	if (entry) entry->usedInCapture = true;
-	ReleaseSRWLockShared(&s_tableLock);
 }
 
 int ShaderTableTakeUsed(ShaderBlobVisitor visit) {
 	if (!s_shaders) return 0;
 	int count = 0;
-	AcquireSRWLockExclusive(&s_tableLock);
-	for (uint32_t i = 0; i < kSlots; i++) {
-		ShaderEntry& entry = s_shaders[i];
-		if (!entry.shader || !entry.usedInCapture) continue;
-		entry.usedInCapture = false;
-		visit(entry.stage, entry.shader, entry.hash, entry.blob, entry.len);
-		count++;
+	{
+		ExclusiveLock guard(&s_tableLock);
+		for (uint32_t i = 0; i < kSlots; i++) {
+			ShaderEntry& entry = s_shaders[i];
+			if (!entry.shader || !entry.usedInCapture) continue;
+			entry.usedInCapture = false;
+			visit(entry.stage, entry.shader, entry.hash, entry.blob, entry.len);
+			count++;
+		}
 	}
-	ReleaseSRWLockExclusive(&s_tableLock);
 	return count;
 }
 

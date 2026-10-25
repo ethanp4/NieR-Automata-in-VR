@@ -2,6 +2,7 @@
 // No Windows dependencies, so this file is also unit-tested on the build host. The math is in vecmath.h.
 #pragma once
 
+#include <iterator>
 #include <stddef.h>
 #include <stdint.h>
 #include "core/vecmath.h"
@@ -133,10 +134,10 @@ inline uint32_t dxbc_sampled_textures(const uint8_t* b, size_t len) {
 // ---------------------------------------------------------------------------------------------
 struct ProjInfo {
 	bool rowMajor;
-	float sx, sy;       // focal scales: 1/tan(half fov)
-	float cx, cy;       // off-centre terms
-	float A, B;         // depth mapping: z_ndc = A + B / z_view (w = +-z)
-	float wSign;        // +1 left-handed (camera looks down +z), -1 right-handed
+	float sx, sy;  // focal scales: 1/tan(half fov)
+	float cx, cy;  // off-centre terms
+	float A, B;    // depth mapping: z_ndc = A + B / z_view (w = +-z)
+	float wSign;   // +1 left-handed (camera looks down +z), -1 right-handed
 	float vfovDeg, aspect;
 };
 
@@ -211,45 +212,6 @@ struct MenuButton {
 	}
 };
 
-// Motion controls: one swing of a hand = one attack. Fires once when the hand's speed (m/s) rises
-// to `fire`; fires again only after the hand has slowed below rearm * fire (the end of that swing)
-// and at least `cooldownMs` have passed since the last one.
-struct SwingDetector {
-	bool armed = true;
-	uint32_t lastFire = 0;
-	bool fired = false;  // lastFire is valid
-	bool update(float speed, uint32_t t, float fire, float rearm = 0.5f, uint32_t cooldownMs = 250) {
-		if (!armed && speed < fire * rearm) armed = true;
-		if (!armed || speed < fire) return false;
-		if (fired && t - lastFire < cooldownMs) return false;
-		armed = false;
-		fired = true;
-		lastFire = t;
-		return true;
-	}
-};
-
-// Motion controls: true when a hand's velocity `v` points mostly upward (more than ~40 degrees above
-// horizontal), so raising the arm for a swing doesn't attack. `upY` is +1, or -1 in a tracking space
-// whose +Y points down.
-inline bool mostly_up(V3 v, float upY, float minSin = 0.65f) {
-	float len = fsqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-	return len > 0 && v.y * upY > minSin * len;
-}
-
-// // Motion controls: a hand at the headset (adjusting it) and for a moment after it leaves (lowering
-// // it again) doesn't swing. update() takes the hand's distance from the head in metres; true =
-// // ignore this hand's movement now.
-// struct HeadZone {
-// 	uint32_t until = 0;
-// 	bool inside = false;
-// 	bool update(float dist, uint32_t t, float radius = 0.25f, uint32_t graceMs = 400) {
-// 		inside = dist < radius;
-// 		if (inside) until = t + graceMs;
-// 		return inside || (int32_t)(until - t) > 0;
-// 	}
-// };
-
 // GI volumes (viewfix.cpp). The game's probe-selection pass loops over g_CubeInput (96-byte
 // entries = 24 floats: a = position (a.w != 0: slot in use), b/c/d = rows of view -> box space,
 // f.xyz = half extents) and writes the chosen *slot numbers* per pixel; later shaders sample
@@ -259,8 +221,8 @@ inline bool mostly_up(V3 v, float upY, float minSin = 0.65f) {
 // length the game's pass needs: one past the last slot left on (plus `margin` when nothing is
 // dropped, for volumes that appear before the next read-back), at least 1, at most count.
 struct GiPick {
-	int used, highest, kept, length;  // highest = last used slot (-1: none)
-	uint32_t mask[8];                 // bit per slot (256 max): stays on; all ones when nothing is dropped
+	int32_t used, highest, kept, length;  // highest = last used slot (-1: none)
+	uint32_t mask[8];                     // bit per slot (256 max): stays on; all ones when nothing is dropped
 	bool dropping;
 };
 inline GiPick gi_pick(const float* e, int count, int keep, int margin) {
@@ -328,7 +290,7 @@ inline bool level_reference(Q head, bool* flipped, Q* out) {
 // DSR/DLDSR modes). `listed` holds (w << 16 | h). Returns how many sizes were written (at most
 // kSupersampleFactorCount).
 inline constexpr float kSupersampleFactors[] = {1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f};
-inline constexpr int kSupersampleFactorCount = sizeof(kSupersampleFactors) / sizeof(kSupersampleFactors[0]);
+inline constexpr int32_t kSupersampleFactorCount = std::size(kSupersampleFactors);
 inline int supersample_sizes(uint32_t bw, uint32_t bh, const uint32_t* listed, int nlisted, uint32_t* ow, uint32_t* oh) {
 	int n = 0;
 	for (int k = 0; k < kSupersampleFactorCount; k++) {
@@ -372,17 +334,17 @@ inline float halton(uint32_t i, uint32_t b) {
 // How much each upscaler mode enlarges the image: DLAA, Quality, Balanced, Performance, Ultra
 // performance (NVIDIA's ratios).
 inline float upscale_ratio(int mode) {
-	static const float kR[5] = {1.0f, 1.5f, 1.7241f, 2.0f, 3.0f};
+	static constexpr float kR[5] = {1.0f, 1.5f, 1.7241f, 2.0f, 3.0f};
 	return kR[mode < 0 ? 0 : (mode > 4 ? 4 : mode)];
 }
 
 // The mode a game image enlarged `ratio` times is in (the nearest of the ratios above, by their
 // geometric middles): what games call the mode for that render size.
 inline int upscale_mode(float ratio) {
-	if (ratio < 1.22f) return 0;   // up to ~sqrt(1.0 * 1.5)
-	if (ratio < 1.61f) return 1;   // sqrt(1.5 * 1.72)
-	if (ratio < 1.86f) return 2;   // sqrt(1.72 * 2)
-	if (ratio < 2.45f) return 3;   // sqrt(2 * 3)
+	if (ratio < 1.22f) return 0;  // up to ~sqrt(1.0 * 1.5)
+	if (ratio < 1.61f) return 1;  // sqrt(1.5 * 1.72)
+	if (ratio < 1.86f) return 2;  // sqrt(1.72 * 2)
+	if (ratio < 2.45f) return 3;  // sqrt(2 * 3)
 	return 4;
 }
 

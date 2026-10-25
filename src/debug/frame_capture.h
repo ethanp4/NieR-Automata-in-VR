@@ -1,6 +1,7 @@
 // frame_capture.h - [Debug] CaptureKey (F11): records one frame of the game's D3D11 calls to a file.
 #pragma once
 #include <d3d11.h>
+#include <stdint.h>
 #include "render/shader_table.h"
 
 void CaptureSetDevice(ID3D11Device* device, ID3D11DeviceContext* context);  // the game's (d3d_hooks.cpp)

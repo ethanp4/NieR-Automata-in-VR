@@ -32,7 +32,7 @@ struct Setting {
 #define S_PATH(sec, key, field, c) {sec, key, K_PATH, g_cfg.field, 0, 0, 0, c, ""}
 #define S_TEXT(sec, key, def, c) {sec, key, K_TEXT, nullptr, 0, 0, 0, c, def}
 
-const Setting kSettings[] = {
+constexpr Setting kSettings[] = {
 	S_INT(
 		"VR",
 		"Enabled",
@@ -707,12 +707,12 @@ int AddMissingSettings() {
 }
 
 // "0x729b49, 0x123" -> offsets
-void ParseHexList(const wchar_t* buf, unsigned* out, int* count, int max) {
+void ParseHexList(const wchar_t* buf, uint32_t* out, int* count, int max) {
 	*count = 0;
 	for (int i = 0; buf[i] && *count < max;) {
 		while (buf[i] == ' ' || buf[i] == ',' || buf[i] == ';') i++;
 		if (buf[i] == '0' && (buf[i + 1] == 'x' || buf[i + 1] == 'X')) i += 2;
-		unsigned value = 0;
+		uint32_t value = 0;
 		int digits = 0;
 		for (;; i++, digits++) {
 			wchar_t c = buf[i];
@@ -767,7 +767,7 @@ void ConfigLoad() {
 	ParseHexList(buf, g_cfg.fovRealCallers, &g_cfg.fovRealCount, 8);
 	// the camera-easing fov reader found in game; defaults to the Steam build's (checked in game:
 	// a wrong one is dropped and searched again)
-	unsigned easing[1];
+	uint32_t easing[1];
 	int count = 0;
 	if (ReadRaw("Render", "FovEasingCaller", buf, 200)) ParseHexList(buf, easing, &count, 1);
 	g_cfg.fovEasingCaller = count ? easing[0] : 0x7397de;
@@ -790,7 +790,7 @@ bool ConfigDefault(const void* field, float* value) {
 }
 
 // The camera-easing fov reader found in game (offset in the exe), so the next start skips the search.
-void ConfigSaveEasingCaller(unsigned offset) {
+void ConfigSaveEasingCaller(uint32_t offset) {
 	char text[24];
 	snprintf(text, sizeof(text), "0x%x", offset);
 	WriteRaw("Render", "FovEasingCaller", text);

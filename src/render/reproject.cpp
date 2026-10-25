@@ -1,5 +1,6 @@
 // reproject.cpp - "reproject" one eyes frame at the other eyes perspective
 #include "render/reproject.h"
+#include "core/com.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "render/camera.h"
@@ -12,7 +13,7 @@
 #include <d3dcompiler.h>
 
 namespace {
-const char kHlsl[] = R"(
+constexpr char kHlsl[] = R"(
 cbuffer P : register(b0) {
 	row_major float4x4 T;   // old eye view -> eye view now
 	float4 proj;            // x scale, y scale, P22, P23 (z_ndc = (P22 z + P23) / -z)
@@ -102,7 +103,7 @@ struct EyeState {
 	ID3D11ShaderResourceView* sceneCopySrv;
 	ID3D11Texture2D* depthCopy;
 	ID3D11ShaderResourceView* depthCopySrv;
-	unsigned depthPresentCount;  // s_presentCount when the depth was copied
+	uint32_t depthPresentCount;  // s_presentCount when the depth was copied
 	bool sceneValid, depthValid;
 };
 EyeState s_eyes[2];
@@ -113,8 +114,8 @@ ID3D11DepthStencilView* s_warpedDepthDsv;
 D3D11_TEXTURE2D_DESC s_sceneCopyDesc, s_depthCopyDesc;
 ID3D11Resource* s_sceneDepth;  // raw: the game's full-size depth buffer, as last bound
 UINT s_backbufferW, s_backbufferH;
-unsigned s_presentCount;
-unsigned s_warpedCount, s_skippedCount;
+uint32_t s_presentCount;
+uint32_t s_warpedCount, s_skippedCount;
 // why frames weren't corrected (logged with the 30 s report)
 enum SkipReason { SKIP_NO_IMAGE,
 				  SKIP_NO_DEPTH,
@@ -122,18 +123,12 @@ enum SkipReason { SKIP_NO_IMAGE,
 				  SKIP_SIZE_MISMATCH,
 				  SKIP_NO_CAMERA,
 				  SKIP_REASON_COUNT };
-unsigned s_skipCounts[SKIP_REASON_COUNT];
+uint32_t s_skipCounts[SKIP_REASON_COUNT];
 const char* const kSkipReasonText[SKIP_REASON_COUNT] = {"no image of the other eye", "no depth of the other eye",
 														"the other eye's depth isn't from the previous frame", "image and depth sizes differ",
 														"the camera wasn't found in one of the two frames"};
 DWORD s_lastReportTick;
 bool s_loggedWorking;
-
-template <typename T>
-void SafeRelease(T*& p) {
-	if (p) p->Release();
-	p = nullptr;
-}
 
 void ReleaseTargets() {
 	for (auto& e : s_eyes) {
@@ -323,34 +318,32 @@ bool EnsureColor(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& src) {
 // for the upscaler, upscale.cpp).
 void ReprojectNoteDsv(ID3D11DepthStencilView* dsv) {
 	if (!((g_cfg.depthReproject && !g_cfg.synchronized) || UpscaleWantsDepth()) || !dsv || !s_backbufferW) return;
-	ID3D11Resource* r = nullptr;
+	ComPtr<ID3D11Resource> r;
 	dsv->GetResource(&r);
 	if (!r) return;
 	D3D11_RESOURCE_DIMENSION dim;
 	r->GetType(&dim);
 	if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
 		D3D11_TEXTURE2D_DESC d;
-		((ID3D11Texture2D*)r)->GetDesc(&d);
-		if (d.Width == s_backbufferW && d.Height == s_backbufferH && d.SampleDesc.Count == 1) s_sceneDepth = r;
+		((ID3D11Texture2D*)r.Get())->GetDesc(&d);
+		if (d.Width == s_backbufferW && d.Height == s_backbufferH && d.SampleDesc.Count == 1) s_sceneDepth = r.Get();
 	}
-	r->Release();  // raw pointer: only compared and copied from while the game still uses it
 }
 
 // At the first UI draw: the scene is finished; copy its depth for next frame's reprojection.
 void ReprojectAtUiStart(ID3D11DeviceContext* c) {
 	int eye = StereoFrameEye();
 	if (!g_cfg.depthReproject || g_cfg.synchronized || eye < 0 || !s_sceneDepth) return;
-	ID3D11Device* dev = nullptr;
+	ComPtr<ID3D11Device> dev;
 	c->GetDevice(&dev);
 	if (!dev) return;
 	D3D11_TEXTURE2D_DESC d;
 	((ID3D11Texture2D*)s_sceneDepth)->GetDesc(&d);
-	if (EnsureDepth(dev, d)) {
+	if (EnsureDepth(dev.Get(), d)) {
 		c->CopyResource(s_eyes[eye].depthCopy, s_sceneDepth);
 		s_eyes[eye].depthValid = true;
 		s_eyes[eye].depthPresentCount = s_presentCount;
 	}
-	dev->Release();
 }
 
 void ReprojectRelease() {
@@ -385,15 +378,14 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
 		s_eyes[0].sceneValid = s_eyes[1].sceneValid = false;
 		return nullptr;
 	}
-	ID3D11Device* dev = nullptr;
+	ComPtr<ID3D11Device> dev;
 	c->GetDevice(&dev);
 	if (!dev) return nullptr;
-	dev->Release();  // the context keeps it alive
-	if (!CreateGpuObjects(dev)) return nullptr;
+	if (!CreateGpuObjects(dev.Get())) return nullptr;
 	ID3D11Texture2D* src = scene ? scene : bb;
 	D3D11_TEXTURE2D_DESC sceneDesc;
 	src->GetDesc(&sceneDesc);
-	if (!EnsureColor(dev, sceneDesc)) return nullptr;
+	if (!EnsureColor(dev.Get(), sceneDesc)) return nullptr;
 	int other = 1 - eye;
 	float T[16], proj[4];
 	ID3D11Texture2D* result = nullptr;
@@ -425,7 +417,7 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
 		constants.size[3] = (float)gridW;
 		// gaps: depth jumps by more than 3% inside a triangle that the motion stretched to more
 		// than 2.5 grid steps (a normal triangle's longest side is 1.4 steps)
-		constants.edge[0] = g_cfg.reprojectEdges ? 1.03f : 0.f; //TODO this has a strange borderline useless effect
+		constants.edge[0] = g_cfg.reprojectEdges ? 1.03f : 0.f;  //TODO this has a strange borderline useless effect
 		constants.edge[1] = 2.5f;
 		constants.edge[2] = constants.edge[3] = 0;
 		constants.dscale[0] = (float)s_depthCopyDesc.Width / (float)sceneDesc.Width;

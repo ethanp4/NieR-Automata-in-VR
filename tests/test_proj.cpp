@@ -23,7 +23,7 @@ int main() {
 	float fov = 60 * 3.14159265f / 180, asp = 16.f / 9, n = 0.1f, f = 1000;
 	float sy = 1 / tanf(fov / 2), sx = sy / asp, A = f / (f - n), B = -n * f / (f - n);
 	float rm[16] = {sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, A, 1, 0, 0, B, 0};
-	ProjInfo p;
+	ProjInfo p = {};
 	EXPECT(classify_projection(rm, &p));
 	EXPECT(p.rowMajor);
 	EXPECT(fabsf(p.vfovDeg - 60) < 0.01f);

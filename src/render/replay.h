@@ -1,12 +1,13 @@
 // replay.h - Synchronized: record the left eye's frame, play it back for the right eye at Present (replay.cpp).
 #pragma once
+#include <atomic>
 #include <d3d11.h>
 #include "render/d3d_hooks.h"
 
-extern volatile bool g_replaying;           // playback running: hooks pass calls straight through
-extern volatile LONG g_recording;           // the recorder is taking calls
+extern std::atomic<bool> g_replaying;           // playback running: hooks pass calls straight through
+extern std::atomic<bool> g_recording;           // the recorder is taking calls
 extern ID3D11DeviceContext* g_gameContext;  // the game's immediate context
-extern volatile LONG g_modCallsInProgress;  // mod-internal calls (not recorded)
+extern std::atomic<int32_t> g_modCallsInProgress;  // mod-internal calls (not recorded)
 inline bool ShouldRecord(ID3D11DeviceContext* c) { return g_recording && c == g_gameContext && !g_modCallsInProgress && !g_replaying; }
 
 enum RecStage {

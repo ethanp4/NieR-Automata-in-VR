@@ -15,7 +15,7 @@ static pure::Q axisAngle(float x, float y, float z, float deg) {
 }
 int main() {
 	bool flipped = false;
-	pure::Q ref;
+	pure::Q ref = {};
 	// normal space, head turned 30 deg left and pitched down 10: yaw only
 	pure::Q head = pure::q_mul(axisAngle(0, 1, 0, 30), axisAngle(1, 0, 0, -10));
 	check(pure::level_reference(head, &flipped, &ref) && !flipped, "normal: found, not flipped");

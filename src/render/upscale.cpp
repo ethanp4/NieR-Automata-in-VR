@@ -18,6 +18,8 @@
 // goes to the headset. The same pass just stretches frames DLSS can't take (flat/menu frames, no depth
 // or camera), so every scene image of a ring has the same size.
 #include "render/upscale.h"
+#include "core/com.h"
+#include "core/locks.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "core/pure.h"
@@ -32,7 +34,7 @@
 #include <d3dcompiler.h>
 
 namespace {
-const char kHlsl[] = R"(
+constexpr char kHlsl[] = R"(
 cbuffer P : register(b0) {
 	row_major float4x4 T;  // this eye's view now -> the same eye's view in its previous frame
 	float4 cur;            // projection now: x scale, y scale, P22, P23 (z_ndc = (P22 z + P23) / -z)
@@ -82,12 +84,6 @@ float4 ps(float4 pos : SV_Position) : SV_Target {
 }
 )";
 
-template <typename T>
-void SafeRelease(T*& p) {
-	if (p) p->Release();
-	p = nullptr;
-}
-
 bool s_shadersReady, s_shadersFailed;
 ID3D11ComputeShader* s_prepShader;
 ID3D11VertexShader* s_composeVs;
@@ -100,19 +96,19 @@ ID3D11SamplerState* s_linearSampler;
 bool s_upscaling;           // scene images are enlarged
 UINT s_renderW, s_renderH;  // render size
 UINT s_outputW, s_outputH;  // output size
-int s_dlssMode;             // DLSS mode for that enlargement (pure::upscale_mode)
+int32_t s_dlssMode;         // DLSS mode for that enlargement (pure::upscale_mode)
 UINT s_targetW, s_targetH;  // the output the headset wants (native x Output), 0 = not known yet
-unsigned s_presentCount;    // Presents so far (the depth copies are tagged with it)
+uint32_t s_presentCount;    // Presents so far (the depth copies are tagged with it)
 
 // per eye
 struct EyeState {
 	ID3D11Texture2D* depthCopy;  // readable twin of the game's depth buffer
 	ID3D11ShaderResourceView* depthCopySrv;
-	unsigned depthPresentCount;  // s_presentCount of the frame the depth belongs to
+	uint32_t depthPresentCount;  // s_presentCount of the frame the depth belongs to
 	bool depthValid;
 	bool resetHistory;  // the next DLSS frame starts a new history
 	uint32_t jitterIndex;
-	unsigned upscaled, stretched;  // eye images since the last report
+	uint32_t upscaled, stretched;  // eye images since the last report
 } s_eyes[2];
 D3D11_TEXTURE2D_DESC s_depthCopyDesc;
 
@@ -183,10 +179,9 @@ bool DepthFormats(DXGI_FORMAT f, DXGI_FORMAT* tex, DXGI_FORMAT* srv) {
 }
 
 void SetStatus(const char* text, const char* advice) {
-	AcquireSRWLockExclusive(&s_statusLock);
+	ExclusiveLock guard(&s_statusLock);
 	snprintf(s_status, sizeof(s_status), "%s", text);
 	snprintf(s_advice, sizeof(s_advice), "%s", advice);
-	ReleaseSRWLockExclusive(&s_statusLock);
 }
 
 bool InitShaders(ID3D11Device* dev) {
@@ -312,20 +307,19 @@ bool EnsureDepth(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& src) {
 	return true;
 }
 
-void CopyDepth(ID3D11DeviceContext* c, int eye, unsigned present) {
+void CopyDepth(ID3D11DeviceContext* c, int eye, uint32_t present) {
 	ID3D11Resource* d = ReprojectSceneDepth();
 	if (!s_upscaling || eye < 0 || eye > 1 || !d) return;
-	ID3D11Device* dev = nullptr;
+	ComPtr<ID3D11Device> dev;
 	c->GetDevice(&dev);
 	if (!dev) return;
 	D3D11_TEXTURE2D_DESC dd;
 	((ID3D11Texture2D*)d)->GetDesc(&dd);
-	if (dd.Width == s_renderW && dd.Height == s_renderH && EnsureDepth(dev, dd)) {
+	if (dd.Width == s_renderW && dd.Height == s_renderH && EnsureDepth(dev.Get(), dd)) {
 		c->CopyResource(s_eyes[eye].depthCopy, d);
 		s_eyes[eye].depthValid = true;
 		s_eyes[eye].depthPresentCount = present;
 	}
-	dev->Release();
 }
 
 // Upscales `scene` (render size) for `eye` into s_dlssOutput. False if this frame can't be.
@@ -400,18 +394,17 @@ bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UIN
 	if (!s_targetW || wantW > s_targetW * 1.03f || wantW * 1.03f < s_targetW || wantH > s_targetH * 1.03f || wantH * 1.03f < s_targetH)
 		s_targetW = wantW, s_targetH = wantH;
 	if (g_cfg.upscaler) {
-		ID3D11Device* dev = nullptr;
+		ComPtr<ID3D11Device> dev;
 		c->GetDevice(&dev);
 		if (dev) {
 			UINT ow, oh;
-			if (DlssInit(dev) && InitShaders(dev) && pure::upscale_output(w, h, s_targetW, s_targetH, &ow, &oh)) {
+			if (DlssInit(dev.Get()) && InitShaders(dev.Get()) && pure::upscale_output(w, h, s_targetW, s_targetH, &ow, &oh)) {
 				s_upscaling = true;
 				s_renderW = w, s_renderH = h, s_outputW = ow, s_outputH = oh;
 				s_dlssMode = pure::upscale_mode((float)ow / (float)w);
 				*outW = ow;
 				*outH = oh;
 			}
-			dev->Release();
 		}
 	}
 	if (was && !s_upscaling) {
@@ -471,19 +464,18 @@ bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UIN
 
 ID3D11Texture2D* UpscaleScene(ID3D11DeviceContext* c, int eye, ID3D11Texture2D* scene) {
 	if (!s_upscaling || !scene) return scene;
-	ID3D11Device* dev = nullptr;
+	ComPtr<ID3D11Device> dev;
 	c->GetDevice(&dev);
 	if (!dev) return nullptr;
-	dev->Release();  // the context keeps it alive
 	D3D11_TEXTURE2D_DESC sceneDesc;
 	scene->GetDesc(&sceneDesc);
-	if (sceneDesc.Width != s_renderW || sceneDesc.Height != s_renderH || !EnsureTargets(dev, sceneDesc.Format)) return nullptr;
-	ID3D11ShaderResourceView* sceneSrv = SceneSrv(dev, scene);
+	if (sceneDesc.Width != s_renderW || sceneDesc.Height != s_renderH || !EnsureTargets(dev.Get(), sceneDesc.Format)) return nullptr;
+	ID3D11ShaderResourceView* sceneSrv = SceneSrv(dev.Get(), scene);
 	if (!sceneSrv) return nullptr;
 	g_replaying = true;  // our own calls (and DLSS's): the hooks pass them straight through
 	StateSaveTemp(c);
 	c->ClearState();
-	bool upscaled = eye >= 0 && eye < 2 && RunDlss(c, dev, eye, sceneSrv);
+	bool upscaled = eye >= 0 && eye < 2 && RunDlss(c, dev.Get(), eye, sceneSrv);
 	if (eye >= 0 && eye < 2) {
 		if (upscaled) s_eyes[eye].upscaled++;
 		else {
@@ -536,8 +528,8 @@ void UpscaleRelease() {
 	s_depthCopyDesc = {};
 }
 
+// Write the upscaler status to the char*
 void UpscaleStatus(char* out, size_t cap) {
-	AcquireSRWLockShared(&s_statusLock);
+	SharedLock guard(&s_statusLock);
 	snprintf(out, cap, "%s", s_status);
-	ReleaseSRWLockShared(&s_statusLock);
 }

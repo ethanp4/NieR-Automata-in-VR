@@ -1,6 +1,8 @@
 // frame_handoff.cpp - hooks IDXGISwapChain::Present (inline detour via MinHook) and copies each
 // finished game frame into a texture shared with the VR thread. The game is never made to wait.
 #include "render/frame_handoff.h"
+#include "core/com.h"
+#include "core/locks.h"
 #include "core/config.h"
 #include "core/d3d11_proxy.h"
 #include "core/hook.h"
@@ -18,24 +20,28 @@
 #include "render/reproject.h"
 #include "render/upscale.h"
 #include "xr/xr_main.h"
+#include <atomic>
 #include <string.h>
 
 FrameShare g_share;
 
 typedef HRESULT(STDMETHODCALLTYPE* PFN_Present)(IDXGISwapChain*, UINT, UINT);
-static const int kPresentIndex = 8;  // IUnknown(3) + IDXGIObject(4) + IDXGIDeviceSubObject(1) -> Present
-static const int kMaxTargets = 2;
+namespace {
+constexpr int32_t kPresentIndex = 8;  // IUnknown(3) + IDXGIObject(4) + IDXGIDeviceSubObject(1) -> Present
+constexpr int32_t kMaxTargets = 2;
 
-static PFN_Present o_Present[kMaxTargets];
-static void* s_presentTargets[kMaxTargets];
-static volatile LONG s_presentHookCount;
-static SRWLOCK s_presentHookLock = SRWLOCK_INIT;
-static DWORD s_presentDepthTls = TLS_OUT_OF_INDEXES;  // per-thread Present nesting depth
+PFN_Present o_Present[kMaxTargets];
+void* s_presentTargets[kMaxTargets];
+std::atomic<int32_t> s_presentHookCount;
+SRWLOCK s_presentHookLock = SRWLOCK_INIT;
+DWORD s_presentDepthTls = TLS_OUT_OF_INDEXES;  // per-thread Present nesting depth
+}  // namespace
 
 typedef HRESULT(STDMETHODCALLTYPE* PFN_ResizeBuffers)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
-static const int kResizeBuffersIndex = 13;
-static PFN_ResizeBuffers o_ResizeBuffers;
-static volatile LONG s_resizeLogs;
+namespace {
+constexpr int32_t kResizeBuffersIndex = 13;
+PFN_ResizeBuffers o_ResizeBuffers;
+std::atomic<int32_t> s_resizeLogs;
 
 // ---------------------------------------------------------------------------------------------
 // Game-side capture state (only touched at nesting depth 0 on the presenting thread)
@@ -47,25 +53,25 @@ static volatile LONG s_resizeLogs;
 // once the ring comes round to it again (several game frames), normally long after the VR thread
 // has copied it (nothing checks that it has).
 // ---------------------------------------------------------------------------------------------
-static ID3D11Device* s_device;
-static ID3D11DeviceContext* s_context;
-static ID3D11Texture2D* s_ring[kRingSize];
-static ID3D11Texture2D* s_ringScene[kRingSize];
-static ID3D11Texture2D* s_ringKey[kRingSize];  // upscaling: the scene image before upscaling, for the HUD key
-static ID3D11Query* s_copyQueries[kRingSize];
-static bool s_slotPending[kRingSize];
-static FrameTag s_slotTag[kRingSize];
-static LONG s_openedGen = -1;
-static int s_nextSlot;
-static UINT s_requestedW, s_requestedH;
-static UINT s_requestedSceneW, s_requestedSceneH;  // scene-only images: enlarged when upscaling (upscale.cpp)
-static bool s_requestedKey;                        // upscaling: the scene images before upscaling too
-static DXGI_FORMAT s_requestedFormat;
-static bool s_loggedNotD3D11, s_loggedOtherDevice;
-static unsigned s_presentCount;
-static volatile LONG s_openFailLogs, s_nestedLogs, s_ringFullLogs;
+ID3D11Device* s_device;
+ID3D11DeviceContext* s_context;
+ID3D11Texture2D* s_ring[kRingSize];
+ID3D11Texture2D* s_ringScene[kRingSize];
+ID3D11Texture2D* s_ringKey[kRingSize];  // upscaling: the scene image before upscaling, for the HUD key
+ID3D11Query* s_copyQueries[kRingSize];
+bool s_slotPending[kRingSize];
+FrameTag s_slotTag[kRingSize];
+int32_t s_openedGen = -1;
+int32_t s_nextSlot;
+UINT s_requestedW, s_requestedH;
+UINT s_requestedSceneW, s_requestedSceneH;  // scene-only images: enlarged when upscaling (upscale.cpp)
+bool s_requestedKey;                        // upscaling: the scene images before upscaling too
+DXGI_FORMAT s_requestedFormat;
+bool s_loggedNotD3D11, s_loggedOtherDevice;
+uint32_t s_presentCount;
+std::atomic<int32_t> s_openFailLogs, s_nestedLogs, s_ringFullLogs;
 
-static DXGI_FORMAT ConcreteFormat(DXGI_FORMAT format) {
+DXGI_FORMAT ConcreteFormat(DXGI_FORMAT format) {
 	switch (format) {
 		case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
 		case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -76,13 +82,7 @@ static DXGI_FORMAT ConcreteFormat(DXGI_FORMAT format) {
 	}
 }
 
-template <typename T>
-static void SafeRelease(T*& p) {
-	if (p) p->Release();
-	p = nullptr;
-}
-
-static void ReleaseRing() {
+void ReleaseRing() {
 	for (int i = 0; i < kRingSize; i++) {
 		SafeRelease(s_ring[i]);
 		SafeRelease(s_ringScene[i]);
@@ -92,7 +92,7 @@ static void ReleaseRing() {
 	}
 }
 
-static void PublishSlotLocked(int slot) {
+void PublishSlotLocked(int slot) {
 	const FrameTag& tag = s_slotTag[slot];
 	int kind = (tag.eye >= 0 && tag.patched) ? tag.eye : 2;
 	if (g_share.ringGen == s_openedGen) {
@@ -106,15 +106,15 @@ static void PublishSlotLocked(int slot) {
 // frame (same pairId) are published together, once both are done, so the headset never shows the
 // left eye of one game frame with the right eye of another (the right image is finished a replay
 // later than the left one).
-static void PollPending() {
+void PollPending() {
 	bool finished[kRingSize] = {};
 	for (int i = 0; i < kRingSize; i++)
 		finished[i] = s_slotPending[i] && s_copyQueries[i] &&
 					  s_context->GetData(s_copyQueries[i], nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
-	EnterCriticalSection(&g_share.lock);
+	SectionLock guard(&g_share.lock);
 	for (int i = 0; i < kRingSize; i++) {
 		if (!finished[i] || !s_slotPending[i]) continue;
-		unsigned pair = s_slotTag[i].pairId;
+		uint32_t pair = s_slotTag[i].pairId;
 		if (!pair) {
 			s_slotPending[i] = false;
 			PublishSlotLocked(i);
@@ -133,25 +133,26 @@ static void PollPending() {
 			PublishSlotLocked(rightSlot);
 		}
 	}
-	LeaveCriticalSection(&g_share.lock);
 }
+}  // namespace
 
 // From the game's draws (render thread, every 128 draws): frames finished by the GPU are handed to
 // the headset right away instead of at the next Present (up to a game frame less latency).
 void CapturePollMidFrame() {
-	static unsigned drawCalls;
+	static uint32_t drawCalls;
 	if (++drawCalls % 128 || !s_ring[0] || !s_context) return;
 	PollPending();
 }
 
-static int FreeSlots() {
+namespace {
+int FreeSlots() {
 	int count = 0;
 	for (int i = 0; i < kRingSize; i++) count += !s_slotPending[i];
 	return count;
 }
 
 // One-time probe of what the game's device supports (logged for diagnostics).
-static void ProbeGameDevice(ID3D11Device* device) {
+void ProbeGameDevice(ID3D11Device* device) {
 	Log("game device creation flags 0x%x", device->GetCreationFlags());
 	struct {
 		const char* name;
@@ -170,19 +171,18 @@ static void ProbeGameDevice(ID3D11Device* device) {
 		desc.Usage = D3D11_USAGE_DEFAULT;
 		desc.BindFlags = test.bind;
 		desc.MiscFlags = test.misc;
-		ID3D11Texture2D* tex = nullptr;
+		ComPtr<ID3D11Texture2D> tex;
 		HRESULT hr = device->CreateTexture2D(&desc, nullptr, &tex);
 		Log("game device probe: %s texture -> 0x%08x", test.name, (unsigned)hr);
-		if (tex) tex->Release();
 	}
 }
 
-static void OnFirstGameDevice(ID3D11Device* device) {
+void OnFirstGameDevice(ID3D11Device* device) {
 	s_device = device;  // keeps the reference from GetDevice
 	s_device->GetImmediateContext(&s_context);
-	IDXGIDevice* dxgiDevice = nullptr;
-	if (SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice))) {
-		IDXGIAdapter* adapter = nullptr;
+	ComPtr<IDXGIDevice> dxgiDevice;
+	if (SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice), &dxgiDevice))) {
+		ComPtr<IDXGIAdapter> adapter;
 		if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
 			DXGI_ADAPTER_DESC desc;
 			if (SUCCEEDED(adapter->GetDesc(&desc))) {
@@ -191,13 +191,10 @@ static void OnFirstGameDevice(ID3D11Device* device) {
 				Log("game GPU: %s (LUID %08x:%08x, %u MB VRAM)", Utf8(desc.Description).s, (unsigned)desc.AdapterLuid.HighPart,
 					(unsigned)desc.AdapterLuid.LowPart, (unsigned)(desc.DedicatedVideoMemory >> 20));
 			}
-			IDXGIFactory1* factory1 = nullptr;
-			HRESULT hr = adapter->GetParent(__uuidof(IDXGIFactory1), (void**)&factory1);
+			ComPtr<IDXGIFactory1> factory1;
+			HRESULT hr = adapter->GetParent(__uuidof(IDXGIFactory1), &factory1);
 			Log("game adapter's factory is DXGI %s", SUCCEEDED(hr) ? "1.1+" : "1.0");
-			if (factory1) factory1->Release();
-			adapter->Release();
 		}
-		dxgiDevice->Release();
 	}
 	Log("game device feature level 0x%x", (unsigned)device->GetFeatureLevel());
 	D3dHooksFollowDevice(device);
@@ -209,13 +206,13 @@ static void OnFirstGameDevice(ID3D11Device* device) {
 // Copies a finished image (and the scene-only image, if any) into the next free ring slot, tagged
 // with the eye the stereo code says was just drawn. full = null: no full image (a reprojected eye
 // while upscaling: only its scene image is shown). key: upscaling, the scene image before upscaling.
-static int PushToRing(ID3D11Texture2D* full, bool msaa, DXGI_FORMAT format, ID3D11Texture2D* scene, bool noUI,
-					  const FrameTag* tagOverride = nullptr, ID3D11Texture2D* key = nullptr) {
+int PushToRing(ID3D11Texture2D* full, bool msaa, DXGI_FORMAT format, ID3D11Texture2D* scene, bool noUI,
+			   const FrameTag* tagOverride = nullptr, ID3D11Texture2D* key = nullptr) {
 	int slot = -1;
 	for (int k = 0; k < kRingSize && slot < 0; k++)
 		if (!s_slotPending[(s_nextSlot + k) % kRingSize]) slot = (s_nextSlot + k) % kRingSize;
 	if (slot < 0) {
-		if (LogBudget(&s_ringFullLogs, 3)) Log("note: capture ring full (GPU behind), skipped a frame");
+		if (LogBudget(s_ringFullLogs, 3)) Log("note: capture ring full (GPU behind), skipped a frame");
 		return -1;
 	}
 	if (full && msaa)
@@ -236,30 +233,29 @@ static int PushToRing(ID3D11Texture2D* full, bool msaa, DXGI_FORMAT format, ID3D
 	s_nextSlot = (slot + 1) % kRingSize;
 	return slot;
 }
-static unsigned s_lastPairId;
-static unsigned s_droppedPairs;
-static DWORD s_dropReportTick;
+uint32_t s_lastPairId;
+uint32_t s_droppedPairs;
+DWORD s_dropReportTick;
 
-static void CaptureFrame(IDXGISwapChain* swapChain) {
-	ID3D11Device* device = nullptr;
-	if (FAILED(swapChain->GetDevice(__uuidof(ID3D11Device), (void**)&device)) || !device) {
+void CaptureFrame(IDXGISwapChain* swapChain) {
+	ComPtr<ID3D11Device> device;
+	if (FAILED(swapChain->GetDevice(__uuidof(ID3D11Device), &device)) || !device) {
 		if (!s_loggedNotD3D11) Log("note: a non-D3D11 swapchain presented (ignored)");
 		s_loggedNotD3D11 = true;
 		return;
 	}
 	if (!s_device) {
-		OnFirstGameDevice(device);
+		OnFirstGameDevice(device.Get());
 	} else {
-		device->Release();
-		if (device != s_device) {
+		if (device.Get() != s_device) {
 			if (!s_loggedOtherDevice) Log("note: Present from a second D3D11 device (overlay?) ignored");
 			s_loggedOtherDevice = true;
 			return;
 		}
 	}
 
-	ID3D11Texture2D* backbuffer = nullptr;
-	if (FAILED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backbuffer)) || !backbuffer) return;
+	ComPtr<ID3D11Texture2D> backbuffer;
+	if (FAILED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), &backbuffer)) || !backbuffer) return;
 	D3D11_TEXTURE2D_DESC desc;
 	backbuffer->GetDesc(&desc);
 	DXGI_FORMAT format = ConcreteFormat(desc.Format);
@@ -268,7 +264,7 @@ static void CaptureFrame(IDXGISwapChain* swapChain) {
 		ExtraResolutionsOnFirstPresent(swapChain);
 	}
 	StereoSetAspect((float)desc.Width / (float)desc.Height);
-	UiSetBackbuffer(backbuffer);
+	UiSetBackbuffer(backbuffer.Get());
 	ReprojectSetBackbufferSize(desc.Width, desc.Height);
 	UINT sceneW, sceneH;  // size of this frame's scene-only images
 	// upscaling (also DLAA, which keeps the size): the scene images are DLSS's
@@ -284,15 +280,16 @@ static void CaptureFrame(IDXGISwapChain* swapChain) {
 		s_requestedKey = upscaling;
 		s_requestedFormat = format;
 		ReleaseRing();
-		EnterCriticalSection(&g_share.lock);
-		g_share.requestW = desc.Width;
-		g_share.requestH = desc.Height;
-		g_share.requestSceneW = sceneW;
-		g_share.requestSceneH = sceneH;
-		g_share.requestKey = upscaling;
-		g_share.requestFormat = format;
-		g_share.requestGen++;
-		LeaveCriticalSection(&g_share.lock);
+		{
+			SectionLock guard(&g_share.lock);
+			g_share.requestW = desc.Width;
+			g_share.requestH = desc.Height;
+			g_share.requestSceneW = sceneW;
+			g_share.requestSceneH = sceneH;
+			g_share.requestKey = upscaling;
+			g_share.requestFormat = format;
+			g_share.requestGen++;
+		}
 		if (upscaling)
 			Log("requesting %ux%u format %d capture textures, scene images upscaled to %ux%u", desc.Width, desc.Height, (int)format,
 				sceneW, sceneH);
@@ -306,7 +303,7 @@ static void CaptureFrame(IDXGISwapChain* swapChain) {
 	memcpy(handles, g_share.ring, sizeof(handles));
 	memcpy(sceneHandles, g_share.ringScene, sizeof(sceneHandles));
 	memcpy(keyHandles, g_share.ringKey, sizeof(keyHandles));
-	LONG gen = g_share.ringGen;
+	int32_t gen = g_share.ringGen;
 	bool current = g_share.forRequestGen == g_share.requestGen;
 	LeaveCriticalSection(&g_share.lock);
 	if (handles[0] && current && gen != s_openedGen) {
@@ -323,7 +320,7 @@ static void CaptureFrame(IDXGISwapChain* swapChain) {
 			if (SUCCEEDED(hr)) hr = s_device->CreateQuery(&queryDesc, &s_copyQueries[i]);
 		}
 		if (FAILED(hr)) {
-			if (LogBudget(&s_openFailLogs, 5))
+			if (LogBudget(s_openFailLogs, 5))
 				Log("ERROR: game device could not open the capture textures (0x%08x)", (unsigned)hr);
 			ReleaseRing();
 		} else {
@@ -346,16 +343,16 @@ static void CaptureFrame(IDXGISwapChain* swapChain) {
 			// image moved to this frame's camera, handed to the headset as a pair. Upscaling: the
 			// upscaled images are moved.
 			ID3D11Texture2D* upscaledScene = UpscaleScene(s_context, StereoFrameEye(), scene);
-			int eyeSlot = PushToRing(backbuffer, false, format, upscaledScene, false, nullptr, scene);
+			int eyeSlot = PushToRing(backbuffer.Get(), false, format, upscaledScene, false, nullptr, scene);
 			FrameTag tag;
-			ID3D11Texture2D* warped = eyeSlot >= 0 && (!upscaling || upscaledScene) ? ReprojectOtherEye(s_context, upscaledScene, backbuffer, &tag) : nullptr;
+			ID3D11Texture2D* warped = eyeSlot >= 0 && (!upscaling || upscaledScene) ? ReprojectOtherEye(s_context, upscaledScene, backbuffer.Get(), &tag) : nullptr;
 			int otherSlot = warped ? PushToRing(upscaling ? nullptr : warped, false, format, warped, true, &tag) : -1;
 			if (otherSlot >= 0) {
-				unsigned pairId = ++s_lastPairId ? s_lastPairId : ++s_lastPairId;
+				uint32_t pairId = ++s_lastPairId ? s_lastPairId : ++s_lastPairId;
 				s_slotTag[eyeSlot].pairId = s_slotTag[otherSlot].pairId = pairId;
 			}
 		} else {
-			int left = PushToRing(backbuffer, desc.SampleDesc.Count > 1, format, UpscaleScene(s_context, StereoFrameEye(), scene), false,
+			int left = PushToRing(backbuffer.Get(), desc.SampleDesc.Count > 1, format, UpscaleScene(s_context, StereoFrameEye(), scene), false,
 								  nullptr, scene);
 			// Synchronized: the same frame again for the right eye (replay.cpp), into the next slot.
 			if (synchronized && left >= 0) {
@@ -363,14 +360,14 @@ static void CaptureFrame(IDXGISwapChain* swapChain) {
 				int right = -1;
 				if (ReplaySecondEye(s_context, &inBackbuffer)) {
 					if (inBackbuffer)
-						right = PushToRing(backbuffer, desc.SampleDesc.Count > 1, format, nullptr, false);
+						right = PushToRing(backbuffer.Get(), desc.SampleDesc.Count > 1, format, nullptr, false);
 					else if (scene) {
 						UpscaleCaptureDepth(s_context, 1);  // the replay left the right eye's depth behind
 						right = PushToRing(scene, false, format, UpscaleScene(s_context, 1, scene), true);
 					}
 				}
 				if (right >= 0) {
-					unsigned pairId = ++s_lastPairId ? s_lastPairId : ++s_lastPairId;
+					uint32_t pairId = ++s_lastPairId ? s_lastPairId : ++s_lastPairId;
 					s_slotTag[left].pairId = s_slotTag[right].pairId = pairId;
 				}
 			}
@@ -382,11 +379,10 @@ static void CaptureFrame(IDXGISwapChain* swapChain) {
 			s_droppedPairs = 0;
 		}
 	}
-	backbuffer->Release();
 }
 
 // Right after the game's Present: the copy has been submitted with it.
-static void AfterPresent() {
+void AfterPresent() {
 	FrameLatencyTick();
 	if (s_ring[0]) PollPending();
 	UiBeginFrame();
@@ -400,7 +396,7 @@ static void AfterPresent() {
 	ReplayReport();
 }
 
-static HRESULT PresentCommon(int hookIndex, void* returnAddress, IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
+HRESULT PresentCommon(int hookIndex, void* returnAddress, IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
 	size_t depth = (size_t)TlsGetValue(s_presentDepthTls);
 	TlsSetValue(s_presentDepthTls, (void*)(depth + 1));
 	if (depth == 0) {
@@ -419,7 +415,7 @@ static HRESULT PresentCommon(int hookIndex, void* returnAddress, IDXGISwapChain*
 			if (s_context) GpuTimingFrameEnd(s_context);
 		}
 	} else {
-		if (LogBudget(&s_nestedLogs, 5)) {
+		if (LogBudget(s_nestedLogs, 5)) {
 			// Present re-entered on the same thread (some overlay/wrapper calls it from inside Present).
 			char caller[300];
 			DescribeAddress(returnAddress, caller, sizeof(caller));
@@ -443,62 +439,58 @@ static HRESULT PresentCommon(int hookIndex, void* returnAddress, IDXGISwapChain*
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedPresent0(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
+HRESULT STDMETHODCALLTYPE HookedPresent0(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
 	return PresentCommon(0, __builtin_return_address(0), swapChain, syncInterval, flags);
 }
-static HRESULT STDMETHODCALLTYPE HookedPresent1(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
+HRESULT STDMETHODCALLTYPE HookedPresent1(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
 	return PresentCommon(1, __builtin_return_address(0), swapChain, syncInterval, flags);
 }
 
-static void InstallPresentHook(void* target, const char* how) {
+void InstallPresentHook(void* target, const char* how) {
 	char where[300];
 	DescribeAddress(target, where, sizeof(where));
-	AcquireSRWLockExclusive(&s_presentHookLock);
-	for (LONG i = 0; i < s_presentHookCount; i++)
+	ExclusiveLock guard(&s_presentHookLock);
+	for (int32_t i = 0; i < s_presentHookCount; i++)
 		if (s_presentTargets[i] == target) {
-			ReleaseSRWLockExclusive(&s_presentHookLock);
 			return;
 		}
 	if (target == (void*)&HookedPresent0 || target == (void*)&HookedPresent1) {
-		ReleaseSRWLockExclusive(&s_presentHookLock);
 		return;
 	}
 	if (s_presentHookCount >= kMaxTargets) {
 		Log("ERROR: more Present implementations than expected (%s)", where);
-		ReleaseSRWLockExclusive(&s_presentHookLock);
 		return;
 	}
 	if (s_presentDepthTls == TLS_OUT_OF_INDEXES) s_presentDepthTls = TlsAlloc();
-	LONG index = s_presentHookCount;
+	int32_t index = s_presentHookCount;
 	void* detour = index == 0 ? (void*)&HookedPresent0 : (void*)&HookedPresent1;
 	if (!HookFunction(target, detour, (void**)&o_Present[index], "Present")) {
-		ReleaseSRWLockExclusive(&s_presentHookLock);
 		return;
 	}
 	s_presentTargets[index] = target;
 	s_presentHookCount = index + 1;
 	Log("Present hooked (%s) at %s", how, where);
-	ReleaseSRWLockExclusive(&s_presentHookLock);
 }
 
 // The backbuffer changes size: every feature frees its textures of the old size first.
-static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swapChain, UINT count, UINT width, UINT height, DXGI_FORMAT format,
-													 UINT flags) {
+HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swapChain, UINT count, UINT width, UINT height, DXGI_FORMAT format,
+											  UINT flags) {
 	UiOnResizeBuffers();
 	ReplayRelease();
 	ReprojectRelease();
 	UpscaleRelease();
 	HRESULT hr = o_ResizeBuffers(swapChain, count, width, height, format, flags);
-	if (LogBudget(&s_resizeLogs, 8))
+	if (LogBudget(s_resizeLogs, 8))
 		Log("swapchain: ResizeBuffers %ux%u format %d -> 0x%08x", width, height, (int)format, (unsigned)hr);
 	return hr;
 }
+}  // namespace
 
 void HookFromSwapChain(IDXGISwapChain* swapChain) { InstallPresentHook((*(void***)swapChain)[kPresentIndex], "game swapchain"); }
 
 void HookWithDummySwapChain() {
-	static volatile LONG installed = 0;
-	if (InterlockedCompareExchange(&installed, 1, 0) != 0) return;
+	static std::atomic<bool> installed = false;
+	if (installed.exchange(true)) return;
 
 	WNDCLASSEXW windowClass = {};
 	windowClass.cbSize = sizeof(windowClass);
@@ -522,9 +514,9 @@ void HookWithDummySwapChain() {
 	desc.OutputWindow = hwnd;
 	desc.Windowed = TRUE;
 	desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-	IDXGISwapChain* swapChain = nullptr;
-	ID3D11Device* device = nullptr;
-	ID3D11DeviceContext* context = nullptr;
+	ComPtr<IDXGISwapChain> swapChain;
+	ComPtr<ID3D11Device> device;
+	ComPtr<ID3D11DeviceContext> context;
 	HRESULT hr = E_FAIL;
 	const D3D_DRIVER_TYPE types[] = {D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 	for (D3D_DRIVER_TYPE driverType : types) {
@@ -533,16 +525,16 @@ void HookWithDummySwapChain() {
 		if (SUCCEEDED(hr)) break;
 	}
 	if (SUCCEEDED(hr) && swapChain) {
-		InstallPresentHook((*(void***)swapChain)[kPresentIndex], "via dummy swapchain");
-		HookFunction((*(void***)swapChain)[kResizeBuffersIndex], (void*)&HookedResizeBuffers, (void**)&o_ResizeBuffers,
+		InstallPresentHook((*(void***)swapChain.Get())[kPresentIndex], "via dummy swapchain");
+		HookFunction((*(void***)swapChain.Get())[kResizeBuffersIndex], (void*)&HookedResizeBuffers, (void**)&o_ResizeBuffers,
 					 "IDXGISwapChain::ResizeBuffers");
-		ExtraResolutionsHookSwapChain(swapChain);
-		swapChain->Release();
-		if (context) context->Release();
-		if (device) device->Release();
+		ExtraResolutionsHookSwapChain(swapChain.Get());
 	} else {
 		Log("ERROR: dummy swapchain creation failed 0x%08x - VR will not start", (unsigned)hr);
 	}
+	swapChain.Reset();  // a swapchain goes before its window
+	context.Reset();
+	device.Reset();
 	DestroyWindow(hwnd);
 	UnregisterClassW(windowClass.lpszClassName, g_hSelf);
 }

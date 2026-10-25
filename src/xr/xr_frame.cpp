@@ -1,6 +1,8 @@
 // xr_frame.cpp - one headset frame: hotkeys, screen placement, the eye poses handed to the game,
 // and the layers submitted (stereo eyes, flat screen, HUD, stats overlay, settings menu).
 #include "xr/xr_thread.h"
+#include "core/com.h"
+#include "core/locks.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "input/vr_controllers.h"
@@ -30,7 +32,8 @@ bool KeyPressed(int vk) {
 	return pressed;
 }
 
-static void HandleHotkeys() {
+namespace {
+void HandleHotkeys() {
 	bool foreground = GameIsForeground();
 	bool changed = false;
 	// Always poll so edge detection stays correct, only act while the game has focus.
@@ -121,7 +124,7 @@ static void HandleHotkeys() {
 // dashboard visit, and the picture stayed upside down until a manual recenter). Each headset frame: a
 // head whose up points against the reference's up for a third of a second, or a head position jump of
 // more than 0.75 m between two frames, re-levels everything.
-static void WatchSpace() {
+void WatchSpace() {
 	if (!g_vr.screenPlaced || !g_vr.displayPoseValid) {
 		g_vr.lastHeadValid = false;
 		return;
@@ -148,7 +151,7 @@ static void WatchSpace() {
 	}
 }
 
-static void PlaceScreen(XrTime time) {
+void PlaceScreen(XrTime time) {
 	XrSpaceLocation location = {};
 	location.type = XR_TYPE_SPACE_LOCATION;
 	if (XR_FAILED(g_vr.xrLocateSpace(g_vr.viewSpace, g_vr.localSpace, time, &location))) return;
@@ -169,28 +172,28 @@ static void PlaceScreen(XrTime time) {
 	g_vr.screenPlaced = true;
 	g_vr.recenterRequested = false;
 	// The stereo camera treats this (yaw-only) head pose as "looking along the game camera".
-	AcquireSRWLockExclusive(&g_stereo.lock);
-	g_stereo.refPos[0] = location.pose.position.x;
-	g_stereo.refPos[1] = location.pose.position.y;
-	g_stereo.refPos[2] = location.pose.position.z;
-	g_stereo.refRot[0] = yaw.x;
-	g_stereo.refRot[1] = yaw.y;
-	g_stereo.refRot[2] = yaw.z;
-	g_stereo.refRot[3] = yaw.w;
-	g_stereo.refValid = true;
-	ReleaseSRWLockExclusive(&g_stereo.lock);
+	{
+		ExclusiveLock guard(&g_stereo.lock);
+		g_stereo.refPos[0] = location.pose.position.x;
+		g_stereo.refPos[1] = location.pose.position.y;
+		g_stereo.refPos[2] = location.pose.position.z;
+		g_stereo.refRot[0] = yaw.x;
+		g_stereo.refRot[1] = yaw.y;
+		g_stereo.refRot[2] = yaw.z;
+		g_stereo.refRot[3] = yaw.w;
+		g_stereo.refValid = true;
+	}
 	pure::V3 headUp = pure::rotate(head, {0, 1, 0});
 	Log("screen placed at (%.2f, %.2f, %.2f), %.2f m ahead; head up vector (%.2f, %.2f, %.2f)%s",
 		(double)g_vr.quadPose.position.x, (double)g_vr.quadPose.position.y, (double)g_vr.quadPose.position.z,
 		(double)g_cfg.distance, (double)headUp.x, (double)headUp.y, (double)headUp.z, g_vr.spaceFlipped ? " (space flipped)" : "");
 }
 
-static void LogStats() {
-	LARGE_INTEGER now;
-	QueryPerformanceCounter(&now);
-	double secs = (double)(now.QuadPart - g_vr.statStart.QuadPart) / (double)g_vr.qpcFrequency.QuadPart;
+void LogStats() {
+	double now = NowMs();
+	double secs = (now - g_vr.statStartMs) / 1000;
 	if (secs < 10) return;
-	unsigned received = g_vr.statGameFrames[0] + g_vr.statGameFrames[1] + g_vr.statGameFrames[2];
+	uint32_t received = g_vr.statGameFrames[0] + g_vr.statGameFrames[1] + g_vr.statGameFrames[2];
 	Log("stats: headset %.1f fps (stereo %.1f, flat %.1f); game frames received: left %.1f, right %.1f, mono %.1f fps; "
 		"HUD-free image in %.0f%% of them; UI coverage avg %.0f%% max %.0f%%",
 		g_vr.statFrames / secs, g_vr.statStereoFrames / secs, g_vr.statQuadFrames / secs, g_vr.statGameFrames[0] / secs,
@@ -238,11 +241,11 @@ static void LogStats() {
 	g_vr.statCoverageCount = 0;
 	g_vr.statFrames = g_vr.statQuadFrames = g_vr.statStereoFrames = 0;
 	g_vr.statGameFrames[0] = g_vr.statGameFrames[1] = g_vr.statGameFrames[2] = 0;
-	g_vr.statStart = now;
+	g_vr.statStartMs = now;
 }
 
 // Hands the latest predicted eye poses and fields of view to the game thread.
-static void UpdateEyePoses(XrTime time) {
+void UpdateEyePoses(XrTime time) {
 	XrViewLocateInfo locateInfo = {};
 	locateInfo.type = XR_TYPE_VIEW_LOCATE_INFO;
 	locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -271,7 +274,7 @@ static void UpdateEyePoses(XrTime time) {
 			}
 	}
 	// the game renders with the pose predicted for when its frame will really be shown
-	g_vr.predictionNs = g_cfg.posePrediction && g_vr.poseLagValid ? (long long)(g_vr.poseLagMs * 1e6) : 0;
+	g_vr.predictionNs = g_cfg.posePrediction && g_vr.poseLagValid ? (int64_t)(g_vr.poseLagMs * 1e6) : 0;
 	locateInfo.displayTime = time + g_vr.predictionNs;
 	locateInfo.space = g_vr.localSpace;
 	XrViewState viewState = {};
@@ -281,25 +284,26 @@ static void UpdateEyePoses(XrTime time) {
 	uint32_t count = 0;
 	const XrViewStateFlags need = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
 	bool ok = XR_SUCCEEDED(g_vr.xrLocateViews(g_vr.session, &locateInfo, &viewState, 2, &count, views)) && count == 2 && (viewState.viewStateFlags & need) == need;
-	AcquireSRWLockExclusive(&g_stereo.lock);
-	g_stereo.valid = ok;
-	if (ok) g_stereo.poseBase = time;
-	if (ok) {
-		for (int eye = 0; eye < 2; eye++) {
-			g_stereo.eyePos[eye][0] = views[eye].pose.position.x;
-			g_stereo.eyePos[eye][1] = views[eye].pose.position.y;
-			g_stereo.eyePos[eye][2] = views[eye].pose.position.z;
-			g_stereo.eyeRot[eye][0] = views[eye].pose.orientation.x;
-			g_stereo.eyeRot[eye][1] = views[eye].pose.orientation.y;
-			g_stereo.eyeRot[eye][2] = views[eye].pose.orientation.z;
-			g_stereo.eyeRot[eye][3] = views[eye].pose.orientation.w;
-			g_stereo.eyeTan[eye][0] = pure::ftan(views[eye].fov.angleLeft);
-			g_stereo.eyeTan[eye][1] = pure::ftan(views[eye].fov.angleRight);
-			g_stereo.eyeTan[eye][2] = pure::ftan(views[eye].fov.angleUp);
-			g_stereo.eyeTan[eye][3] = pure::ftan(views[eye].fov.angleDown);
+	{
+		ExclusiveLock guard(&g_stereo.lock);
+		g_stereo.valid = ok;
+		if (ok) g_stereo.poseBase = time;
+		if (ok) {
+			for (int eye = 0; eye < 2; eye++) {
+				g_stereo.eyePos[eye][0] = views[eye].pose.position.x;
+				g_stereo.eyePos[eye][1] = views[eye].pose.position.y;
+				g_stereo.eyePos[eye][2] = views[eye].pose.position.z;
+				g_stereo.eyeRot[eye][0] = views[eye].pose.orientation.x;
+				g_stereo.eyeRot[eye][1] = views[eye].pose.orientation.y;
+				g_stereo.eyeRot[eye][2] = views[eye].pose.orientation.z;
+				g_stereo.eyeRot[eye][3] = views[eye].pose.orientation.w;
+				g_stereo.eyeTan[eye][0] = pure::ftan(views[eye].fov.angleLeft);
+				g_stereo.eyeTan[eye][1] = pure::ftan(views[eye].fov.angleRight);
+				g_stereo.eyeTan[eye][2] = pure::ftan(views[eye].fov.angleUp);
+				g_stereo.eyeTan[eye][3] = pure::ftan(views[eye].fov.angleDown);
+			}
 		}
 	}
-	ReleaseSRWLockExclusive(&g_stereo.lock);
 	static bool logged = false;
 	if (ok && !logged) {
 		logged = true;
@@ -314,7 +318,7 @@ static void UpdateEyePoses(XrTime time) {
 	}
 }
 
-static XrFovf FovFromTag(const FrameTag& tag) {
+XrFovf FovFromTag(const FrameTag& tag) {
 	XrFovf fov;
 	fov.angleLeft = -pure::fatan(tag.tanHalfW);
 	fov.angleRight = pure::fatan(tag.tanHalfW);
@@ -323,8 +327,9 @@ static XrFovf FovFromTag(const FrameTag& tag) {
 	return fov;
 }
 
-static bool UpdateMenu(XrTime time);
-static bool UpdateOverlay();
+bool UpdateMenu(XrTime time);
+bool UpdateOverlay();
+}  // namespace
 
 void Frame() {
 	XrFrameState frameState = {};
@@ -453,10 +458,9 @@ void Frame() {
 					// the upscaler's output follows this: the game image's shape with the headset's detail
 					float nativeScale = needW / g_vr.gameW > needH / g_vr.gameH ? needW / g_vr.gameW : needH / g_vr.gameH;
 					UINT nativeW = ((UINT)(g_vr.gameW * nativeScale) + 1) & ~1u, nativeH = ((UINT)(g_vr.gameH * nativeScale) + 1) & ~1u;
-					EnterCriticalSection(&g_share.lock);
+					SectionLock guard(&g_share.lock);
 					g_share.nativeW = nativeW;
 					g_share.nativeH = nativeH;
-					LeaveCriticalSection(&g_share.lock);
 				}
 			}
 			static int lateLogged = -1;
@@ -545,7 +549,6 @@ void Frame() {
 	}
 
 	// the stats overlay: moves with your head (view space), upper left of your view
-	if (!g_cfg.statsOverlay) g_vr.overlayStart.QuadPart = 0;  // counting starts again when it is switched on
 	if (frameState.shouldRender && g_cfg.statsOverlay && UpdateOverlay()) {
 		// 0.32 m wide at 0.8 m; elsewhere scaled so it keeps its size and place in your view
 		const float scale = g_cfg.overlayDistance / 0.8f;
@@ -585,16 +588,7 @@ void Frame() {
 	endInfo.layers = layerCount ? layers : nullptr;
 	XR_CHECK_FRAME(g_vr.xrEndFrame(g_vr.session, &endInfo));
 	g_vr.statFrames++;
-	g_vr.overlayFrames++;
-	{  // headset frame time, for the overlay's graph
-		LARGE_INTEGER now;
-		QueryPerformanceCounter(&now);
-		if (g_vr.overlayLastFrame.QuadPart) {
-			g_vr.overlayFrameMs[g_vr.overlayFrameNext] = (float)(1000.0 * (now.QuadPart - g_vr.overlayLastFrame.QuadPart) / g_vr.qpcFrequency.QuadPart);
-			g_vr.overlayFrameNext = (g_vr.overlayFrameNext + 1) % (int)(sizeof(g_vr.overlayFrameMs) / sizeof(g_vr.overlayFrameMs[0]));
-		}
-		g_vr.overlayLastFrame = now;
-	}
+	OverlayCountHeadsetFrame();
 	LogStats();
 }
 
@@ -603,7 +597,8 @@ void Frame() {
 // without sRGB, so the copy keeps ImGui's colours as they are (they are already sRGB values).
 // True = the panel can be shown.
 typedef bool (*PanelDraw)(ID3D11Device* dev, ID3D11DeviceContext* dc, ID3D11RenderTargetView* rtv, int w, int h);
-static bool RenderPanel(Panel& panel, int width, int height, const char* what, PanelDraw draw) {
+namespace {
+bool RenderPanel(Panel& panel, int width, int height, const char* what, PanelDraw draw) {
 	if (!EnsureSwap(panel.swap, (uint32_t)width, (uint32_t)height, what, true)) return false;
 	if (panel.swap.w != (uint32_t)width || panel.swap.h != (uint32_t)height) return false;  // runtime limits: not supported
 	if (!panel.tex) {
@@ -634,11 +629,10 @@ static bool RenderPanel(Panel& panel, int width, int height, const char* what, P
 	waitInfo.timeout = XR_INFINITE_DURATION;
 	if (!XR_CHECK_FRAME(g_vr.xrWaitSwapchainImage(panel.swap.handle, &waitInfo))) return panel.shown;  // no release without a wait
 	if (imageIndex < panel.swap.count) {
-		ID3D11Resource* image = nullptr;
+		ComPtr<ID3D11Resource> image;
 		panel.swap.rtv[imageIndex]->GetResource(&image);
 		if (image) {
-			g_vr.context->CopyResource(image, panel.tex);
-			image->Release();
+			g_vr.context->CopyResource(image.Get(), panel.tex);
 		}
 	}
 	XrSwapchainImageReleaseInfo releaseInfo = {};
@@ -650,7 +644,7 @@ static bool RenderPanel(Panel& panel, int width, int height, const char* what, P
 
 // The settings menu: placed in front of your head when it opens ([Screen] MenuDistance, which moves
 // it at once when changed), drawn every headset frame while open (ImGui's navigation runs per frame).
-static bool UpdateMenu(XrTime time) {
+bool UpdateMenu(XrTime time) {
 	if (MenuTakeJustOpened()) {
 		XrSpaceLocation location = {};
 		location.type = XR_TYPE_SPACE_LOCATION;
@@ -674,49 +668,35 @@ static bool UpdateMenu(XrTime time) {
 	return RenderPanel(g_vr.menuPanel, 1280, 960, "menu", MenuRender);
 }
 
-// The stats overlay: new numbers twice a second, redrawn ten times a second (the graph).
-static bool UpdateOverlay() {
-	LARGE_INTEGER now;
-	QueryPerformanceCounter(&now);
-	if (!g_vr.overlayStart.QuadPart) {
-		g_vr.overlayStart = now;
-		g_vr.overlayFrames = 0;
-		g_vr.overlayGameFrames[0] = g_vr.overlayGameFrames[1] = g_vr.overlayGameFrames[2] = 0;
-		g_vr.overlayDrawn.QuadPart = 0;
-	}
-	double secs = (double)(now.QuadPart - g_vr.overlayStart.QuadPart) / (double)g_vr.qpcFrequency.QuadPart;
-	OverlayStats& stats = g_vr.overlayStats;
-	if (secs >= 0.5) {
-		AcquireSRWLockShared(&g_stereo.lock);
-		bool stereoOn = g_stereo.enabled;
-		ReleaseSRWLockShared(&g_stereo.lock);
-		snprintf(g_vr.overlayMode, sizeof(g_vr.overlayMode), "%s",
-				 !stereoOn || g_vr.menuMode ? "flat screen" : (g_cfg.synchronized ? "synchronized" : "alternating"));
-		stats.headsetFps = (float)(g_vr.overlayFrames / secs);
-		for (int i = 0; i < 3; i++) stats.gameFps[i] = (float)(g_vr.overlayGameFrames[i] / secs);
-		stats.gameW = g_vr.gameW;
-		stats.gameH = g_vr.gameH;
-		stats.sceneW = g_vr.sceneW;
-		stats.sceneH = g_vr.sceneH;
-		UpscaleStatus(g_vr.overlayUpscaler, sizeof(g_vr.overlayUpscaler));
-		stats.sharpX = g_vr.sharpnessPctX;
-		stats.sharpY = g_vr.sharpnessPctY;
-		stats.poseDelayMs = g_vr.poseLagValid ? (float)g_vr.poseLagMs : -1.0f;
-		stats.predictMs = (float)(g_vr.predictionNs / 1e6);
-		g_vr.overlayFrames = 0;
-		g_vr.overlayGameFrames[0] = g_vr.overlayGameFrames[1] = g_vr.overlayGameFrames[2] = 0;
-		g_vr.overlayStart = now;
-	}
-	stats.mode = g_vr.overlayMode;
-	stats.upscaler = g_vr.overlayUpscaler;
-	stats.frameMs = g_vr.overlayFrameMs;
-	stats.frameCount = (int)(sizeof(g_vr.overlayFrameMs) / sizeof(g_vr.overlayFrameMs[0]));
-	stats.frameOffset = g_vr.overlayFrameNext;
-	bool redraw = !g_vr.overlayPanel.shown || (double)(now.QuadPart - g_vr.overlayDrawn.QuadPart) / (double)g_vr.qpcFrequency.QuadPart >= 0.1;
-	if (!redraw) return true;
-	g_vr.overlayDrawn = now;
-	return RenderPanel(g_vr.overlayPanel, 640, 330, "stats overlay",
-					   [](ID3D11Device* dev, ID3D11DeviceContext* dc, ID3D11RenderTargetView* rtv, int w, int h) {
-						   return OverlayRender(dev, dc, rtv, w, h, g_vr.overlayStats);
-					   });
+// write overlay stats to the struct passed in
+// possibly move to own file later if necessary
+void GatherOverlayNumbers(OverlayNumbers& numbers) {
+	AcquireSRWLockShared(&g_stereo.lock);
+	bool stereoOn = g_stereo.enabled;
+	ReleaseSRWLockShared(&g_stereo.lock);
+	snprintf(numbers.mode, sizeof(numbers.mode), "%s",
+			 !stereoOn || g_vr.menuMode ? "flat screen" : (g_cfg.synchronized ? "synchronized" : "alternating"));
+	numbers.gameW = g_vr.gameW;
+	numbers.gameH = g_vr.gameH;
+	numbers.sceneW = g_vr.sceneW;
+	numbers.sceneH = g_vr.sceneH;
+	UpscaleStatus(numbers.upscaler, sizeof(numbers.upscaler));
+	numbers.sharpX = g_vr.sharpnessPctX;
+	numbers.sharpY = g_vr.sharpnessPctY;
+	numbers.poseDelayMs = g_vr.poseLagValid ? (float)g_vr.poseLagMs : -1.0f;
+	numbers.predictMs = (float)(g_vr.predictionNs / 1e6);
+	HandPeaks hands[2];
+	VrInputTakeHandPeaks(hands);
+	numbers.leftHand = {hands[0].speed, hands[0].spin, hands[0].accel, hands[0].spinAccel};
+	numbers.rightHand = {hands[1].speed, hands[1].spin, hands[1].accel, hands[1].spinAccel};
 }
+
+// returns true when successfully drawn
+// returns false if RenderPanel returned false
+bool UpdateOverlay() {
+	if (!OverlayRedrawDue(g_vr.overlayPanel.shown, GatherOverlayNumbers)) {
+		return true;
+	}
+	return RenderPanel(g_vr.overlayPanel, 640, 420, "stats overlay", OverlayRender);
+}
+}  // namespace

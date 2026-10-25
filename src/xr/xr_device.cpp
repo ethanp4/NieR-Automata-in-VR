@@ -1,16 +1,18 @@
 // xr_device.cpp - the VR thread's own D3D11 device (on the game's GPU) and its blit shaders, the
 // game's frames copied onto it, and menu detection.
 #include "xr/xr_thread.h"
+#include "core/com.h"
+#include "core/locks.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "render/camera.h"
+#include <atomic>
 #include <string.h>
 #include <d3dcompiler.h>
 
-// ---------------------------------------------------------------------------------------------
-// Our D3D11 device and the blit shader
-// ---------------------------------------------------------------------------------------------
-static const char kShader[] = R"(
+namespace {
+
+constexpr char kShader[] = R"(
 cbuffer Params : register(b0) { float4 params; };   // params.x: 0 = copy, 1 = sRGB->linear, 2 = linear->sRGB
 Texture2D src : register(t0);
 Texture2D src2 : register(t1);
@@ -66,7 +68,7 @@ float4 PSKey(VSOut i) : SV_Target {
 }
 )";
 
-static bool CompileShaders() {
+bool CompileShaders() {
 	HMODULE compilerDll = LoadLibraryW(L"d3dcompiler_47.dll");
 	pD3DCompile compile = compilerDll ? (pD3DCompile)(void*)GetProcAddress(compilerDll, "D3DCompile") : nullptr;
 	if (!compile) {
@@ -131,6 +133,7 @@ static bool CompileShaders() {
 	if (FAILED(hr)) Log("ERROR: sampler/cbuffer 0x%08x", (unsigned)hr);
 	return SUCCEEDED(hr);
 }
+}  // namespace
 
 // Created on the game's GPU as soon as the VR thread starts, before OpenXR is involved, because it
 // also owns the texture the game copies its frames into.
@@ -150,12 +153,12 @@ bool InitDevice() {
 		Log("ERROR: cannot load D3D11/DXGI entry points");
 		return false;
 	}
-	IDXGIFactory1* factory = nullptr;
-	if (FAILED(createFactory(__uuidof(IDXGIFactory1), (void**)&factory))) {
+	ComPtr<IDXGIFactory1> factory;
+	if (FAILED(createFactory(__uuidof(IDXGIFactory1), &factory))) {
 		Log("ERROR: CreateDXGIFactory1 failed");
 		return false;
 	}
-	IDXGIAdapter1* adapter = nullptr;
+	ComPtr<IDXGIAdapter1> adapter;
 	for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
 		DXGI_ADAPTER_DESC1 desc;
 		bool match = SUCCEEDED(adapter->GetDesc1(&desc)) &&
@@ -166,9 +169,8 @@ bool InitDevice() {
 			g_vr.deviceLuid = desc.AdapterLuid;
 			break;
 		}
-		SafeRelease(adapter);
+		adapter.Reset();
 	}
-	factory->Release();
 	if (!adapter) {
 		Log("ERROR: could not find the game's GPU for the VR device");
 		return false;
@@ -176,12 +178,11 @@ bool InitDevice() {
 	const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
 										D3D_FEATURE_LEVEL_10_0};
 	D3D_FEATURE_LEVEL featureLevel;
-	HRESULT hr = createDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 4,
+	HRESULT hr = createDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 4,
 							  D3D11_SDK_VERSION, &g_vr.device, &featureLevel, &g_vr.context);
 	if (hr == E_INVALIDARG)  // Windows without 11.1 support
-		hr = createDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels + 1, 3,
+		hr = createDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels + 1, 3,
 						  D3D11_SDK_VERSION, &g_vr.device, &featureLevel, &g_vr.context);
-	adapter->Release();
 	if (FAILED(hr)) {
 		Log("ERROR: VR D3D11CreateDevice failed 0x%08x", (unsigned)hr);
 		return false;
@@ -192,23 +193,23 @@ bool InitDevice() {
 	// the same GPU, or the runtime sees late frames and throttles the app (a Pico headset dropped to
 	// 27-32 fps in synchronized mode while the GPU needed only 15-19 ms per game frame).
 	{
-		IDXGIDevice* dxgiDevice = nullptr;
-		if (SUCCEEDED(g_vr.device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice)) && dxgiDevice) {
+		ComPtr<IDXGIDevice> dxgiDevice;
+		if (SUCCEEDED(g_vr.device->QueryInterface(__uuidof(IDXGIDevice), &dxgiDevice)) && dxgiDevice) {
 			HRESULT priorityResult = E_FAIL;
 			int priority = 7;
 			for (; priority > 0 && FAILED(priorityResult = dxgiDevice->SetGPUThreadPriority(priority)); priority -= 3) {}
 			Log("VR device GPU priority %d%s (0x%08x)", SUCCEEDED(priorityResult) ? priority : 0,
 				SUCCEEDED(priorityResult) ? " (above the game)" : ": not allowed, normal", (unsigned)priorityResult);
-			dxgiDevice->Release();
 		}
 	}
 	return CompileShaders();
 }
 
+namespace {
 // ---------------------------------------------------------------------------------------------
 // Game frame -> our device
 // ---------------------------------------------------------------------------------------------
-static void ReleaseContent() {
+void ReleaseContent() {
 	for (auto& texture : g_vr.ring) SafeRelease(texture);
 	for (auto& texture : g_vr.ringScene) SafeRelease(texture);
 	for (auto& texture : g_vr.ringKey) SafeRelease(texture);
@@ -224,7 +225,7 @@ static void ReleaseContent() {
 	}
 }
 
-static void TypelessFor(DXGI_FORMAT format, DXGI_FORMAT* texFormat, DXGI_FORMAT* viewFormat, bool* linear) {
+void TypelessFor(DXGI_FORMAT format, DXGI_FORMAT* texFormat, DXGI_FORMAT* viewFormat, bool* linear) {
 	*linear = false;
 	switch (format) {
 		case DXGI_FORMAT_R8G8B8A8_UNORM:
@@ -256,12 +257,13 @@ static void TypelessFor(DXGI_FORMAT format, DXGI_FORMAT* texFormat, DXGI_FORMAT*
 			return;
 	}
 }
+}  // namespace
 
 // Answers the game thread's request for capture textures: a ring of kRingSize created here, on our
 // device, and shared with the game's device by handle. Called continuously from the VR loop.
 void ServiceShare() {
 	EnterCriticalSection(&g_share.lock);
-	LONG requestGen = g_share.requestGen;
+	int32_t requestGen = g_share.requestGen;
 	UINT gameW = g_share.requestW, gameH = g_share.requestH;
 	UINT sceneW = g_share.requestSceneW ? g_share.requestSceneW : gameW, sceneH = g_share.requestSceneH ? g_share.requestSceneH : gameH;
 	bool wantKey = g_share.requestKey;
@@ -293,11 +295,10 @@ void ServiceShare() {
 		desc.Width = isScene ? sceneW : gameW;
 		desc.Height = isScene ? sceneH : gameH;
 		HRESULT hr = g_vr.device->CreateTexture2D(&desc, nullptr, texture);
-		IDXGIResource* dxgiResource = nullptr;
-		if (SUCCEEDED(hr)) hr = (*texture)->QueryInterface(__uuidof(IDXGIResource), (void**)&dxgiResource);
+		ComPtr<IDXGIResource> dxgiResource;
+		if (SUCCEEDED(hr)) hr = (*texture)->QueryInterface(__uuidof(IDXGIResource), &dxgiResource);
 		if (SUCCEEDED(hr)) {
 			hr = dxgiResource->GetSharedHandle(&handles[i]);
-			dxgiResource->Release();
 		}
 		if (FAILED(hr) || !handles[i]) {
 			Log("ERROR: capture texture %ux%u format %d could not be created/shared (0x%08x)", desc.Width, desc.Height,
@@ -341,19 +342,22 @@ void ServiceShare() {
 	g_vr.sceneW = sceneW;
 	g_vr.sceneH = sceneH;
 
-	EnterCriticalSection(&g_share.lock);
-	memcpy(g_share.ring, handles, sizeof(g_share.ring));
-	memcpy(g_share.ringScene, handles + kRingSize, sizeof(g_share.ringScene));
-	memcpy(g_share.ringKey, handles + 2 * kRingSize, sizeof(g_share.ringKey));  // null when not upscaling
-	g_share.forRequestGen = requestGen;
-	g_share.ringGen = ++g_vr.publishedGen;
-	for (auto& published : g_share.latest) published.seq = 0;
-	LeaveCriticalSection(&g_share.lock);
+	{
+		SectionLock guard(&g_share.lock);
+		memcpy(g_share.ring, handles, sizeof(g_share.ring));
+		memcpy(g_share.ringScene, handles + kRingSize, sizeof(g_share.ringScene));
+		memcpy(g_share.ringKey, handles + 2 * kRingSize, sizeof(g_share.ringKey));  // null when not upscaling
+		g_share.forRequestGen = requestGen;
+		g_share.ringGen = ++g_vr.publishedGen;
+		for (auto& published : g_share.latest) published.seq = 0;
+	}
 	Log("capture ring published: %d x %ux%u format %d%s, scene images %ux%u", kRingSize, gameW, gameH, (int)format,
 		g_vr.gameImageLinear ? " (linear/HDR)" : "", sceneW, sceneH);
 }
 
-static void SetMenuMode(bool on, float coverage);
+namespace {
+void SetMenuMode(bool on, float coverage);
+}  // namespace
 
 // The scene image the HUD is cut out against: the one before upscaling when there is one.
 ID3D11ShaderResourceView* KeySrv(const GameView& view) {
@@ -382,8 +386,8 @@ void UpdateContent() {
 			if (latest[kind].tag.hasScene) {
 				g_vr.framesWithoutScene = 0;
 			} else if (++g_vr.framesWithoutScene == 30) {
-				static volatile LONG budget;
-				if (LogBudget(&budget, 3)) Log("ui split: no HUD-free image for a moment; HUD shown inside the 3D view");
+				static std::atomic<int32_t> budget;
+				if (LogBudget(budget, 3)) Log("ui split: no HUD-free image for a moment; HUD shown inside the 3D view");
 			}
 		}
 		g_vr.statSceneFrames += latest[kind].tag.hasScene ? 1 : 0;
@@ -391,7 +395,7 @@ void UpdateContent() {
 		g_vr.views[kind].tag = latest[kind].tag;
 		g_vr.views[kind].hasFrame = true;
 		g_vr.statGameFrames[kind]++;
-		g_vr.overlayGameFrames[kind]++;
+		OverlayCountGameImage(kind);
 	}
 }
 
@@ -430,14 +434,11 @@ void Blit(ID3D11RenderTargetView* rtv, uint32_t width, uint32_t height, ID3D11Sh
 	g_vr.context->OMSetRenderTargets(0, nullptr, nullptr);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Menu detection: how much of the screen is UI? Rendered at 64x36 and read back a few frames
-// later without blocking. Mostly-UI frames (pause menu, map, full-screen menus) switch the game
-// to flat rendering until the UI is mostly gone again.
-// ---------------------------------------------------------------------------------------------
-static const int kCovW = 64, kCovH = 36;
+namespace {
 
-static bool EnsureCoverageTargets() {
+constexpr int32_t kCovW = 64, kCovH = 36;
+
+bool EnsureCoverageTargets() {
 	if (g_vr.coverageTex) return true;
 	D3D11_TEXTURE2D_DESC desc = {};
 	desc.Width = kCovW;
@@ -463,16 +464,18 @@ static bool EnsureCoverageTargets() {
 	return true;
 }
 
-static void SetMenuMode(bool on, float coverage) {
+void SetMenuMode(bool on, float coverage) {
 	if (on == g_vr.menuMode) return;
 	g_vr.menuMode = on;
-	AcquireSRWLockExclusive(&g_stereo.lock);
-	g_stereo.menuMode = on;
-	ReleaseSRWLockExclusive(&g_stereo.lock);
+	{
+		ExclusiveLock guard(&g_stereo.lock);
+		g_stereo.menuMode = on;
+	}
 	if (coverage >= 0)
 		Log("%s (UI covers %.0f%% of the screen)", on ? "menu detected: flat screen" : "menu closed: back to stereo",
 			(double)(coverage * 100));
 }
+}  // namespace
 
 void MeasureUICoverage() {
 	if (!g_vr.hudKeyPs || !EnsureCoverageTargets()) return;

@@ -12,9 +12,10 @@
 #include "core/main.h"
 #include "core/pure.h"
 
-static bool IsAbsolute(const wchar_t* path) { return path[0] && (path[1] == L':' || (path[0] == L'\\' && path[1] == L'\\')); }
+namespace {
+bool IsAbsolute(const wchar_t* path) { return path[0] && (path[1] == L':' || (path[0] == L'\\' && path[1] == L'\\')); }
 
-static PFN_xrGetInstanceProcAddr FromLoaderDll(const wchar_t* path) {
+PFN_xrGetInstanceProcAddr FromLoaderDll(const wchar_t* path) {
 	HMODULE module = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
 	if (!module) {
 		Log("OpenXR: could not load loader '%s' (error %u)", Utf8(path).s, (unsigned)GetLastError());
@@ -26,7 +27,7 @@ static PFN_xrGetInstanceProcAddr FromLoaderDll(const wchar_t* path) {
 	return getProcAddr;
 }
 
-static bool ReadManifestPath(wchar_t* out, DWORD cap) {
+bool ReadManifestPath(wchar_t* out, DWORD cap) {
 	DWORD length = GetEnvironmentVariableW(L"XR_RUNTIME_JSON", out, cap);
 	if (length > 0 && length < cap) {
 		Log("OpenXR: XR_RUNTIME_JSON overrides the active runtime: %s", Utf8(out).s);
@@ -44,7 +45,7 @@ static bool ReadManifestPath(wchar_t* out, DWORD cap) {
 	return true;
 }
 
-static PFN_xrGetInstanceProcAddr FromActiveRuntime() {
+PFN_xrGetInstanceProcAddr FromActiveRuntime() {
 	wchar_t manifest[MAX_PATH * 2];
 	if (!ReadManifestPath(manifest, MAX_PATH * 2)) return nullptr;
 	Log("OpenXR: active runtime manifest: %s", Utf8(manifest).s);
@@ -122,6 +123,7 @@ static PFN_xrGetInstanceProcAddr FromActiveRuntime() {
 	if (!getProcAddr) Log("ERROR: OpenXR: runtime exports neither %s nor xrGetInstanceProcAddr", negName);
 	return getProcAddr;
 }
+}  // namespace
 
 PFN_xrGetInstanceProcAddr XrLoadEntry() {
 	static PFN_xrGetInstanceProcAddr cached;

@@ -7,6 +7,7 @@
 // xr_frame.cpp) or with the eye poses they were rendered from.
 // Flat: the newest game frame on a quad layer floating in front of the user (menus, F12, startup).
 #include "xr/xr_main.h"
+#include "core/locks.h"
 #include "xr/xr_thread.h"
 #include "core/config.h"
 #include "core/log.h"
@@ -14,20 +15,23 @@
 #include "input/vr_controllers.h"
 #include "render/camera.h"
 #include "xr/runtime_loader.h"
+#include <atomic>
 #include <stdio.h>
 
 VrState g_vr;
-volatile DWORD g_xrThreadId;
+std::atomic<DWORD> g_xrThreadId;
 
+namespace {
 // ---------------------------------------------------------------------------------------------
 // Error helpers
 // ---------------------------------------------------------------------------------------------
-static const char* XrStr(XrResult result) {
+const char* XrStr(XrResult result) {
 	static char buf[XR_MAX_RESULT_STRING_SIZE + 16];
 	if (g_vr.instance && g_vr.xrResultToString && XR_SUCCEEDED(g_vr.xrResultToString(g_vr.instance, result, buf))) return buf;
 	snprintf(buf, sizeof(buf), "XrResult(%d)", (int)result);
 	return buf;
 }
+}  // namespace
 
 bool XrCheck(XrResult result, const char* what, bool perFrame) {
 	if (XR_SUCCEEDED(result)) return true;
@@ -38,10 +42,11 @@ bool XrCheck(XrResult result, const char* what, bool perFrame) {
 	if (result == XR_ERROR_INSTANCE_LOST || result == XR_ERROR_RUNTIME_FAILURE) g_vr.instanceLost = true;
 	return false;
 }
+namespace {
 // ---------------------------------------------------------------------------------------------
 // Instance & system
 // ---------------------------------------------------------------------------------------------
-static bool InitInstance() {
+bool InitInstance() {
 	g_vr.getProcAddr = XrLoadEntry();
 	if (!g_vr.getProcAddr) return false;
 
@@ -113,7 +118,7 @@ static bool InitInstance() {
 	return true;
 }
 
-static bool InitSystem() {
+bool InitSystem() {
 	static bool loggedWaiting = false;
 	XrSystemGetInfo getInfo = {};
 	getInfo.type = XR_TYPE_SYSTEM_GET_INFO;
@@ -176,7 +181,7 @@ static bool InitSystem() {
 }
 
 // After OpenXR tells us which GPU drives the headset: it must be the game's GPU.
-static bool CheckHeadsetGpu() {
+bool CheckHeadsetGpu() {
 	if (g_vr.headsetGpuLuid.LowPart != g_vr.deviceLuid.LowPart || g_vr.headsetGpuLuid.HighPart != g_vr.deviceLuid.HighPart) {
 		Log("ERROR: the headset is driven by a different GPU than the game. On laptops/multi-GPU systems, set "
 			"NieRAutomata.exe to the high-performance GPU in Windows Settings > Display > Graphics.");
@@ -193,21 +198,21 @@ static bool CheckHeadsetGpu() {
 // ---------------------------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------------------------
-static void DestroySwap(Swapchain& swap) {
+void DestroySwap(Swapchain& swap) {
 	for (uint32_t i = 0; i < kMaxImages; i++) SafeRelease(swap.rtv[i]);
 	if (swap.handle) g_vr.xrDestroySwapchain(swap.handle);
 	swap.handle = XR_NULL_HANDLE;
 	swap.count = swap.w = swap.h = 0;
 }
 
-static void DestroyPanel(Panel& panel) {
+void DestroyPanel(Panel& panel) {
 	DestroySwap(panel.swap);
 	SafeRelease(panel.rtv);
 	SafeRelease(panel.tex);
 	panel.shown = false;
 }
 
-static void DestroyAllSwaps() {
+void DestroyAllSwaps() {
 	DestroySwap(g_vr.screenSwap);
 	DestroySwap(g_vr.eyeSwap[0]);
 	DestroySwap(g_vr.eyeSwap[1]);
@@ -216,12 +221,13 @@ static void DestroyAllSwaps() {
 	DestroyPanel(g_vr.overlayPanel);
 }
 
-static void DestroySession() {
+void DestroySession() {
 	VrInputDetach();
 	DestroyAllSwaps();
-	AcquireSRWLockExclusive(&g_stereo.lock);
-	g_stereo.valid = false;
-	ReleaseSRWLockExclusive(&g_stereo.lock);
+	{
+		ExclusiveLock guard(&g_stereo.lock);
+		g_stereo.valid = false;
+	}
 	if (g_vr.localSpace) g_vr.xrDestroySpace(g_vr.localSpace);
 	if (g_vr.viewSpace) g_vr.xrDestroySpace(g_vr.viewSpace);
 	if (g_vr.session) g_vr.xrDestroySession(g_vr.session);
@@ -233,7 +239,7 @@ static void DestroySession() {
 	g_vr.state = XR_SESSION_STATE_UNKNOWN;
 }
 
-static void DestroyInstance() {
+void DestroyInstance() {
 	DestroySession();
 	VrInputShutdown();
 	if (g_vr.instance) g_vr.xrDestroyInstance(g_vr.instance);
@@ -242,7 +248,7 @@ static void DestroyInstance() {
 	g_vr.instanceLost = false;
 }
 
-static bool InitSession() {
+bool InitSession() {
 	XrGraphicsBindingD3D11KHR binding = {};
 	binding.type = XR_TYPE_GRAPHICS_BINDING_D3D11_KHR;
 	binding.device = g_vr.device;
@@ -291,6 +297,7 @@ static bool InitSession() {
 	g_vr.errorCount = 0;
 	return true;
 }
+}  // namespace
 
 bool EnsureSwap(Swapchain& swap, uint32_t width, uint32_t height, const char* what, bool copyTarget) {
 	// Respect runtime limits, keep aspect ratio
@@ -304,7 +311,7 @@ bool EnsureSwap(Swapchain& swap, uint32_t width, uint32_t height, const char* wh
 		height = maxH;
 	}
 	if (swap.handle && swap.w == width && swap.h == height) return true;
-	if ((LONG)(GetTickCount() - swap.retryAt) < 0) return false;
+	if ((int32_t)(GetTickCount() - swap.retryAt) < 0) return false;
 	swap.retryAt = GetTickCount() + 2000;  // after a failure, retry at most every 2 s
 	DestroySwap(swap);
 
@@ -368,10 +375,11 @@ bool RenderInto(Swapchain& swap, ID3D11ShaderResourceView* srv, ID3D11ShaderReso
 	return true;
 }
 
+namespace {
 // ---------------------------------------------------------------------------------------------
 // Events & frame loop
 // ---------------------------------------------------------------------------------------------
-static const char* StateName(XrSessionState state) {
+const char* StateName(XrSessionState state) {
 	switch (state) {
 		case XR_SESSION_STATE_IDLE: return "IDLE";
 		case XR_SESSION_STATE_READY: return "READY";
@@ -385,7 +393,7 @@ static const char* StateName(XrSessionState state) {
 	}
 }
 
-static void PollEvents() {
+void PollEvents() {
 	XrEventDataBuffer event;
 	while (true) {
 		// the runtime overwrites the type with the event's own: it must be reset before every call
@@ -439,14 +447,13 @@ static void PollEvents() {
 	}
 }
 
-static bool TimeReached(DWORD at) { return (LONG)(GetTickCount() - at) >= 0; }
+bool TimeReached(DWORD at) { return (int32_t)(GetTickCount() - at) >= 0; }
 
-static DWORD WINAPI XrThreadMain(void*) {
+DWORD WINAPI XrThreadMain(void*) {
 	g_xrThreadId = GetCurrentThreadId();
 	InstallCrashHandler();  // in case the game replaced it during startup
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
-	QueryPerformanceFrequency(&g_vr.qpcFrequency);
-	QueryPerformanceCounter(&g_vr.statStart);
+	g_vr.statStartMs = NowMs();
 	Log("VR thread started");
 	g_stereo.enabled = g_cfg.stereo != 0;
 	Log("stereo is %s at start (toggle key 0x%x)", g_stereo.enabled ? "ON" : "OFF", (unsigned)g_cfg.keyStereo);
@@ -538,10 +545,11 @@ static DWORD WINAPI XrThreadMain(void*) {
 		Frame();
 	}
 }
+}  // namespace
 
 void XrStartThread() {
-	static volatile LONG started = 0;
-	if (InterlockedCompareExchange(&started, 1, 0) != 0) return;
+	static std::atomic<bool> started = false;
+	if (started.exchange(true)) return;
 	HANDLE thread = CreateThread(nullptr, 0, XrThreadMain, nullptr, 0, nullptr);
 	if (thread) CloseHandle(thread);
 	else Log("ERROR: could not create VR thread (%u)", (unsigned)GetLastError());

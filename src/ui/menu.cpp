@@ -9,9 +9,12 @@
 // Drawn with Dear ImGui (ui/imgui_panel.h) on the VR thread and used with ImGui's own gamepad and
 // keyboard navigation; xr_frame.cpp shows it on a quad in front of you.
 #include "ui/menu.h"
+#include "core/locks.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "render/dlss.h"
+#include <atomic>
+#include <iterator>
 #include <stdio.h>
 #include <string.h>
 #include "input/gamepad.h"
@@ -43,7 +46,7 @@ struct Item {
 	void* value;     // the g_cfg field (its ini section and key come from config.cpp)
 	float min, max;  // slider range
 	const char* format;
-	int flags;
+	int32_t flags;
 	const char* help;
 };
 
@@ -575,15 +578,15 @@ Item kInput[] = {
 struct Page {
 	const char* name;
 	Item* items;
-	int count;
+	int32_t count;
 };
-Page s_pages[] = {{"View", kView, sizeof(kView) / sizeof(Item)},
-				  {"Rendering", kRender, sizeof(kRender) / sizeof(Item)},
-				  {"Culling", kCull, sizeof(kCull) / sizeof(Item)},
-				  {"Screen", kScreen, sizeof(kScreen) / sizeof(Item)},
-				  {"Controls", kInput, sizeof(kInput) / sizeof(Item)},
+Page s_pages[] = {{"View", kView, std::size(kView)},
+				  {"Rendering", kRender, std::size(kRender)},
+				  {"Culling", kCull, std::size(kCull)},
+				  {"Screen", kScreen, std::size(kScreen)},
+				  {"Controls", kInput, std::size(kInput)},
 				  {"Info", nullptr, 0}};
-const int kPageCount = sizeof(s_pages) / sizeof(Page);
+constexpr int32_t kPageCount = std::size(s_pages);
 
 char s_infoText[INFO_LINE_COUNT][160];
 SRWLOCK s_infoLock = SRWLOCK_INIT;
@@ -592,11 +595,11 @@ SRWLOCK s_infoLock = SRWLOCK_INIT;
 // State
 // ---------------------------------------------------------------------------------------------
 UiPanel s_panel = {"menu", 30.0f, true};
-const float kSmall = 22.0f;  // font size of tags and hints
+constexpr float kSmall = 22.0f;  // font size of tags and hints
 
-volatile bool s_open, s_justOpened, s_wantRecenter;
+std::atomic<bool> s_open, s_justOpened, s_wantRecenter;
 bool s_waitRelease;  // after closing: keep blocking the game's gamepad until every button is released
-int s_page;
+int32_t s_page;
 bool s_pageChanged;        // select s_page's tab on the next frames (paging buttons, opening)
 bool s_focusFirst;         // put the navigation cursor on the page's first setting
 bool s_focusWindow;        // the menu window takes keyboard/gamepad focus (when it opens)
@@ -658,7 +661,7 @@ void SetOpen(bool open) {
 	s_open = open;
 	if (open) {
 		s_justOpened = true;
-		g_blockPad = 1;
+		g_blockPad = true;
 		s_pageChanged = s_focusFirst = s_focusWindow = true;
 		s_ignoreA = true;
 		s_sliderActive = false;
@@ -870,10 +873,11 @@ void ItemRow(Item& item, int index) {
 
 void PageContents(const Page& page, bool isInfo) {
 	if (isInfo) {  // the Info page: lines of live text set by the other parts of the mod
-		AcquireSRWLockShared(&s_infoLock);
-		for (int i = 0; i < INFO_LINE_COUNT; i++)
-			if (s_infoText[i][0]) ImGui::TextWrapped("%s", s_infoText[i]);
-		ReleaseSRWLockShared(&s_infoLock);
+		{
+			SharedLock guard(&s_infoLock);
+			for (int i = 0; i < INFO_LINE_COUNT; i++)
+				if (s_infoText[i][0]) ImGui::TextWrapped("%s", s_infoText[i]);
+		}
 		s_focusFirst = false;
 		return;
 	}
@@ -990,9 +994,8 @@ void FeedInput() {
 // Any thread: one line of the Info page.
 void MenuSetInfo(int line, const char* text) {
 	if (line < 0 || line >= INFO_LINE_COUNT) return;
-	AcquireSRWLockExclusive(&s_infoLock);
+	ExclusiveLock guard(&s_infoLock);
 	snprintf(s_infoText[line], sizeof(s_infoText[line]), "%s", text);
-	ReleaseSRWLockExclusive(&s_infoLock);
 }
 
 // Every headset frame: opening and closing, page buttons, and the gamepad state for ImGui.
@@ -1037,7 +1040,7 @@ void MenuTick(bool foreground) {
 	if (!s_open) {
 		if (s_waitRelease && !buttons) {
 			s_waitRelease = false;
-			g_blockPad = 0;
+			g_blockPad = false;
 		}
 		return;
 	}
@@ -1055,13 +1058,11 @@ void MenuTick(bool foreground) {
 bool MenuIsOpen() { return s_open; }
 // Returns whether the menu was just opened, and clears it.
 bool MenuTakeJustOpened() {
-	bool justOpened = s_justOpened;
-	s_justOpened = false;
+	bool justOpened = s_justOpened.exchange(false);
 	return justOpened;
 }
 bool MenuTakeRecenter() {
-	bool recenter = s_wantRecenter;
-	s_wantRecenter = false;
+	bool recenter = s_wantRecenter.exchange(false);
 	return recenter;
 }
 

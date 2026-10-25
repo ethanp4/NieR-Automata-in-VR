@@ -101,7 +101,7 @@ bool CreatePanel(UiPanel& panel, ID3D11Device* device, ID3D11DeviceContext* cont
 		panel.ctx = nullptr;
 		return false;
 	}
-	QueryPerformanceCounter(&panel.last);
+	panel.lastMs = NowMs();
 	Log("ui: %s: Dear ImGui %s", panel.name, IMGUI_VERSION);
 	return true;
 }
@@ -116,12 +116,10 @@ bool UiPrepare(UiPanel& panel, ID3D11Device* device, ID3D11DeviceContext* contex
 	ImGui::SetCurrentContext(panel.ctx);
 	ImGuiIO& io = ImGui::GetIO();
 	io.DisplaySize = ImVec2((float)width, (float)height);
-	LARGE_INTEGER now, freq;
-	QueryPerformanceCounter(&now);
-	QueryPerformanceFrequency(&freq);
-	float dt = (float)(now.QuadPart - panel.last.QuadPart) / (float)freq.QuadPart;
+	double now = NowMs();
+	float dt = (float)((now - panel.lastMs) / 1000);
 	io.DeltaTime = dt > 0 && dt < 1 ? dt : 1.0f / 60;
-	panel.last = now;
+	panel.lastMs = now;
 	return true;
 }
 

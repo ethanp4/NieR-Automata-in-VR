@@ -1,28 +1,35 @@
 // d3d11_proxy.cpp - stands in for d3d11.dll: loads the real one and forwards every export to it.
 #include "core/d3d11_proxy.h"
+#include <iterator>
 #include "core/config.h"
 #include "core/log.h"
 #include "core/main.h"
 #include "render/d3d_hooks.h"
 #include "render/frame_handoff.h"
 
-static const char* const kThunkNames[] = {
+namespace {
+const char* const kThunkNames[] = {
 #include "gen/export_names.inc"
 };
-static const int kThunkCount = (int)(sizeof(kThunkNames) / sizeof(kThunkNames[0]));
+constexpr int32_t kThunkCount = (int32_t)std::size(kThunkNames);
+}  // namespace
 
 extern "C" {
 // Read by the assembly thunks (gen/thunks.S).
-void* g_realProcs[sizeof(kThunkNames) / sizeof(kThunkNames[0])];
+void* g_realProcs[std::size(kThunkNames)];
 void NVR_ResolveAll();
 }
 
-static PFN_D3D11_CREATE_DEVICE s_realCreateDevice;
+namespace {
+PFN_D3D11_CREATE_DEVICE s_realCreateDevice;
+}  // namespace
 PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN g_realCreateDeviceAndSwapChain;
-static HMODULE s_realDll;
+namespace {
+HMODULE s_realDll;
 
 // Used for any export the real DLL doesn't have (e.g. older Windows builds).
-static HRESULT WINAPI MissingExport() { return E_NOTIMPL; }
+HRESULT WINAPI MissingExport() { return E_NOTIMPL; }
+}  // namespace
 
 bool ProxyLoadReal() {
 	wchar_t path[MAX_PATH];

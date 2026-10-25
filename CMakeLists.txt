@@ -79,7 +79,8 @@ target_compile_definitions(nier_vr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_definitions(nier_vr PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS IMGUI_DISABLE_WIN32_FUNCTIONS
 	NIERVR_VERSION="${NIERVR_VERSION}")
 # -fno-threadsafe-statics: a guarded function-local static pulls all of the C++ runtime's exception
-# handling into the DLL (see build/d3d11.map); ImGui runs on one thread only.
+# handling into the DLL (see build/d3d11.map); ImGui runs on one thread only. So a function-local
+# static must not have a run-time initializer if two threads can reach it: keep those to constants.
 target_compile_options(nier_vr PRIVATE
 	-O2 -msse4.1 -fno-math-errno -fno-asynchronous-unwind-tables -fno-stack-protector
 	$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti -fno-threadsafe-statics>)

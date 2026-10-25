@@ -2,6 +2,7 @@
 #include "core/hook.h"
 #include "core/log.h"
 #include "input/vr_controllers.h"
+#include <atomic>
 #include <string.h>
 #include "input/gamepad.h"
 
@@ -31,7 +32,7 @@ void MergeVrPad(XINPUT_GAMEPAD& pad, const XINPUT_GAMEPAD& vr) {
 	pad.wButtons |= vr.wButtons;
 	if (vr.bLeftTrigger > pad.bLeftTrigger) pad.bLeftTrigger = vr.bLeftTrigger;
 	if (vr.bRightTrigger > pad.bRightTrigger) pad.bRightTrigger = vr.bRightTrigger;
-	auto lengthSq = [](int x, int y) { return (long long)x * x + (long long)y * y; };
+	auto lengthSq = [](int x, int y) { return (int64_t)x * x + (int64_t)y * y; };
 	if (lengthSq(vr.sThumbLX, vr.sThumbLY) > lengthSq(pad.sThumbLX, pad.sThumbLY)) pad.sThumbLX = vr.sThumbLX, pad.sThumbLY = vr.sThumbLY;
 	if (lengthSq(vr.sThumbRX, vr.sThumbRY) > lengthSq(pad.sThumbRX, pad.sThumbRY)) pad.sThumbRX = vr.sThumbRX, pad.sThumbRY = vr.sThumbRY;
 }
@@ -41,7 +42,7 @@ DWORD FilterState(DWORD user, DWORD result, XINPUT_STATE* state) {
 	XINPUT_GAMEPAD vr;
 	if (user == 0 && VrInputPad(&vr)) {
 		if (result != ERROR_SUCCESS) {  // no real pad: the VR controllers are pad 0
-			memset(state, 0, sizeof(*state));
+			*state = {};
 			result = ERROR_SUCCESS;
 		}
 		MergeVrPad(state->Gamepad, vr);
@@ -55,7 +56,7 @@ DWORD FilterState(DWORD user, DWORD result, XINPUT_STATE* state) {
 		state->dwPacketNumber = packetNumber;
 	}
 	// Block input when mod menu is open
-	if (result == ERROR_SUCCESS && g_blockPad) memset(&state->Gamepad, 0, sizeof(state->Gamepad));
+	if (result == ERROR_SUCCESS && g_blockPad) state->Gamepad = {};
 	return result;
 }
 template <int I>
@@ -67,7 +68,7 @@ DWORD WINAPI H_XInputGetCapabilities(DWORD user, DWORD flags, XINPUT_CAPABILITIE
 	DWORD result = s_xinputDlls[I].getCapabilities(user, flags, caps);
 	XINPUT_GAMEPAD vr;
 	if (result != ERROR_SUCCESS && user == 0 && caps && VrInputPad(&vr)) {
-		memset(caps, 0, sizeof(*caps));  // describe an ordinary Xbox controller
+		*caps = {};  // describe an ordinary Xbox controller
 		caps->Type = XINPUT_DEVTYPE_GAMEPAD;
 		caps->SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
 		caps->Gamepad.wButtons = 0xF3FF;
@@ -133,7 +134,7 @@ bool ReadPhysicalPad(XINPUT_GAMEPAD* pad) {
 }
 }  // namespace
 
-volatile LONG g_blockPad;
+std::atomic<bool> g_blockPad;
 
 // There are 5 xinput dlls to hook
 void InstallGamepad() {
@@ -148,7 +149,7 @@ void InstallGamepad() {
 // Only called from the mod menu
 bool ReadGamepad(XINPUT_GAMEPAD* out) {
 	bool found = ReadPhysicalPad(out);
-	if (!found) memset(out, 0, sizeof(*out));
+	if (!found) *out = {};
 	XINPUT_GAMEPAD vr;
 	if (VrInputPad(&vr, true)) {
 		MergeVrPad(*out, vr);

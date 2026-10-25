@@ -1,5 +1,6 @@
 // game_effects.cpp - switches off NieR effects that don't suit VR: vignette, shadows, ambient occlusion, low-health filter.
 #include "render/game_effects.h"
+#include "core/com.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "render/camera.h"
@@ -8,11 +9,8 @@
 #include <d3dcompiler.h>
 
 namespace {
-// --- vignette ----------------------------------------------------------------------------------
-// The 48-byte PSParamBuffer1 bound at b1 when the tone-mapping shader draws; g_VignettoParam.x
-// (float 8) is the radius where darkening ends, as in v = pow(saturate((1 - |uv - 0.5|) / x), y).
-// A tiny x keeps v = 1 everywhere.
-const UINT kVignetteBufferSize = 48;
+
+constexpr UINT kVignetteBufferSize = 48;
 ID3D11Resource* s_vignetteBuffer;
 void* s_vignetteMapped;
 
@@ -21,17 +19,16 @@ void PatchVignette(float* floats) {
 }
 
 void FindVignetteBuffer(ID3D11DeviceContext* c) {
-	ID3D11Buffer* buffer = nullptr;
+	ComPtr<ID3D11Buffer> buffer;
 	c->PSGetConstantBuffers(1, 1, &buffer);
 	if (!buffer) return;
 	D3D11_BUFFER_DESC desc;
 	buffer->GetDesc(&desc);
 	if (desc.ByteWidth == kVignetteBufferSize) {
-		s_vignetteBuffer = buffer;
+		s_vignetteBuffer = buffer.Get();
 		Log("vignette: parameters found (buffer of %u bytes); %s", desc.ByteWidth,
 			g_cfg.vignette ? "kept (Vignette=1)" : "removed from the next frame on");
 	}
-	buffer->Release();
 }
 
 // --- shadows -----------------------------------------------------------------------------------
@@ -53,10 +50,9 @@ ID3D11PixelShader* LitShader(ID3D11DeviceContext* c) {
 	static const char source[] = "float4 main() : SV_Target { return 1; }";  // no inputs: links to any VS
 	ID3DBlob *blob = nullptr, *errors = nullptr;
 	HRESULT hr = compile ? compile(source, sizeof(source) - 1, "lit", nullptr, nullptr, "main", "ps_5_0", 0, 0, &blob, &errors) : E_FAIL;
-	ID3D11Device* device = nullptr;
+	ComPtr<ID3D11Device> device;
 	c->GetDevice(&device);
 	if (SUCCEEDED(hr) && device) hr = device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &s_litShader);
-	if (device) device->Release();
 	if (FAILED(hr)) {
 		s_litShader = nullptr;
 		Log("shadows off: no replacement shader (0x%08x); the shadow pass stays on", (unsigned)hr);
@@ -75,14 +71,13 @@ ID3D11PixelShader* LitShader(ID3D11DeviceContext* c) {
 // 042's shots, flight-unit effects) are kept and only logged.
 ID3D11Resource* s_refractionCopy;  // this frame's normal screen copy (t10 at the first effect draw)
 bool s_sawEffect;
-unsigned s_filterSkips;
+uint32_t s_filterSkips;
 DWORD s_filterReportTick;
 bool s_filterLogged;
-// The low-health effect's pixel shaders (FNV-1a of the bytecode, low 32 bits): grey, ripples, blur,
-// and two more drawn with them.
-const uint32_t kLowHealthShaders[] = {0x86575858, 0x833497f9, 0xcebc6f6d, 0x8b838343, 0x32c5d826};
+
+constexpr uint32_t kLowHealthShaders[] = {0x86575858, 0x833497f9, 0xcebc6f6d, 0x8b838343, 0x32c5d826};
 uint32_t s_keptLogged[16];
-int s_keptCount;
+int32_t s_keptCount;
 
 bool LowHealthShader(uint64_t hash) {
 	for (uint32_t known : kLowHealthShaders)
@@ -93,7 +88,7 @@ bool LowHealthShader(uint64_t hash) {
 // Which effect shaders were skipped, for the minute report (bytecode hash, count).
 struct Skipped {
 	uint64_t hash;
-	unsigned count;
+	uint32_t count;
 	UINT slot;
 };
 Skipped s_skipped[8];
@@ -112,14 +107,12 @@ void NoteSkip(uint64_t hash, UINT slot) {
 }
 
 ID3D11Resource* BoundResource(ID3D11DeviceContext* c, UINT slot) {
-	ID3D11ShaderResourceView* view = nullptr;
+	ComPtr<ID3D11ShaderResourceView> view;
 	c->PSGetShaderResources(slot, 1, &view);
 	if (!view) return nullptr;
-	ID3D11Resource* res = nullptr;
+	ComPtr<ID3D11Resource> res;
 	view->GetResource(&res);
-	view->Release();
-	if (res) res->Release();  // still bound: stays alive for this draw
-	return res;
+	return res.Get();
 }
 
 bool Tex2D(ID3D11Resource* res, D3D11_TEXTURE2D_DESC* desc) {
@@ -149,12 +142,11 @@ bool GameEffectsBeforeDraw(ID3D11DeviceContext* c, PixelShaderClass ps) {
 	}
 	// ambient occlusion off: instead of the SAO pass, its output is cleared to 1 (no occlusion)
 	if (ps != PS_AMBIENT_OCCLUSION || g_cfg.ambientOcclusion) return false;
-	ID3D11RenderTargetView* rtv = nullptr;
+	ComPtr<ID3D11RenderTargetView> rtv;
 	c->OMGetRenderTargets(1, &rtv, nullptr);
 	if (rtv) {
 		const FLOAT one[4] = {1, 1, 1, 1};
-		c->ClearRenderTargetView(rtv, one);
-		rtv->Release();
+		c->ClearRenderTargetView(rtv.Get(), one);
 	}
 	return true;
 }
@@ -176,22 +168,20 @@ bool GameEffectsSkipEffectDraw(ID3D11DeviceContext* c, uint32_t sampled, uint64_
 		s_refractionCopy = BoundResource(c, 10);
 	}
 	if (g_cfg.lowHealthFx || !StereoActive() || !sampled) return false;
-	ID3D11RenderTargetView* rtv = nullptr;
+	ComPtr<ID3D11RenderTargetView> rtv;
 	c->OMGetRenderTargets(1, &rtv, nullptr);
 	if (!rtv) return false;
-	ID3D11Resource* target = nullptr;
+	ComPtr<ID3D11Resource> target;
 	rtv->GetResource(&target);
-	rtv->Release();
-	if (target) target->Release();
 	D3D11_TEXTURE2D_DESC targetDesc;
-	if (!Tex2D(target, &targetDesc)) return false;
+	if (!Tex2D(target.Get(), &targetDesc)) return false;
 	bool skip = false;
 	UINT hit = 0;
 	for (UINT slot = 0; slot < 32 && !skip; slot++) {
 		if (!(sampled >> slot & 1)) continue;
 		ID3D11Resource* res = BoundResource(c, slot);
 		D3D11_TEXTURE2D_DESC desc;
-		if (!res || res == target || res == s_refractionCopy || !Tex2D(res, &desc)) continue;
+		if (!res || res == target.Get() || res == s_refractionCopy || !Tex2D(res, &desc)) continue;
 		skip = desc.Width == targetDesc.Width && desc.Height == targetDesc.Height && desc.Format == targetDesc.Format;
 		hit = slot;
 	}

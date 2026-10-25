@@ -4,6 +4,8 @@
 // the frame capture, and the game-effect toggles (game_effects.cpp).
 // While replay.cpp plays a frame back, the hooks pass calls straight through.
 #include "render/d3d_hooks.h"
+#include "core/com.h"
+#include <atomic>
 #include "core/config.h"
 #include "core/hook.h"
 #include "core/log.h"
@@ -50,7 +52,7 @@ enum {
 
 ID3D11Device* s_device;
 ID3D11DeviceContext* s_context;
-volatile LONG s_deferredContextCount;
+std::atomic<int32_t> s_deferredContextCount;
 
 typedef void(STDMETHODCALLTYPE* PFN_SetConstantBuffers)(ID3D11DeviceContext*, UINT, UINT, ID3D11Buffer* const*);
 typedef void(STDMETHODCALLTYPE* PFN_SetShader)(ID3D11DeviceContext*, void*, ID3D11ClassInstance* const*, UINT);
@@ -108,8 +110,7 @@ uint32_t s_psSampledSlots;  // texture registers it samples
 uint64_t s_psHash;          // bytecode hash (stable between runs, for the log)
 ComputeShaderClass s_csClass;
 
-// --- hooks -------------------------------------------------------------------------------------
-const RecStage kRecStageOf[4] = {RS_VS, RS_PS, RS_GS, RS_CS};  // by ShaderStage
+constexpr RecStage kRecStageOf[4] = {RS_VS, RS_PS, RS_GS, RS_CS};  // by ShaderStage
 template <int Stage>
 void STDMETHODCALLTYPE H_SetConstantBuffers(ID3D11DeviceContext* c, UINT start, UINT count, ID3D11Buffer* const* buffers) {
 	if (g_replaying) return o_SetConstantBuffers[Stage](c, start, count, buffers);
@@ -305,15 +306,15 @@ void STDMETHODCALLTYPE H_Dispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z
 	if (CaptureRecording(c)) CaptureDispatch(x, y, z);
 	bool runsViewFix = c == s_context && s_csClass != CS_OTHER;
 	if (runsViewFix) {  // the fix's own calls aren't the game's: not recorded (playback runs the fix again)
-		InterlockedIncrement(&g_modCallsInProgress);
+		++g_modCallsInProgress;
 		ViewFixBeforeDispatch(c, s_csClass);
-		InterlockedDecrement(&g_modCallsInProgress);
+		--g_modCallsInProgress;
 	}
 	o_Dispatch(c, x, y, z);
 	if (runsViewFix) {
-		InterlockedIncrement(&g_modCallsInProgress);
+		++g_modCallsInProgress;
 		ViewFixAfterDispatch(c);
-		InterlockedDecrement(&g_modCallsInProgress);
+		--g_modCallsInProgress;
 	}
 }
 
@@ -335,7 +336,7 @@ HRESULT STDMETHODCALLTYPE H_CreateComputeShader(ID3D11Device* device, const void
 HRESULT STDMETHODCALLTYPE H_CreateDeferredContext(ID3D11Device* device, UINT flags, ID3D11DeviceContext** out) {
 	HRESULT hr = o_CreateDeferredContext(device, flags, out);
 	if (device == s_device && SUCCEEDED(hr)) {
-		LONG count = InterlockedIncrement(&s_deferredContextCount);
+		int32_t count = ++s_deferredContextCount;
 		Log("d3d hooks: game created deferred context #%d (multithreaded rendering)", (int)count);
 	}
 	return hr;
@@ -353,8 +354,8 @@ void FrameLatencyTick() {
 	DWORD now = GetTickCount();
 	if (!s_device || (now - lastCheck < 2000 && appliedSetting == g_cfg.maxFrameLatency)) return;
 	lastCheck = now;
-	IDXGIDevice1* dxgiDevice = nullptr;
-	if (FAILED(s_device->QueryInterface(__uuidof(IDXGIDevice1), (void**)&dxgiDevice)) || !dxgiDevice) return;
+	ComPtr<IDXGIDevice1> dxgiDevice;
+	if (FAILED(s_device->QueryInterface(__uuidof(IDXGIDevice1), &dxgiDevice)) || !dxgiDevice) return;
 	UINT current = 0;
 	dxgiDevice->GetMaximumFrameLatency(&current);
 	if (!gameDefault) gameDefault = current ? current : 3;
@@ -373,12 +374,11 @@ void FrameLatencyTick() {
 			g_cfg.maxFrameLatency ? "" : ": the game's own");
 	}
 	appliedSetting = g_cfg.maxFrameLatency;
-	dxgiDevice->Release();
 }
 
 void D3dHooksInstall(ID3D11Device* gameDevice) {
-	static volatile LONG installed = 0;
-	if (InterlockedCompareExchange(&installed, 1, 0) != 0) return;
+	static std::atomic<bool> installed = false;
+	if (installed.exchange(true)) return;
 	if (!g_cfg.probe) Log("frame capture key disabled ([Debug] Probe=0)");
 	s_device = gameDevice;
 	gameDevice->GetImmediateContext(&s_context);  // keep the reference: lives as long as the game's device

@@ -3,10 +3,13 @@
 // written to NieRVR_capture_N.bin, and likely projection matrices are summarised in the log.
 // tools/analyze_capture.py reads the file.
 #include "debug/frame_capture.h"
+#include "core/com.h"
+#include "core/locks.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "core/main.h"
 #include "core/pure.h"
+#include <atomic>
 #include <stdio.h>
 #include <string.h>
 
@@ -36,17 +39,17 @@ struct RecordHeader {
 
 ID3D11Device* s_device;
 ID3D11DeviceContext* s_context;
-volatile bool s_capturing;
+std::atomic<bool> s_capturing;
 bool s_armed;
 bool s_keyWasDown;
-unsigned s_captureIndex;
+uint32_t s_captureIndex;
 SRWLOCK s_recordLock = SRWLOCK_INIT;
 uint8_t* s_records;
 size_t s_recordsUsed, s_recordsCap;
 bool s_overflow;
 
 void EmitRecord(uint16_t type, const void* head, uint32_t headLen, const void* body = nullptr, uint32_t bodyLen = 0) {
-	AcquireSRWLockExclusive(&s_recordLock);
+	ExclusiveLock guard(&s_recordLock);
 	size_t total = sizeof(RecordHeader) + headLen + bodyLen;
 	if (!s_records || s_recordsUsed + total > s_recordsCap) {
 		s_overflow = true;
@@ -57,7 +60,6 @@ void EmitRecord(uint16_t type, const void* head, uint32_t headLen, const void* b
 		if (bodyLen) memcpy(s_records + s_recordsUsed + sizeof(header) + headLen, body, bodyLen);
 		s_recordsUsed += total;
 	}
-	ReleaseSRWLockExclusive(&s_recordLock);
 }
 
 // Constant buffers seen this frame: kept alive (AddRef) until the frame is written.
@@ -65,9 +67,9 @@ struct SeenBuffer {
 	ID3D11Buffer* buf;
 	bool hasData;
 };
-const int kMaxSeen = 8192;
+constexpr int32_t kMaxSeen = 8192;
 SeenBuffer s_seen[kMaxSeen];
-int s_seenCount;
+int32_t s_seenCount;
 
 SeenBuffer* FindSeen(ID3D11Buffer* buffer) {
 	for (int i = 0; i < s_seenCount; i++)
@@ -76,7 +78,7 @@ SeenBuffer* FindSeen(ID3D11Buffer* buffer) {
 }
 void AddSeen(ID3D11Buffer* buffer, bool withData) {
 	if (!buffer) return;
-	AcquireSRWLockExclusive(&s_recordLock);
+	ExclusiveLock guard(&s_recordLock);
 	SeenBuffer* seen = FindSeen(buffer);
 	if (!seen && s_seenCount < kMaxSeen) {
 		seen = &s_seen[s_seenCount++];
@@ -85,7 +87,6 @@ void AddSeen(ID3D11Buffer* buffer, bool withData) {
 		buffer->AddRef();
 	}
 	if (seen && withData) seen->hasData = true;
-	ReleaseSRWLockExclusive(&s_recordLock);
 }
 
 // Buffers currently mapped (Map .. Unmap) during the capture.
@@ -118,26 +119,25 @@ template <typename View>
 void DescribeView(View* view, ViewRecord* record) {
 	*record = {};
 	if (!view) return;
-	ID3D11Resource* res = nullptr;
+	ComPtr<ID3D11Resource> res;
 	view->GetResource(&res);
 	if (!res) return;
-	record->res = (uint64_t)(uintptr_t)res;
+	record->res = (uint64_t)(uintptr_t)res.Get();
 	D3D11_RESOURCE_DIMENSION dim;
 	res->GetType(&dim);
 	record->dim = (uint32_t)dim;
 	if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
 		D3D11_TEXTURE2D_DESC desc;
-		((ID3D11Texture2D*)res)->GetDesc(&desc);
+		((ID3D11Texture2D*)res.Get())->GetDesc(&desc);
 		record->w = desc.Width;
 		record->h = desc.Height;
 		record->fmt = desc.Format;
 	} else if (dim == D3D11_RESOURCE_DIMENSION_BUFFER) {
 		D3D11_BUFFER_DESC desc;
-		((ID3D11Buffer*)res)->GetDesc(&desc);
+		((ID3D11Buffer*)res.Get())->GetDesc(&desc);
 		record->w = desc.ByteWidth;
 		record->h = desc.StructureByteStride;
 	}
-	res->Release();
 }
 // NieR binds pixel shader resources many slots at a time (more than 16), so long calls go out in
 // chunks of 16, without the trailing empty slots.
@@ -172,16 +172,15 @@ void ReadbackUnseenBuffers(int* readbacks) {
 		desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 		desc.MiscFlags = 0;
 		desc.StructureByteStride = 0;
-		ID3D11Buffer* staging = nullptr;
+		ComPtr<ID3D11Buffer> staging;
 		if (FAILED(s_device->CreateBuffer(&desc, nullptr, &staging))) continue;
-		s_context->CopyResource(staging, seen.buf);
+		s_context->CopyResource(staging.Get(), seen.buf);
 		D3D11_MAPPED_SUBRESOURCE mapped;
-		if (SUCCEEDED(s_context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+		if (SUCCEEDED(s_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
 			EmitCbData(seen.buf, desc.ByteWidth, 2, mapped.pData, desc.ByteWidth);
-			s_context->Unmap(staging, 0);
+			s_context->Unmap(staging.Get(), 0);
 			(*readbacks)++;
 		}
-		staging->Release();
 	}
 }
 
@@ -200,10 +199,10 @@ void Summarise() {
 		uint64_t buf;
 		uint32_t offset;
 		pure::ProjInfo p;
-		unsigned draws;
+		uint32_t draws;
 	} candidates[24];
 	int candidateCount = 0;
-	unsigned draws = 0, cbData = 0, targetChanges = 0, dispatches = 0;
+	uint32_t draws = 0, cbData = 0, targetChanges = 0, dispatches = 0;
 	for (size_t pos = 0; pos + sizeof(RecordHeader) <= s_recordsUsed;) {
 		RecordHeader header;
 		memcpy(&header, s_records + pos, sizeof(header));
@@ -391,25 +390,25 @@ void CaptureDraw(uint8_t kind, UINT arg0, UINT arg1, UINT arg2) {
 }
 
 void CaptureMap(ID3D11Resource* buffer, void* data, UINT size) {
-	AcquireSRWLockExclusive(&s_recordLock);
+	ExclusiveLock guard(&s_recordLock);
 	for (auto& e : s_mapped)
 		if (!e.res) {
 			e = {buffer, data, size};
 			break;
 		}
-	ReleaseSRWLockExclusive(&s_recordLock);
 }
 
 void CaptureUnmap(ID3D11Resource* buffer) {
 	MappedBuffer found = {};
-	AcquireSRWLockExclusive(&s_recordLock);
-	for (auto& e : s_mapped)
-		if (e.res == buffer) {
-			found = e;
-			e.res = nullptr;
-			break;
-		}
-	ReleaseSRWLockExclusive(&s_recordLock);
+	{
+		ExclusiveLock guard(&s_recordLock);
+		for (auto& e : s_mapped)
+			if (e.res == buffer) {
+				found = e;
+				e.res = nullptr;
+				break;
+			}
+	}
 	if (found.res && found.data) EmitCbData((ID3D11Buffer*)buffer, found.size, 0, found.data, found.size);
 }
 
@@ -426,29 +425,27 @@ void CaptureSetRenderTargets(UINT count, ID3D11RenderTargetView* const* rtvs, ID
 	ID3D11View* view = (count && rtvs && rtvs[0]) ? (ID3D11View*)rtvs[0] : (ID3D11View*)dsv;
 	if (count && rtvs) record.rtv0 = (uint64_t)(uintptr_t)rtvs[0];
 	if (view) {
-		ID3D11Resource* res = nullptr;
+		ComPtr<ID3D11Resource> res;
 		view->GetResource(&res);
 		D3D11_RESOURCE_DIMENSION dim;
 		if (res) {
 			res->GetType(&dim);
 			if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
 				D3D11_TEXTURE2D_DESC desc;
-				((ID3D11Texture2D*)res)->GetDesc(&desc);
+				((ID3D11Texture2D*)res.Get())->GetDesc(&desc);
 				record.w = desc.Width;
 				record.h = desc.Height;
 				record.fmt = desc.Format;
 			}
 			// record resources (not views), so render targets can be matched with later SRV reads
-			if (count && rtvs && rtvs[0]) record.rtv0 = (uint64_t)(uintptr_t)res;
-			res->Release();
+			if (count && rtvs && rtvs[0]) record.rtv0 = (uint64_t)(uintptr_t)res.Get();
 		}
 	}
 	if (dsv) {
-		ID3D11Resource* depthRes = nullptr;
+		ComPtr<ID3D11Resource> depthRes;
 		dsv->GetResource(&depthRes);
 		if (depthRes) {
-			record.dsv = (uint64_t)(uintptr_t)depthRes;
-			depthRes->Release();
+			record.dsv = (uint64_t)(uintptr_t)depthRes.Get();
 		}
 	}
 	EmitRecord(R_SET_RT, &record, sizeof(record));

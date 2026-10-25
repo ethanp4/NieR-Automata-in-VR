@@ -1,11 +1,14 @@
 // log.cpp - thread-safe, crash-tolerant log file (NieRVR.log).
 #include "core/log.h"
+#include "core/locks.h"
 #include "core/config.h"
 #include <stdio.h>
 
-static HANDLE s_logFile = INVALID_HANDLE_VALUE;
-static CRITICAL_SECTION s_logLock;
-static LARGE_INTEGER s_qpcFrequency, s_qpcStart;
+namespace {
+HANDLE s_logFile = INVALID_HANDLE_VALUE;
+CRITICAL_SECTION s_logLock;
+LARGE_INTEGER s_qpcFrequency, s_qpcStart;
+}  // namespace
 
 void LogOpen(const wchar_t* path) {
 	InitializeCriticalSection(&s_logLock);
@@ -25,19 +28,24 @@ void LogOpen(const wchar_t* path) {
 							FILE_ATTRIBUTE_NORMAL, nullptr);
 }
 
+double NowMs() {
+	LARGE_INTEGER now;
+	QueryPerformanceCounter(&now);
+	return (double)(now.QuadPart - s_qpcStart.QuadPart) * 1000.0 / (double)s_qpcFrequency.QuadPart;
+}
+
 Utf8::Utf8(const wchar_t* text) {
 	s[0] = 0;
 	if (text && !WideCharToMultiByte(CP_UTF8, 0, text, -1, s, sizeof(s), nullptr, nullptr)) s[sizeof(s) - 1] = 0;
 }
 
-static void LogWrite(const char* fmt, va_list args) {
+namespace {
+void LogWrite(const char* fmt, va_list args) {
 	if (s_logFile == INVALID_HANDLE_VALUE) return;
 	char line[2048];
 	SYSTEMTIME time;
 	GetLocalTime(&time);
-	LARGE_INTEGER now;
-	QueryPerformanceCounter(&now);
-	double secs = (double)(now.QuadPart - s_qpcStart.QuadPart) / (double)s_qpcFrequency.QuadPart;
+	double secs = NowMs() / 1000;
 	int stampLen = snprintf(line, sizeof(line), "%02d:%02d:%02d.%03d [%9.3f] [t%5u] ", time.wHour, time.wMinute, time.wSecond,
 							time.wMilliseconds, secs, (unsigned)GetCurrentThreadId());
 	if (stampLen > (int)sizeof(line) - 3) stampLen = (int)sizeof(line) - 3;
@@ -47,11 +55,11 @@ static void LogWrite(const char* fmt, va_list args) {
 	if (total > (int)sizeof(line) - 3) total = (int)sizeof(line) - 3;
 	line[total++] = '\r';
 	line[total++] = '\n';
-	EnterCriticalSection(&s_logLock);
+	SectionLock guard(&s_logLock);
 	DWORD written;
 	WriteFile(s_logFile, line, (DWORD)total, &written, nullptr);
-	LeaveCriticalSection(&s_logLock);
 }
+}  // namespace
 
 void Log(const char* fmt, ...) {
 	va_list ap;
@@ -68,8 +76,8 @@ void LogV(const char* fmt, ...) {
 	va_end(ap);
 }
 
-bool LogBudget(volatile LONG* counter, LONG max) {
-	LONG count = InterlockedIncrement(counter);
+bool LogBudget(std::atomic<int32_t>& counter, int32_t max) {
+	int32_t count = ++counter;
 	if (count == max) Log("(the next message repeats; further repeats are suppressed)");
 	return count <= max;
 }

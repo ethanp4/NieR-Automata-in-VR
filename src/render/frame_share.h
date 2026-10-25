@@ -3,26 +3,27 @@
 // own device); the game thread asks for a size/format and opens whatever the VR thread publishes.
 #pragma once
 #include <d3d11.h>
+#include <stdint.h>
 
 struct FrameTag {          // what a captured game frame shows
-	int eye;               // 0 left, 1 right, -1 mono
+	int32_t eye;           // 0 left, 1 right, -1 mono
 	bool patched;          // the camera was rewritten for that eye
 	bool hasScene;         // a scene-only (no UI) image was captured too
 	float pos[3], rot[4];  // eye pose (LOCAL) it was rendered from
 	float tanHalfW, tanHalfH;
-	unsigned pairId;     // Synchronized: left and right image of one game frame share it (0 = single)
-	bool noUI;           // drawn without UI (the replayed second eye): don't key the HUD from it
-	bool hasWorld;       // worldRot is valid (the scene camera was patched)
-	float worldRot[4];   // game-world orientation of LOCAL space for this frame (eye sync)
-	long long poseBase;  // StereoShared::poseBase of the pose it was rendered with (0 = unknown)
+	uint32_t pairId;    // Synchronized: left and right image of one game frame share it (0 = single)
+	bool noUI;          // drawn without UI (the replayed second eye): don't key the HUD from it
+	bool hasWorld;      // worldRot is valid (the scene camera was patched)
+	float worldRot[4];  // game-world orientation of LOCAL space for this frame (eye sync)
+	int64_t poseBase;   // StereoShared::poseBase of the pose it was rendered with (0 = unknown)
 };
 
-const int kRingSize = 8;  // capture ring slots (Synchronized pushes two images per game frame)
+constexpr int32_t kRingSize = 8;  // capture ring slots (Synchronized pushes two images per game frame)
 
 struct FrameShare {
 	CRITICAL_SECTION lock;
 	// request: written by the game thread (under lock)
-	LONG requestGen;  // bumps whenever the request changes
+	int32_t requestGen;  // bumps whenever the request changes
 	UINT requestW, requestH;
 	UINT requestSceneW, requestSceneH;  // the scene-only images: larger than the frame when upscaling
 	bool requestKey;                    // upscaling: also the scene images before upscaling (ringKey)
@@ -35,15 +36,15 @@ struct FrameShare {
 	HANDLE ringScene[kRingSize];  // and scene-only (no UI) frames
 	HANDLE ringKey[kRingSize];    // upscaling: the scene-only frames before upscaling (the HUD is cut out
 								  // against these, which match the full frames pixel for pixel); else null
-	LONG ringGen;        // bumps whenever a new ring is published
-	LONG forRequestGen;  // the request this ring answers
+	int32_t ringGen;        // bumps whenever a new ring is published
+	int32_t forRequestGen;  // the request this ring answers
 	// completed frames, published by the game thread (under lock) once the GPU finished the copy
 	struct Published {
-		LONG seq;  // 0 = none yet
-		int slot;  // ring index
+		int32_t seq;      // 0 = none yet
+		int32_t slot;  // ring index
 		FrameTag tag;
 	} latest[3];   // [0] left eye, [1] right eye, [2] mono
-	LONG lastSeq;  // last sequence number handed out
+	int32_t lastSeq;  // last sequence number handed out
 	// GPU that runs the game
 	LUID gameLuid;
 	bool gameLuidValid;

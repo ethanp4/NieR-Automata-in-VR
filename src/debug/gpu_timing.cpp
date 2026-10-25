@@ -1,5 +1,6 @@
 // gpu_timing.cpp - every 5 s, one frame's GPU time pass by pass (timestamp queries), for the log and the Info page.
 #include "debug/gpu_timing.h"
+#include "core/com.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "ui/menu.h"
@@ -8,17 +9,17 @@
 #include <string.h>
 
 namespace {
-const int kMaxMarks = 320;
+constexpr int32_t kMaxMarks = 320;
 struct Mark {
 	char label[56];
-	unsigned draws;
-	LONGLONG cpu;
+	uint32_t draws;
+	double cpuMs;  // NowMs() at the mark
 };
 struct Frame {
 	ID3D11Query* disjoint;
 	ID3D11Query* timestamps[kMaxMarks];
 	Mark marks[kMaxMarks];
-	int markCount;
+	int32_t markCount;
 	bool pending;
 };
 Frame s_frame;
@@ -26,7 +27,7 @@ bool s_active, s_initDone, s_failed;
 DWORD s_lastStartTick;
 ID3D11DeviceContext* s_context;
 char s_lastLabel[56];
-unsigned s_depthKeys[4];
+uint32_t s_depthKeys[4];
 
 const char* DepthFormatName(DXGI_FORMAT format) {
 	switch (format) {
@@ -45,14 +46,13 @@ const char* DepthFormatName(DXGI_FORMAT format) {
 bool CreateQueries(ID3D11DeviceContext* c) {
 	if (s_initDone) return !s_failed;
 	s_initDone = true;
-	ID3D11Device* device = nullptr;
+	ComPtr<ID3D11Device> device;
 	c->GetDevice(&device);
 	if (!device) return !(s_failed = true);
 	D3D11_QUERY_DESC desc = {D3D11_QUERY_TIMESTAMP_DISJOINT, 0};
 	HRESULT hr = device->CreateQuery(&desc, &s_frame.disjoint);
 	desc.Query = D3D11_QUERY_TIMESTAMP;
 	for (int i = 0; i < kMaxMarks && SUCCEEDED(hr); i++) hr = device->CreateQuery(&desc, &s_frame.timestamps[i]);
-	device->Release();
 	if (FAILED(hr)) {
 		s_failed = true;
 		Log("gpu timing: queries unavailable (0x%08x)", (unsigned)hr);
@@ -65,18 +65,18 @@ bool CreateQueries(ID3D11DeviceContext* c) {
 void DescribeTarget(ID3D11View* view, char* out, size_t cap, ID3D11DepthStencilView* dsv) {
 	out[0] = 0;
 	if (!view) return;
-	ID3D11Resource* res = nullptr;
+	ComPtr<ID3D11Resource> res;
 	view->GetResource(&res);
 	if (!res) return;
 	D3D11_RESOURCE_DIMENSION dim;
 	res->GetType(&dim);
 	if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
 		D3D11_TEXTURE2D_DESC desc;
-		((ID3D11Texture2D*)res)->GetDesc(&desc);
+		((ID3D11Texture2D*)res.Get())->GetDesc(&desc);
 		snprintf(out, cap, "%ux%u f%d", desc.Width, desc.Height, (int)desc.Format);
 		// depth buffer details, once per size (for the depth-based eye correction)
 		if (dsv && (ID3D11View*)dsv == view && desc.Width >= 640) {
-			unsigned key = desc.Width * 7919u + desc.Height;
+			uint32_t key = desc.Width * 7919u + desc.Height;
 			int slot = -1;
 			for (int i = 0; i < 4 && slot < 0; i++)
 				if (s_depthKeys[i] == key) slot = -2;
@@ -92,7 +92,6 @@ void DescribeTarget(ID3D11View* view, char* out, size_t cap, ID3D11DepthStencilV
 			}
 		}
 	}
-	res->Release();
 }
 }  // namespace
 
@@ -113,9 +112,7 @@ void GpuTimingMark(ID3D11DeviceContext* c, const char* label) {
 	Mark& mark = s_frame.marks[s_frame.markCount];
 	snprintf(mark.label, sizeof(mark.label), "%s", label);
 	mark.draws = 0;
-	LARGE_INTEGER now;
-	QueryPerformanceCounter(&now);
-	mark.cpu = now.QuadPart;
+	mark.cpuMs = NowMs();
 	c->End(s_frame.timestamps[s_frame.markCount]);
 	s_frame.markCount++;
 	snprintf(s_lastLabel, sizeof(s_lastLabel), "%s", label);
@@ -169,14 +166,11 @@ void GpuTimingPoll(ID3D11DeviceContext* c) {
 	s_frame.pending = false;
 	if (disjoint.Disjoint || !disjoint.Frequency || s_frame.markCount < 2) return;
 	double toMs = 1000.0 / (double)disjoint.Frequency;
-	LARGE_INTEGER qpcFrequency;
-	QueryPerformanceFrequency(&qpcFrequency);
-	double cpuToMs = 1000.0 / (double)qpcFrequency.QuadPart;
 	double giMs = 0;
 	int giCount = 0;
 	// segments: mark i lasts until mark i+1
 	struct Seg {
-		int mark;
+		int32_t mark;
 		double ms;
 	} segs[kMaxMarks];
 	int segCount = 0;
@@ -204,7 +198,7 @@ void GpuTimingPoll(ID3D11DeviceContext* c) {
 				segs[x] = segs[y];
 				segs[y] = swap;
 			}
-	double cpuTotal = (double)(s_frame.marks[s_frame.markCount - 1].cpu - s_frame.marks[0].cpu) * cpuToMs;
+	double cpuTotal = s_frame.marks[s_frame.markCount - 1].cpuMs - s_frame.marks[0].cpuMs;
 	Log("gpu timing: frame %.2f ms on the GPU (%.2f ms of CPU time between the first and last mark): left eye scene "
 		"%.2f, UI + final %.2f, right eye replay %.2f (depth-only passes in it %.2f); GI volumes pass %.2f ms (%d x, "
 		"GIVolumes=%d); %d passes",
@@ -216,7 +210,7 @@ void GpuTimingPoll(ID3D11DeviceContext* c) {
 	for (int k = 0; k < segCount && k < 10; k++) {
 		const Mark& mark = s_frame.marks[segs[k].mark];
 		// CPU time to the next mark: when it is as long as the GPU time, the GPU was waiting for the game
-		double cpu = (double)(s_frame.marks[segs[k].mark + 1].cpu - mark.cpu) * cpuToMs;
+		double cpu = s_frame.marks[segs[k].mark + 1].cpuMs - mark.cpuMs;
 		Log("gpu timing:   %6.2f ms  %-44s %4u draws  (CPU %.2f ms)", segs[k].ms, mark.label, mark.draws, cpu);
 		if (k < 5) {
 			snprintf(info, sizeof(info), "  %.2f ms  %s (%u draws)", segs[k].ms, mark.label, mark.draws);

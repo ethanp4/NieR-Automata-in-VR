@@ -8,6 +8,7 @@
 // using the headset's eye pose (relative to the recentred reference) on top of the game camera.
 // See DEVELOPMENT.md and tools/analyze_capture.py for how these were found.
 #include "render/camera.h"
+#include "core/locks.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "core/pure.h"
@@ -15,6 +16,7 @@
 #include "render/frame_share.h"
 #include "render/replay.h"
 #include "render/upscale.h"
+#include <atomic>
 #include <string.h>
 
 StereoShared g_stereo;
@@ -23,15 +25,15 @@ namespace {
 
 struct FrameState {
 	bool active;      // this frame renders an eye
-	int eye;          // 0 left, 1 right
+	int32_t eye;      // 0 left, 1 right
 	pure::M4 eyeRel;  // eye pose relative to the reference (metres)
 	float halfW, halfH;
 	float localPos[3], localRot[4];  // eye pose in LOCAL space, for submission
 	bool patchedScene, patchedCam;
-	bool observe;        // stereo is held off only by TopDownFlat: watch the game camera's pitch, don't patch
-	float ipd;           // distance between the two eye positions of the same head pose (metres)
-	float refRot[4];     // the reference (recentre) orientation this frame was rendered with
-	long long poseBase;  // g_stereo.poseBase of the head pose used
+	bool observe;      // stereo is held off only by TopDownFlat: watch the game camera's pitch, don't patch
+	float ipd;         // distance between the two eye positions of the same head pose (metres)
+	float refRot[4];   // the reference (recentre) orientation this frame was rendered with
+	int64_t poseBase;  // g_stereo.poseBase of the head pose used
 };
 FrameState s_frame;
 FrameState s_rightEyeFrame;
@@ -39,7 +41,7 @@ FrameState s_rightEyeFrame;
 // camera. Ce = eye-to-world, Pe = its projection, E = eye relative to the camera (scaled).
 struct EyeShot {
 	bool valid;
-	unsigned frameNo;
+	uint32_t frameNo;
 	pure::M4 Ce, Pe, E;
 	float localPos[3], localRot[4], halfW, halfH;
 };
@@ -48,14 +50,14 @@ EyeShot s_lastShot[2];  // Synchronized: the right eye, same head pose, for the 
 // motion vectors. Pe without the sub-pixel jitter, which is kept apart (render pixels).
 struct UpscaleCamera {
 	bool valid;
-	unsigned frameNo;
+	uint32_t frameNo;
 	pure::M4 Ce, Pe;
 	float jitter[2];
 };
 UpscaleCamera s_upscaleCams[2][2];
 bool s_synchronized;  // this frame: left eye live, right eye replayed
 bool s_secondEye;     // the replay is running (s_frame = the right eye)
-unsigned s_frameNo;
+uint32_t s_frameNo;
 float s_backbufferAspect = 16.f / 9.f;
 pure::M4 s_lastCam;      // camera used for the last eye (after levelling), camera-to-world
 pure::M4 s_lastGameCam;  // the game's own camera, camera-to-world
@@ -69,8 +71,8 @@ float s_lastCameraOffset[3];       // world-space offset applied for CameraDolly
 bool s_haveCamera;
 bool s_loggedSteep;
 // TopDownFlat: the game camera's pitch, once per frame, with hysteresis (about 1 s each way).
-unsigned s_pitchFrame;
-int s_steepFrames, s_levelFrames;
+uint32_t s_pitchFrame;
+int32_t s_steepFrames, s_levelFrames;
 bool s_topDownFlat;
 float s_lastPitch;
 
@@ -86,11 +88,11 @@ void NotePitch(float pitch) {
 	s_levelFrames = steepness < g_cfg.topDownUntil ? s_levelFrames + 1 : 0;
 }
 // Simple scenes (the title screen: ~90 draws per frame vs 1000+ in gameplay) are shown flat.
-volatile LONG s_drawsThisFrame;
-int s_simpleFrames, s_fullFrames;
+std::atomic<int32_t> s_drawsThisFrame;
+int32_t s_simpleFrames, s_fullFrames;
 bool s_simpleScene;
 float s_loggedSeparation;
-volatile LONG s_separationLogs;
+std::atomic<int32_t> s_separationLogs;
 bool s_loggedFirstPatch, s_loggedMismatch;
 
 enum BufferKind {
@@ -120,7 +122,7 @@ pure::M4 LoadMatrix(const float* floats) {
 
 // First person (prototype): this frame's camera stands at the game camera's look-at target.
 bool s_firstPerson;
-unsigned s_fpOwnLookAt, s_fpNewestLookAt, s_fpNoLookAt;
+uint32_t s_fpOwnLookAt, s_fpNewestLookAt, s_fpNoLookAt;
 DWORD s_fpReportTick;
 bool s_loggedFirstPerson;
 
@@ -217,7 +219,7 @@ void PatchScene(float* data) {
 	{
 		float sep = s_frame.ipd * WorldScale();
 		if (sep > 0 && (s_loggedSeparation <= 0 || sep > s_loggedSeparation * 1.02f || sep < s_loggedSeparation / 1.02f) &&
-			LogBudget(&s_separationLogs, 60)) {
+			LogBudget(s_separationLogs, 60)) {
 			s_loggedSeparation = sep;
 			Log("stereo: eye separation in the game world now %.2f cm (world scale %.3f)", (double)(sep * 100),
 				(double)WorldScale());
@@ -225,10 +227,9 @@ void PatchScene(float* data) {
 	}
 	{
 		pure::M4 rel = pure::m4_relative(C, Ce);
-		AcquireSRWLockExclusive(&s_headRelLock);
+		ExclusiveLock guard(&s_headRelLock);
 		s_headRel = rel;
 		s_headRelTick = GetTickCount();
-		ReleaseSRWLockExclusive(&s_headRelLock);
 	}
 	pure::M4 Ve = pure::m4_rigid_inverse(Ce);
 	pure::M4 Pe = pure::m4_symmetric_projection(P, s_frame.halfW, s_frame.halfH);
@@ -311,8 +312,9 @@ void StereoSetAspect(float aspect) {
 
 void StereoCountDraw() { s_drawsThisFrame++; }
 
+namespace {
 // The eye's pose and frustum for this frame (g_stereo.lock held, shared).
-static void FillEye(FrameState& frame, int eyeIndex) {
+void FillEye(FrameState& frame, int eyeIndex) {
 	frame.eye = eyeIndex;
 	pure::M4 ref = pure::m4_from_pose({g_stereo.refRot[0], g_stereo.refRot[1], g_stereo.refRot[2], g_stereo.refRot[3]},
 									  {g_stereo.refPos[0], g_stereo.refPos[1], g_stereo.refPos[2]});
@@ -355,13 +357,13 @@ static void FillEye(FrameState& frame, int eyeIndex) {
 	frame.halfW *= g_cfg.fovScale;
 	frame.halfH *= g_cfg.fovScale;
 }
+}  // namespace
 
 // Called right after the game's Present: decides what the next frame renders.
 void StereoBeginFrame() {
 	s_frameNo++;
 	{
-		LONG draws = s_drawsThisFrame;
-		s_drawsThisFrame = 0;
+		int32_t draws = s_drawsThisFrame.exchange(0);
 		bool simple = g_cfg.flatBelowDraws > 0 && draws < g_cfg.flatBelowDraws;
 		s_simpleFrames = simple ? s_simpleFrames + 1 : 0;
 		s_fullFrames = simple ? 0 : s_fullFrames + 1;

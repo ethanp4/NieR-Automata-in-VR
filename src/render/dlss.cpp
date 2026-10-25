@@ -1,23 +1,9 @@
-// dlss.cpp - NVIDIA DLSS (Super Resolution) on the game's D3D11 device.
-//
-// NVIDIA's SDK libraries are built for MSVC, so the mod doesn't link them: the driver's own NGX
-// loader (_nvngx.dll, found through the registry) exports the plain C functions the SDK library would
-// call, and those are used directly. They load nvngx_dlss.dll (the DLSS model) from the game's folder.
-//
-// Settings go into an NVSDK_NGX_Parameter, a C++ interface implemented by the driver. Its methods are
-// called by their slot in the vtable; MSVC stores overloaded virtual functions in reverse order, so
-// the slots are (tested on an RTX 2070, driver 2026-07):
-//   0-7 Set(void*, ID3D12Resource*, ID3D11Resource*, int, unsigned, double, float, unsigned long long)
-//   8-15 Get(the same, as pointers), 16 Reset.
-// Parameter names and values are NVIDIA's (nvsdk_ngx_defs.h in the DLSS SDK).
-//
-// nvngx_dlss.dll isn't shipped with the mod (NVIDIA's licence doesn't fit a GPL release): the menu
-// downloads it from NVIDIA's GitHub into the game's folder (DlssFileDownload, a background thread),
-// with NVIDIA's licence next to it. DLSS starts as soon as it arrives.
 #include "render/dlss.h"
+#include "core/locks.h"
 #include "core/download.h"
 #include "core/log.h"
 #include "core/main.h"
+#include <atomic>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,7 +15,7 @@ bool NgxOk(NgxResult result) { return (result & 0xFFF00000) != 0xBAD00000; }
 struct NgxParams;
 struct NgxFeature;
 
-typedef NgxResult (*PFN_Init_Ext)(unsigned long long appId, const wchar_t* dataPath, ID3D11Device*, int sdkVersion,
+typedef NgxResult (*PFN_Init_Ext)(uint64_t appId, const wchar_t* dataPath, ID3D11Device*, int sdkVersion,
 								  const NgxParams*);
 typedef NgxResult (*PFN_Params)(NgxParams**);
 typedef NgxResult (*PFN_DestroyParams)(NgxParams*);
@@ -38,9 +24,9 @@ typedef NgxResult (*PFN_Eval)(ID3D11DeviceContext*, const NgxFeature*, const Ngx
 typedef NgxResult (*PFN_Release)(NgxFeature*);
 typedef NgxResult (*PFN_Optimal)(NgxParams*);
 
-const int kSdkVersion = 0x15;  // NVSDK_NGX_Version_API (1.5)
-const int kFeatureSuperSampling = 1;
-const unsigned long long kAppId = 0x4E69657252ull;  // any id: the driver accepts custom ones
+constexpr int32_t kSdkVersion = 0x15;  // NVSDK_NGX_Version_API (1.5)
+constexpr int32_t kFeatureSuperSampling = 1;
+constexpr uint64_t kAppId = 0x4E69657252ull;  // any id: the driver accepts custom ones
 
 PFN_Init_Ext s_ngxInit;
 PFN_Params s_ngxGetCapabilities, s_ngxAllocParams;
@@ -51,22 +37,22 @@ PFN_Release s_ngxReleaseFeature;
 
 // The DLSS file: pinned to a commit of github.com/NVIDIA/DLSS, checked by SHA256 (DLSS 310.9.16).
 #define DLSS_COMMIT L"9981c6350dc58c0ce21f024fd65e31e851c31689"
-const wchar_t kDllUrl[] = L"https://github.com/NVIDIA/DLSS/raw/" DLSS_COMMIT L"/lib/Windows_x86_64/rel/nvngx_dlss.dll";
-const char kDllSha[] = "d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e";
-const wchar_t kLicUrl[] = L"https://raw.githubusercontent.com/NVIDIA/DLSS/" DLSS_COMMIT L"/LICENSE.txt";
-const char kLicSha[] = "d4216e39ebef5f9b50a6712ebb37beeb5379862a67733a9999c651f21592aaf0";
-const long long kDllSize = 58956912;
-volatile LONG s_fileGen;  // bumps when a new nvngx_dlss.dll arrives
-LONG s_triedGen = -1;     // s_fileGen when DLSS last tried to start
-volatile LONG s_downloadRunning, s_downloadCancel;
-volatile LONG64 s_downloadGot, s_downloadTotal;
+constexpr wchar_t kDllUrl[] = L"https://github.com/NVIDIA/DLSS/raw/" DLSS_COMMIT L"/lib/Windows_x86_64/rel/nvngx_dlss.dll";
+constexpr char kDllSha[] = "d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e";
+constexpr wchar_t kLicUrl[] = L"https://raw.githubusercontent.com/NVIDIA/DLSS/" DLSS_COMMIT L"/LICENSE.txt";
+constexpr char kLicSha[] = "d4216e39ebef5f9b50a6712ebb37beeb5379862a67733a9999c651f21592aaf0";
+constexpr int64_t kDllSize = 58956912;
+std::atomic<int32_t> s_fileGen;  // bumps when a new nvngx_dlss.dll arrives
+int32_t s_triedGen = -1;     // s_fileGen when DLSS last tried to start
+std::atomic<bool> s_downloadRunning, s_downloadCancel;
+std::atomic<int64_t> s_downloadGot, s_downloadTotal;
 SRWLOCK s_fileLock = SRWLOCK_INIT;
 char s_downloadError[96];  // why the last download failed
 char s_fileVersion[32];    // version of the file in the game's folder (VR thread)
-LONG s_fileVersionGen = -1;
-volatile LONG s_hashRunning;
-volatile LONG s_hashedGen = -1;  // s_fileGen that s_fileMatchesSha is for
-volatile LONG s_fileMatchesSha;  // the file in the game's folder is the one kDllSha names
+int32_t s_fileVersionGen = -1;
+std::atomic<bool> s_hashRunning;
+std::atomic<int32_t> s_hashedGen = -1;  // s_fileGen that s_fileMatchesSha is for
+std::atomic<bool> s_fileMatchesSha;  // the file in the game's folder is the one kDllSha names
 
 // vtable slots (see the top of the file)
 enum { SLOT_PTR = 0,
@@ -77,7 +63,7 @@ enum { SLOT_PTR = 0,
 	   SLOT_GET = 8 };
 template <class F>
 F Method(NgxParams* params, int slot) { return (F)(*(void***)params)[slot]; }
-void SetUint(NgxParams* params, const char* name, unsigned value) { Method<void (*)(NgxParams*, const char*, unsigned)>(params, SLOT_UINT)(params, name, value); }
+void SetUint(NgxParams* params, const char* name, uint32_t value) { Method<void (*)(NgxParams*, const char*, uint32_t)>(params, SLOT_UINT)(params, name, value); }
 void SetInt(NgxParams* params, const char* name, int value) { Method<void (*)(NgxParams*, const char*, int)>(params, SLOT_INT)(params, name, value); }
 void SetFloat(NgxParams* params, const char* name, float value) { Method<void (*)(NgxParams*, const char*, float)>(params, SLOT_FLOAT)(params, name, value); }
 void SetResource(NgxParams* params, const char* name, ID3D11Resource* value) { Method<void (*)(NgxParams*, const char*, ID3D11Resource*)>(params, SLOT_D3D11_RESOURCE)(params, name, value); }
@@ -90,7 +76,7 @@ struct Feature {
 	NgxFeature* handle;
 	NgxParams* params;
 	UINT renderW, renderH, outputW, outputH;
-	int quality, model;
+	int32_t quality, model;
 	bool inverted;
 } s_features[2];
 
@@ -129,9 +115,8 @@ bool DllPresent() {
 }
 
 void SetDownloadError(const char* text) {
-	AcquireSRWLockExclusive(&s_fileLock);
+	ExclusiveLock guard(&s_fileLock);
 	snprintf(s_downloadError, sizeof(s_downloadError), "%s", text);
-	ReleaseSRWLockExclusive(&s_fileLock);
 }
 
 DWORD WINAPI DownloadThread(void*) {
@@ -145,20 +130,20 @@ DWORD WINAPI DownloadThread(void*) {
 	bool movedAside = MoveFileExW(dll, old, MOVEFILE_REPLACE_EXISTING);
 	Log("DLSS: downloading nvngx_dlss.dll from github.com/NVIDIA/DLSS");
 	char err[96] = "";
-	volatile LONG64 licGot = 0, licTotal = 0;
+	std::atomic<int64_t> licGot = 0, licTotal = 0;
 	bool ok = HttpDownload(kLicUrl, lic, kLicSha, &licGot, &licTotal, &s_downloadCancel, err, sizeof(err)) &&
 			  HttpDownload(kDllUrl, dll, kDllSha, &s_downloadGot, &s_downloadTotal, &s_downloadCancel, err, sizeof(err));
 	SetDownloadError(ok || s_downloadCancel ? "" : err);  // a cancel isn't an error
 	Log("DLSS: download %s%s", ok ? "finished (checksum OK)" : "failed: ", ok ? "" : err);
 	if (ok) {
-		s_fileMatchesSha = 1;  // HttpDownload checked it
-		s_hashedGen = InterlockedIncrement(&s_fileGen);
+		s_fileMatchesSha = true;  // HttpDownload checked it
+		s_hashedGen = ++s_fileGen;
 	} else if (movedAside) {
 		MoveFileExW(old, dll, 0);  // keep the file that was there
 	} else if (!DllPresent()) {
 		DeleteFileW(lic);
 	}
-	s_downloadRunning = 0;
+	s_downloadRunning = false;
 	return 0;
 }
 
@@ -170,8 +155,8 @@ DWORD WINAPI HashThread(void* fileGen) {
 	bool matches = FileSha256(dll, hex) && _stricmp(hex, kDllSha) == 0;
 	if (!matches) Log("DLSS: nvngx_dlss.dll isn't the version this mod expects: update available");
 	s_fileMatchesSha = matches;
-	s_hashedGen = (LONG)(INT_PTR)fileGen;
-	s_hashRunning = 0;
+	s_hashedGen = (int32_t)(intptr_t)fileGen;
+	s_hashRunning = false;
 	return 0;
 }
 
@@ -261,7 +246,7 @@ bool DlssPrepare(ID3D11DeviceContext* c, int eye, UINT renderW, UINT renderH, UI
 		return true;
 	ReleaseFeature(feature);
 	if (!NgxOk(s_ngxAllocParams(&feature.params)) || !feature.params) return false;
-	const unsigned preset = model ? 11 /*K, transformer*/ : 5 /*E, CNN*/;
+	const uint32_t preset = model ? 11 /*K, transformer*/ : 5 /*E, CNN*/;
 	static const char* const hints[] = {"DLSS.Hint.Render.Preset.DLAA", "DLSS.Hint.Render.Preset.Quality",
 										"DLSS.Hint.Render.Preset.Balanced", "DLSS.Hint.Render.Preset.Performance",
 										"DLSS.Hint.Render.Preset.UltraPerformance", "DLSS.Hint.Render.Preset.UltraQuality"};
@@ -310,8 +295,8 @@ bool DlssEvaluate(ID3D11DeviceContext* c, int eye, const DlssInputs& inputs) {
 	SetFloat(params, "DLSS.Exposure.Scale", 1);
 	NgxResult result = s_ngxEvaluate(c, feature.handle, params, nullptr);
 	if (!NgxOk(result)) {
-		static volatile LONG budget;
-		if (LogBudget(&budget, 5)) Log("DLSS: evaluate failed for the %s eye (0x%08x)", eye ? "right" : "left", (unsigned)result);
+		static std::atomic<int32_t> budget;
+		if (LogBudget(budget, 5)) Log("DLSS: evaluate failed for the %s eye (0x%08x)", eye ? "right" : "left", (unsigned)result);
 		return false;
 	}
 	return true;
@@ -327,7 +312,8 @@ const char* DlssStatus() { return s_status; }
 // ---- the menu's DLSS file row (VR thread) ----
 void DlssFileGet(DlssFileState* out) {
 	out->got = s_downloadGot;
-	out->total = s_downloadTotal > 0 ? s_downloadTotal : kDllSize;
+	int64_t total = s_downloadTotal;
+	out->total = total > 0 ? total : kDllSize;
 	out->text[0] = 0;
 	if (s_downloadRunning) {
 		out->state = DF_DOWNLOADING;
@@ -341,13 +327,13 @@ void DlssFileGet(DlssFileState* out) {
 		DeleteFileW(old);
 	}
 	if (DllPresent()) {
-		LONG fileGen = s_fileGen;
-		if (s_hashedGen != fileGen && InterlockedCompareExchange(&s_hashRunning, 1, 0) == 0) {
+		int32_t fileGen = s_fileGen;
+		if (s_hashedGen != fileGen && !s_hashRunning.exchange(true)) {
 			HANDLE thread = CreateThread(nullptr, 0, HashThread, (void*)(INT_PTR)fileGen, 0, nullptr);
 			if (thread)
 				CloseHandle(thread);
 			else
-				s_hashRunning = 0;
+				s_hashRunning = false;
 		}
 		bool outdated = s_hashedGen == fileGen && !s_fileMatchesSha;
 		out->state = outdated ? DF_UPDATE_AVAILABLE : DF_INSTALLED;
@@ -363,20 +349,19 @@ void DlssFileGet(DlssFileState* out) {
 		return;
 	}
 	out->state = DF_MISSING;
-	AcquireSRWLockShared(&s_fileLock);
+	SharedLock guard(&s_fileLock);
 	snprintf(out->text, sizeof(out->text), "%s", s_downloadError);  // why the last try failed
-	ReleaseSRWLockShared(&s_fileLock);
 }
 
 void DlssFileDownload() {
-	if (InterlockedCompareExchange(&s_downloadRunning, 1, 0) != 0) return;
-	s_downloadCancel = 0;
+	if (s_downloadRunning.exchange(true)) return;
+	s_downloadCancel = false;
 	s_downloadGot = 0;
 	s_downloadTotal = 0;
 	SetDownloadError("");
 	HANDLE thread = CreateThread(nullptr, 0, DownloadThread, nullptr, 0, nullptr);
 	if (thread) CloseHandle(thread);
-	else s_downloadRunning = 0;
+	else s_downloadRunning = false;
 }
 
-void DlssFileCancel() { s_downloadCancel = 1; }
+void DlssFileCancel() { s_downloadCancel = true; }

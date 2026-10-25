@@ -15,5 +15,3 @@
 - [ ] capture ring race (frame_handoff.cpp PushToRing / xr_device.cpp UpdateContent): the game reuses a ring slot as soon as the ring comes round to it (4-8 game frames), without knowing whether the VR thread has finished copying it; a VR thread stalled that long could show a half-overwritten frame
 
 - [ ] dlss "not supported on this graphics card" (dlss.cpp DlssInit, the "this is busted" TODO): the GetI() results are ignored, so if the Get call itself fails (wrong vtable slot, or NGX rejecting it) `avail` stays 0 and it reports "not supported"; log what GetI returns to tell "not supported" from "couldn't ask"
-
-- [ ] download.cpp: HttpDownload and FileSha256 share one `static char buf[64 KB]` but run on different threads (DownloadThread, HashThread in dlss.cpp); a hash check still running when a download starts can corrupt the downloaded bytes (then caught by the checksum as "the file isn't the expected one")

@@ -21,7 +21,7 @@ struct UiPanel {
 	bool navigation;
 	ImGuiContext* ctx;
 	bool failed;
-	LARGE_INTEGER last;
+	double lastMs;  // NowMs() of the last frame (ImGui wants the time between frames)
 };
 
 bool UiPrepare(UiPanel& p, ID3D11Device* dev, ID3D11DeviceContext* dc, int w, int h);

@@ -1,6 +1,7 @@
 // dlss.h - NVIDIA DLSS through the driver's NGX loader (dlss.cpp), used by upscale.cpp.
 #pragma once
 #include <d3d11.h>
+#include <stdint.h>
 
 struct DlssInputs {
 	ID3D11Resource* color;   // render size, typed format
@@ -31,9 +32,9 @@ enum {
 	DF_UPDATE_AVAILABLE,  // installed, but not the file the mod's SHA256 names
 };
 struct DlssFileState {
-	int state;
-	long long got, total;  // bytes, while downloading
-	char text[96];         // installed: its version; missing: why the last try failed ("" = none)
+	int32_t state;
+	int64_t got, total;  // bytes, while downloading
+	char text[96];       // installed: its version; missing: why the last try failed ("" = none)
 };
 void DlssFileGet(DlssFileState* out);
 void DlssFileDownload();  // starts a background download (licence, then the DLL, checked by SHA256); also redownloads

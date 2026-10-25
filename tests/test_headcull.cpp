@@ -20,7 +20,7 @@ static bool near(const float* a, float x, float y, float z, float e = 1e-3f) {
 }
 int main() {
 	// camera at (10, 2, 5) looking along -z (target 3 units ahead), world up
-	float eye[3] = {10, 2, 5}, target[3] = {10, 2, 2}, up[3] = {0, 1, 0}, t[3], u[3];
+	float eye[3] = {10, 2, 5}, target[3] = {10, 2, 2}, up[3] = {0, 1, 0}, t[3] = {}, u[3] = {};
 	check(pure::head_lookat(eye, target, up, pure::m4_identity(), t, u), "identity ok");
 	check(near(t, 10, 2, 2) && near(u, 0, 1, 0), "identity keeps the look-at");
 	// head turned 90 deg left (yaw +90 about +y): looks along -x

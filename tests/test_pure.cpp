@@ -30,14 +30,14 @@ int main() {
 	for (int k = -17; k <= 18; k++) {
 		float th = k * 0.1745329f * 1.0f;
 		V3 fwd{-sinf(th) * 0.8f, 0.6f, -cosf(th) * 0.8f};
-		Q q;
+		Q q = {};
 		EXPECT(yaw_from_forward(fwd, &q));
 		V3 r = rotate(q, {0, 0, -1});
 		float h = sqrtf(fwd.x * fwd.x + fwd.z * fwd.z);
 		EXPECT(fabsf(r.x - fwd.x / h) < 1e-4f && fabsf(r.z - fwd.z / h) < 1e-4f && fabsf(r.y) < 1e-5f);
 		EXPECT(fabsf(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w - 1) < 1e-4f);
 	}
-	Q q;
+	Q q = {};
 	EXPECT(!yaw_from_forward({0, -1, 0}, &q));
 	// rotate sanity: 90deg about Y maps -Z to -X
 	Q r90{0, sinf(0.785398f), 0, cosf(0.785398f)};
