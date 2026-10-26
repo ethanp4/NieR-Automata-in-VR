@@ -13,6 +13,7 @@ cmake_minimum_required(VERSION 3.20)
 project(NieRVR LANGUAGES C CXX ASM)
 
 option(NIERVR_TESTS "Build the unit tests" ON)
+option(NIERVR_DEBUG_MODULE "Build NieRVR_debug.dll, the hot-reloaded debug tools (src/hot/)" ON)
 # Shown in the menu, the stats overlay and the log. The release workflow passes the tag (v0.6.0 -> 0.6.0).
 set(NIERVR_VERSION "dev" CACHE STRING "Version of this build")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # build/compile_commands.json, for clangd
@@ -49,7 +50,7 @@ file(GLOB_RECURSE NIERVR_SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.S)
 # "missing field initializers" is off: brace-initialising a struct partly (= {a, b}) is used on purpose.
 set(NIERVR_WARNINGS -Wall -Wextra -Wno-missing-field-initializers)
 set_source_files_properties(${NIERVR_SOURCES} PROPERTIES COMPILE_OPTIONS "${NIERVR_WARNINGS}")
-list(FILTER NIERVR_SOURCES EXCLUDE REGEX "/src/gen/")
+list(FILTER NIERVR_SOURCES EXCLUDE REGEX "/src/(gen|hot)/")
 add_library(nier_vr SHARED
 	${NIERVR_SOURCES}
 	src/gen/thunks.S
@@ -92,16 +93,51 @@ target_link_options(nier_vr PRIVATE -static -Wl,--enable-stdcall-fixup -s
 #dynamically linked libraries (included in windows)
 target_link_libraries(nier_vr PRIVATE kernel32 user32 advapi32 winhttp bcrypt)
 
+# NieRVR_debug.dll: the debug tools in src/hot/, reloaded by d3d11.dll whenever it's rebuilt (debug/hot_module.cpp)
+if(NIERVR_DEBUG_MODULE)
+file(GLOB NIERVR_HOT_SOURCES CONFIGURE_DEPENDS src/hot/*.cpp)
+set_source_files_properties(${NIERVR_HOT_SOURCES} PROPERTIES COMPILE_OPTIONS "${NIERVR_WARNINGS}")
+add_library(nier_vr_debug SHARED ${NIERVR_HOT_SOURCES})
+set_target_properties(nier_vr_debug PROPERTIES
+	OUTPUT_NAME NieRVR_debug
+	PREFIX ""
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+	CXX_STANDARD 17
+	CXX_STANDARD_REQUIRED ON
+	CXX_EXTENSIONS OFF)
+target_include_directories(nier_vr_debug PRIVATE src)
+target_compile_definitions(nier_vr_debug PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(nier_vr_debug PRIVATE
+	-O2 -msse4.1 -fno-math-errno -fno-asynchronous-unwind-tables -fno-stack-protector
+	$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti -fno-threadsafe-statics>)
+target_link_options(nier_vr_debug PRIVATE -static -s)
+target_link_libraries(nier_vr_debug PRIVATE kernel32 user32)
+# straight into the game folder, so a build is all it takes to reload it
+if(NOT CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+	add_custom_command(TARGET nier_vr_debug POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:nier_vr_debug> ${CMAKE_INSTALL_PREFIX}
+		VERBATIM)
+endif()
+install(TARGETS nier_vr_debug RUNTIME DESTINATION . COMPONENT debug)
+
+# launch_debug also installs NieRVR_debug.dll (the hot-reloaded tools: turn Probe on)
+add_custom_target(launch_debug
+	COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR}
+	COMMAND cmd /c start steam://rungameid/524220
+	VERBATIM)
+add_dependencies(launch_debug nier_vr nier_vr_debug)
+endif()
+
 # install target
-install(TARGETS nier_vr RUNTIME DESTINATION .)
+install(TARGETS nier_vr RUNTIME DESTINATION . COMPONENT mod)
 if(NIERVR_DLSS)
-	install(FILES ${DLSS_DIR}/nvngx_dlss.dll DESTINATION .)
-	install(FILES ${DLSS_DIR}/LICENSE.txt DESTINATION . RENAME nvngx_dlss_LICENSE.txt)
+	install(FILES ${DLSS_DIR}/nvngx_dlss.dll DESTINATION . COMPONENT mod)
+	install(FILES ${DLSS_DIR}/LICENSE.txt DESTINATION . RENAME nvngx_dlss_LICENSE.txt COMPONENT mod)
 endif()
 
 # launch target will isntall
 add_custom_target(launch
-	COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR}
+	COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --component mod
 	COMMAND cmd /c start steam://rungameid/524220
 	VERBATIM)
 add_dependencies(launch nier_vr)

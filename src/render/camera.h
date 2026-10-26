@@ -34,6 +34,7 @@ int StereoFrameEye();  // the eye this frame renders (-1 = mono)
 bool StereoGameCamera(float pos[3], float fwd[3], float up[3]);
 bool StereoHeadRelative(pure::M4* rel);              // eye pose relative to the game camera (head culling)
 float StereoHeadCullFov(float marginDeg);            // radians; 0 = not known yet
+bool StereoEyeTangents(float* halfW, float* halfH);  // this frame's eye image: tangents of its half-angles (false: mono)
 bool StereoGetViewFix(float T[16], float Tinv[16]);  // game view -> eye view (and back), this frame
 void StereoOnMap(ID3D11Resource* res, void* data, UINT size);
 void StereoBeforeUnmap(ID3D11Resource* res);

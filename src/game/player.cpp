@@ -12,15 +12,17 @@
 namespace {
 constexpr uintptr_t kPlayerPointer = 0x1020948;  // in the exe's own memory
 constexpr uintptr_t kPositionOffset = 0x50;
-constexpr float kSameSpot = 1.5f;       // the object's position this close to the character's bones (metres, each axis)
-constexpr DWORD kAttackFacingMs = 120;  // after an attack button goes down, the facing is set this long
-constexpr float kStillFacing = 0.6f;    // radians: the found facing must still agree with the hips this well to be written
+constexpr float kSameSpot = 1.5f;       // the object's position this close to the character's bones (metres, sideways)
+constexpr float kSameHeight = 3.0f;     // ... and up or down (in the air their bones are well above it)
+constexpr DWORD kAttackFacingMs = 250;  // after an attack button goes down, the facing is set this long (else the game turns them back)
+constexpr float kStillFacing = 0.6f;    // radians: the found facing must agree with the hips this well before an attack's first write
 constexpr DWORD kFinderReportMs = 60000;
 
 bool s_loggedFound, s_loggedMismatch, s_loggedAttackFacing, s_loggedFacingDisagrees;
 pure::FacingFinder s_finder;
 DWORD s_finderReportTick;
 uintptr_t s_finderObject;  // the object the finder looked at (a new one starts it over)
+DWORD s_facedAttack;       // the attack (its button's tick) the facing is being set for
 
 // Returns the player object only when its position matches the character's bones.
 uintptr_t CharacterObject(pure::V3* position) {
@@ -30,7 +32,7 @@ uintptr_t CharacterObject(pure::V3* position) {
 	if (!SafeRead((uintptr_t)GetModuleHandleW(nullptr) + kPlayerPointer, &object, sizeof(object)) || !object) return 0;
 	float at[3];
 	if (!SafeRead(object + kPositionOffset, at, sizeof(at))) return 0;
-	if (!(fabsf(at[0] - feet.x) < kSameSpot && fabsf(at[1] - feet.y) < kSameSpot && fabsf(at[2] - feet.z) < kSameSpot)) {
+	if (!(fabsf(at[0] - feet.x) < kSameSpot && fabsf(at[1] - feet.y) < kSameHeight && fabsf(at[2] - feet.z) < kSameSpot)) {
 		if (!s_loggedMismatch) {
 			s_loggedMismatch = true;
 			Log("player: the object at NieRAutomata.exe+0x%llx is at %.2f %.2f %.2f, the character's bones at %.2f %.2f %.2f: "
@@ -73,13 +75,15 @@ void FindFacing(uintptr_t object, float hipsYaw) {
 	}
 }
 
-// Sets the character's facing after an attack starts.
-void FaceForAttack(uintptr_t object, float hipsYaw, float yaw) {
+// Sets the character's facing for `attack` (its button's tick), every frame of the window: their hips only
+// catch up over a few frames, and the game would turn them back towards the stick.
+void FaceForAttack(uintptr_t object, float hipsYaw, float yaw, DWORD attack) {
 	if (s_finder.offset < 0 || object != s_finderObject) return;
 	uintptr_t at = object + (uintptr_t)s_finder.offset;
 	float now;
 	if (!SafeRead(at, &now, sizeof(now))) return;
-	if (fabsf(pure::wrap_angle(s_finder.sign * now - hipsYaw)) > kStillFacing) {  // not the facing any more: leave it
+	bool first = attack != s_facedAttack;
+	if (first && fabsf(pure::wrap_angle(s_finder.sign * now - hipsYaw)) > kStillFacing) {  // not the facing any more: leave it
 		if (!s_loggedFacingDisagrees) {
 			s_loggedFacingDisagrees = true;
 			Log("player: the facing at +0x%x (%.2f) doesn't agree with the hips (%.2f): not turned for the attack", s_finder.offset,
@@ -87,6 +91,7 @@ void FaceForAttack(uintptr_t object, float hipsYaw, float yaw) {
 		}
 		return;
 	}
+	s_facedAttack = attack;
 	float value = s_finder.sign * yaw;
 	if (!SafeWrite(at, &value, sizeof(value))) return;
 	if (!s_loggedAttackFacing) {
@@ -96,13 +101,14 @@ void FaceForAttack(uintptr_t object, float hipsYaw, float yaw) {
 }
 }  // namespace
 
-bool PlayerMove(pure::V3 step) {
-	pure::V3 position;
-	uintptr_t object = CharacterObject(&position);
+bool PlayerMove(pure::V3 step, pure::V3* from) {
+	uintptr_t object = CharacterObject(from);
 	if (!object) return false;
-	float x = position.x + step.x, z = position.z + step.z;  // x and z only: the game keeps their height (the ground)
+	float x = from->x + step.x, z = from->z + step.z;  // x and z only: the game keeps their height (the ground)
 	return SafeWrite(object + kPositionOffset, &x, sizeof(x)) && SafeWrite(object + kPositionOffset + 8, &z, sizeof(z));
 }
+
+bool PlayerPosition(pure::V3* position) { return CharacterObject(position) != 0; }
 
 void PlayerUpdate(pure::V3 lookForward) {
 	float hipsYaw;
@@ -111,6 +117,7 @@ void PlayerUpdate(pure::V3 lookForward) {
 	uintptr_t object = CharacterObject(&position);
 	if (!object) return;
 	FindFacing(object, hipsYaw);
-	if (GetTickCount() - GamepadAttackTick() < kAttackFacingMs && (lookForward.x != 0 || lookForward.z != 0))
-		FaceForAttack(object, hipsYaw, pure::yaw_of({lookForward.x, 0, lookForward.z}));
+	DWORD attack = GamepadAttackTick();
+	if (GetTickCount() - attack < kAttackFacingMs && (lookForward.x != 0 || lookForward.z != 0))
+		FaceForAttack(object, hipsYaw, pure::yaw_of({lookForward.x, 0, lookForward.z}), attack);
 }

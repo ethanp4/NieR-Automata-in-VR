@@ -5,6 +5,7 @@
 #include "core/log.h"
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
+#include "render/foveated.h"
 #include "render/replay.h"
 #include "render/reproject.h"
 #include "render/upscale.h"
@@ -379,6 +380,7 @@ bool UiBeforeDraw(ID3D11DeviceContext* c) {
 	if (desc.SampleDesc.Count != 1 || desc.Width != backbufferDesc.Width || desc.Height != backbufferDesc.Height) return false;
 	ReplayStop(true);  // Synchronized: the scene is finished, the HUD is drawn once (not recorded)
 	GpuTimingMark(c, "UI start");
+	FoveatedSceneEnd(c);
 	ReprojectAtUiStart(c);
 	UpscaleAtUiStart(c);
 	s_uiStarted = true;

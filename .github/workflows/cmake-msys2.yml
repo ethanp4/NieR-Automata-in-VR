@@ -76,6 +76,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_ASM_COMPILER=clang
           -DNIERVR_DLSS=OFF
+          -DNIERVR_DEBUG_MODULE=OFF
           -DNIERVR_VERSION="${{ needs.version.outputs.version }}"
           -DCMAKE_INSTALL_PREFIX="$PWD/dist"
 
@@ -84,7 +85,7 @@ jobs:
 
       - name: Package
         run: |
-          cmake --install build
+          cmake --install build --component mod
           cp LICENSE README.md dist/
           # code compiled into d3d11.dll: their licences ship with it
           cp .deps/imgui-src/LICENSE.txt dist/LICENSE-imgui.txt

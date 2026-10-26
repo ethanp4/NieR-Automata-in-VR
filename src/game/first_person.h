@@ -10,6 +10,8 @@ void FirstPersonBeforeUnmap(ID3D11Resource* res);
 void FirstPersonOnSetRenderTargets(UINT count, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv);
 // Returns true when a head-only part should be hidden from the main view.
 bool FirstPersonSkipDraw();
+void FirstPersonBeforeDraw(ID3D11DeviceContext* c);  // a draw of the character into the main view: their parts near your eyes hidden
+void FirstPersonAfterDraw(ID3D11DeviceContext* c);   // ... and the game's bone list bound again
 
 void FirstPersonNewFrame();                             // camera.cpp, after each Present
 void FirstPersonSetGameSize(UINT width, UINT height);  // the game's resolution (frame_handoff.cpp, each Present)

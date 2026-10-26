@@ -8,15 +8,15 @@
 #include "core/hook.h"
 #include "core/log.h"
 #include "core/main.h"
-#include "debug/code_dump.h"
+#include "debug/hot_module.h"
 #include "debug/position_finder.h"
 #include "debug/frame_capture.h"
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
 #include "render/d3d_hooks.h"
 #include "game/first_person.h"
-#include "game/game_state.h"
 #include "render/extra_resolutions.h"
+#include "render/foveated.h"
 #include "render/frame_share.h"
 #include "render/game_effects.h"
 #include "ui/hud_layer.h"
@@ -41,6 +41,8 @@ SRWLOCK s_presentHookLock = SRWLOCK_INIT;
 DWORD s_presentDepthTls = TLS_OUT_OF_INDEXES;  // per-thread Present nesting depth
 }  // namespace
 
+ID3D11DeviceContext* g_replayCtx;
+
 typedef HRESULT(STDMETHODCALLTYPE* PFN_ResizeBuffers)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
 namespace {
 constexpr int32_t kResizeBuffersIndex = 13;
@@ -56,7 +58,6 @@ std::atomic<int32_t> s_resizeLogs;
 // once the ring comes round to it again (several game frames), normally long after the VR thread
 // has copied it (nothing checks that it has).
 ID3D11Device* s_device;
-ID3D11DeviceContext* s_context;
 ID3D11Texture2D* s_ring[kRingSize];
 ID3D11Texture2D* s_ringScene[kRingSize];
 ID3D11Texture2D* s_ringKey[kRingSize];  // upscaling: the scene image before upscaling, for the HUD key
@@ -112,7 +113,7 @@ void PollPending() {
 	bool finished[kRingSize] = {};
 	for (int i = 0; i < kRingSize; i++)
 		finished[i] = s_slotPending[i] && s_copyQueries[i] &&
-					  s_context->GetData(s_copyQueries[i], nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+					  g_replayCtx->GetData(s_copyQueries[i], nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
 	SectionLock guard(&g_share.lock);
 	for (int i = 0; i < kRingSize; i++) {
 		if (!finished[i] || !s_slotPending[i]) continue;
@@ -142,7 +143,7 @@ void PollPending() {
 // the headset right away instead of at the next Present (up to a game frame less latency).
 void CapturePollMidFrame() {
 	static uint32_t drawCalls;
-	if (++drawCalls % 128 || !s_ring[0] || !s_context) return;
+	if (++drawCalls % 128 || !s_ring[0] || !g_replayCtx) return;
 	PollPending();
 }
 
@@ -181,7 +182,8 @@ void ProbeGameDevice(ID3D11Device* device) {
 
 void OnFirstGameDevice(ID3D11Device* device) {
 	s_device = device;  // keeps the reference from GetDevice
-	s_device->GetImmediateContext(&s_context);
+	// s_device->CreateDeferredContext(0, &g_replayCtx);
+	s_device->GetImmediateContext(&g_replayCtx);
 	ComPtr<IDXGIDevice> dxgiDevice;
 	if (SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice), &dxgiDevice))) {
 		ComPtr<IDXGIAdapter> adapter;
@@ -218,12 +220,12 @@ int PushToRing(ID3D11Texture2D* full, bool msaa, DXGI_FORMAT format, ID3D11Textu
 		return -1;
 	}
 	if (full && msaa)
-		s_context->ResolveSubresource(s_ring[slot], 0, full, 0, format);
+		g_replayCtx->ResolveSubresource(s_ring[slot], 0, full, 0, format);
 	else if (full)
-		s_context->CopyResource(s_ring[slot], full);
-	if (scene) s_context->CopyResource(s_ringScene[slot], scene);
-	if (scene && key && s_ringKey[slot]) s_context->CopyResource(s_ringKey[slot], key);
-	s_context->End(s_copyQueries[slot]);
+		g_replayCtx->CopyResource(s_ring[slot], full);
+	if (scene) g_replayCtx->CopyResource(s_ringScene[slot], scene);
+	if (scene && key && s_ringKey[slot]) g_replayCtx->CopyResource(s_ringKey[slot], key);
+	g_replayCtx->End(s_copyQueries[slot]);
 	if (tagOverride)
 		s_slotTag[slot] = *tagOverride;
 	else
@@ -267,11 +269,12 @@ void CaptureFrame(IDXGISwapChain* swapChain) {
 	}
 	StereoSetAspect((float)desc.Width / (float)desc.Height);
 	FirstPersonSetGameSize(desc.Width, desc.Height);
+	FoveatedSetGameSize(desc.Width, desc.Height);
 	UiSetBackbuffer(backbuffer.Get());
 	ReprojectSetBackbufferSize(desc.Width, desc.Height);
 	UINT sceneW, sceneH;  // size of this frame's scene-only images
 	// upscaling (also DLAA, which keeps the size): the scene images are DLSS's
-	const bool upscaling = UpscaleBeginPresent(s_context, desc.Width, desc.Height, &sceneW, &sceneH);
+	const bool upscaling = UpscaleBeginPresent(g_replayCtx, desc.Width, desc.Height, &sceneW, &sceneH);
 
 	// 1. Ask the VR thread for a ring matching the backbuffer (only when it changes).
 	if (desc.Width != s_requestedW || desc.Height != s_requestedH || format != s_requestedFormat || sceneW != s_requestedSceneW || sceneH != s_requestedSceneH ||
@@ -345,28 +348,37 @@ void CaptureFrame(IDXGISwapChain* swapChain) {
 			// Alternating with depth reprojection: this frame's eye, plus the other eye's last
 			// image moved to this frame's camera, handed to the headset as a pair. Upscaling: the
 			// upscaled images are moved.
-			ID3D11Texture2D* upscaledScene = UpscaleScene(s_context, StereoFrameEye(), scene);
+			GpuTimingMark(g_replayCtx, "upscale");
+			ID3D11Texture2D* upscaledScene = UpscaleScene(g_replayCtx, StereoFrameEye(), scene);
+			GpuTimingMark(g_replayCtx, "eye to headset");
 			int eyeSlot = PushToRing(backbuffer.Get(), false, format, upscaledScene, false, nullptr, scene);
 			FrameTag tag;
-			ID3D11Texture2D* warped = eyeSlot >= 0 && (!upscaling || upscaledScene) ? ReprojectOtherEye(s_context, upscaledScene, backbuffer.Get(), &tag) : nullptr;
+			GpuTimingMark(g_replayCtx, "depth reprojection");
+			ID3D11Texture2D* warped = eyeSlot >= 0 && (!upscaling || upscaledScene) ? ReprojectOtherEye(g_replayCtx, upscaledScene, backbuffer.Get(), &tag) : nullptr;
 			int otherSlot = warped ? PushToRing(upscaling ? nullptr : warped, false, format, warped, true, &tag) : -1;
 			if (otherSlot >= 0) {
 				uint32_t pairId = ++s_lastPairId ? s_lastPairId : ++s_lastPairId;
 				s_slotTag[eyeSlot].pairId = s_slotTag[otherSlot].pairId = pairId;
 			}
 		} else {
-			int left = PushToRing(backbuffer.Get(), desc.SampleDesc.Count > 1, format, UpscaleScene(s_context, StereoFrameEye(), scene), false,
-								  nullptr, scene);
+			GpuTimingMark(g_replayCtx, "upscale");
+			ID3D11Texture2D* upscaledScene = UpscaleScene(g_replayCtx, StereoFrameEye(), scene);
+			GpuTimingMark(g_replayCtx, "eye to headset");
+			int left = PushToRing(backbuffer.Get(), desc.SampleDesc.Count > 1, format, upscaledScene, false, nullptr, scene);
 			// Synchronized: the same frame again for the right eye (replay.cpp), into the next slot.
 			if (synchronized && left >= 0) {
 				bool inBackbuffer = false;
 				int right = -1;
-				if (ReplaySecondEye(s_context, &inBackbuffer)) {
-					if (inBackbuffer)
+				if (ReplaySecondEye(g_replayCtx, &inBackbuffer)) {
+					if (inBackbuffer) {
+						GpuTimingMark(g_replayCtx, "R eye to headset");
 						right = PushToRing(backbuffer.Get(), desc.SampleDesc.Count > 1, format, nullptr, false);
-					else if (scene) {
-						UpscaleCaptureDepth(s_context, 1);  // the replay left the right eye's depth behind
-						right = PushToRing(scene, false, format, UpscaleScene(s_context, 1, scene), true);
+					} else if (scene) {
+						GpuTimingMark(g_replayCtx, "R upscale");
+						UpscaleCaptureDepth(g_replayCtx, 1);  // the replay left the right eye's depth behind
+						ID3D11Texture2D* upscaledRight = UpscaleScene(g_replayCtx, 1, scene);
+						GpuTimingMark(g_replayCtx, "R eye to headset");
+						right = PushToRing(scene, false, format, upscaledRight, true);
 					}
 				}
 				if (right >= 0) {
@@ -391,10 +403,10 @@ void AfterPresent() {
 	UiBeginFrame();
 	GameEffectsBeginFrame();
 	StereoBeginFrame();
-	if (s_context) {
-		ReplayFrameStart(s_context, StereoSynchronizedFrame());
-		GpuTimingPoll(s_context);
-		GpuTimingFrameStart(s_context);
+	if (g_replayCtx) {
+		ReplayFrameStart(g_replayCtx, StereoSynchronizedFrame());
+		GpuTimingPoll(g_replayCtx);
+		GpuTimingFrameStart(g_replayCtx);
 	}
 	ReplayReport();
 }
@@ -412,13 +424,13 @@ HRESULT PresentCommon(int hookIndex, void* returnAddress, IDXGISwapChain* swapCh
 		}
 		if (!(flags & DXGI_PRESENT_TEST)) {
 			ReplayStop(false);  // Synchronized: the game's frame is complete
-			if (s_context) GpuTimingMark(s_context, "present");
+			if (g_replayCtx) GpuTimingMark(g_replayCtx, "present");
+			if (g_replayCtx) FoveatedSceneEnd(g_replayCtx);  // a frame without UI: off before our own passes
 			CaptureBeforePresent();
-			CodeDumpPoll();
 			PositionFinderPoll();
-			GameStatePoll();
+			HotModulePoll();
 			CaptureFrame(swapChain);
-			if (s_context) GpuTimingFrameEnd(s_context);
+			if (g_replayCtx) GpuTimingFrameEnd(g_replayCtx);
 		}
 	} else {
 		if (LogBudget(s_nestedLogs, 5)) {

@@ -1,5 +1,5 @@
 // code_dump.cpp - [Debug] Ctrl+F11: writes the game's decrypted code to NieRVR_code_dump.exe.
-#include "debug/code_dump.h"
+#include "hot/code_dump.h"
 #include "core/config.h"
 #include "core/log.h"
 #include "core/main.h"

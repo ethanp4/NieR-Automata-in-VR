@@ -8,5 +8,11 @@ void GpuTimingTargets(ID3D11DeviceContext* c, UINT count, ID3D11RenderTargetView
 					  const char* prefix);
 void GpuTimingCompute(ID3D11DeviceContext* c, const char* prefix, int kind);
 void GpuTimingDraw();
+enum GPU_WORK { GPU_WORK_COPY,
+				GPU_WORK_CLEAR,
+				GPU_WORK_DISPATCH,
+				GPU_WORK_OTHER,
+				GPU_WORK_COUNT };  // other: mips, resolves
+void GpuTimingWork(ID3D11DeviceContext* c, GPU_WORK kind);  // work that isn't a draw, counted in the current pass
 void GpuTimingFrameEnd(ID3D11DeviceContext* c);
 void GpuTimingPoll(ID3D11DeviceContext* c);

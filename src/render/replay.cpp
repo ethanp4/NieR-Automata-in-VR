@@ -7,9 +7,11 @@
 #include "core/log.h"
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
+#include "render/foveated.h"
 #include "ui/hud_layer.h"
 #include "render/viewfix.h"
 #include "ui/menu.h"
+#include "render/frame_handoff.h"
 #include <atomic>
 #include <iterator>
 #include <stdio.h>
@@ -849,8 +851,10 @@ void STDMETHODCALLTYPE H_OMSetRTUAV(ID3D11DeviceContext* c, UINT rtvCount, ID3D1
 			}
 		}
 	}
-	if (c == g_gameContext && !g_replaying && rtvCount != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
+	if (c == g_gameContext && !g_replaying && rtvCount != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
 		GpuTimingTargets(c, rtvCount, rtvs, dsv, "");
+		FoveatedOnTargets(c, rtvCount, rtvs, dsv);
+	}
 	o_OMSetRTUAV(c, rtvCount, rtvs, dsv, uavStart, uavCount, uavs, initialCounts);
 }
 void STDMETHODCALLTYPE H_OMSetBlendState(ID3D11DeviceContext* c, ID3D11BlendState* blendState, const FLOAT blendFactor[4], UINT sampleMask) {
@@ -957,6 +961,7 @@ void STDMETHODCALLTYPE H_CopySubresourceRegion(ID3D11DeviceContext* c, ID3D11Res
 			HoldRef(src);
 		}
 	}
+	GpuTimingWork(c, GPU_WORK_COPY);
 	o_CopySubresourceRegion(c, dst, dstSub, x, y, z, src, srcSub, box);
 }
 void STDMETHODCALLTYPE H_CopyResource(ID3D11DeviceContext* c, ID3D11Resource* dst, ID3D11Resource* src) {
@@ -970,6 +975,7 @@ void STDMETHODCALLTYPE H_CopyResource(ID3D11DeviceContext* c, ID3D11Resource* ds
 			HoldRef(src);
 		}
 	}
+	GpuTimingWork(c, GPU_WORK_COPY);
 	o_CopyResource(c, dst, src);
 }
 void STDMETHODCALLTYPE H_CopyStructureCount(ID3D11DeviceContext* c, ID3D11Buffer* dst, UINT dstOffset, ID3D11UnorderedAccessView* uav) {
@@ -997,14 +1003,17 @@ void RecClear(Op op, IUnknown* view, const void* values16) {
 }
 void STDMETHODCALLTYPE H_ClearRTV(ID3D11DeviceContext* c, ID3D11RenderTargetView* rtv, const FLOAT color[4]) {
 	if (ShouldRecord(c)) RecClear(OP_CLEAR_RTV, rtv, color);
+	GpuTimingWork(c, GPU_WORK_CLEAR);
 	o_ClearRTV(c, rtv, color);
 }
 void STDMETHODCALLTYPE H_ClearUAVUint(ID3D11DeviceContext* c, ID3D11UnorderedAccessView* uav, const UINT values[4]) {
 	if (ShouldRecord(c)) RecClear(OP_CLEAR_UAV_UINT, uav, values);
+	GpuTimingWork(c, GPU_WORK_CLEAR);
 	o_ClearUAVUint(c, uav, values);
 }
 void STDMETHODCALLTYPE H_ClearUAVFloat(ID3D11DeviceContext* c, ID3D11UnorderedAccessView* uav, const FLOAT values[4]) {
 	if (ShouldRecord(c)) RecClear(OP_CLEAR_UAV_FLOAT, uav, values);
+	GpuTimingWork(c, GPU_WORK_CLEAR);
 	o_ClearUAVFloat(c, uav, values);
 }
 void STDMETHODCALLTYPE H_ClearDSV(ID3D11DeviceContext* c, ID3D11DepthStencilView* dsv, UINT flags, FLOAT depth, UINT8 stencil) {
@@ -1020,6 +1029,7 @@ void STDMETHODCALLTYPE H_ClearDSV(ID3D11DeviceContext* c, ID3D11DepthStencilView
 			HoldRef(dsv);
 		}
 	}
+	GpuTimingWork(c, GPU_WORK_CLEAR);
 	o_ClearDSV(c, dsv, flags, depth, stencil);
 }
 void STDMETHODCALLTYPE H_GenerateMips(ID3D11DeviceContext* c, ID3D11ShaderResourceView* srv) {
@@ -1031,6 +1041,7 @@ void STDMETHODCALLTYPE H_GenerateMips(ID3D11DeviceContext* c, ID3D11ShaderResour
 			HoldRef(srv);
 		}
 	}
+	GpuTimingWork(c, GPU_WORK_OTHER);
 	o_GenerateMips(c, srv);
 }
 void STDMETHODCALLTYPE H_SetResourceMinLOD(ID3D11DeviceContext* c, ID3D11Resource* res, FLOAT minLod) {
@@ -1058,6 +1069,7 @@ void STDMETHODCALLTYPE H_Resolve(ID3D11DeviceContext* c, ID3D11Resource* dst, UI
 			HoldRef(src);
 		}
 	}
+	GpuTimingWork(c, GPU_WORK_OTHER);
 	o_Resolve(c, dst, dstSub, src, srcSub, format);
 }
 void STDMETHODCALLTYPE H_ClearState(ID3D11DeviceContext* c) {
@@ -1377,51 +1389,74 @@ void RebindBuffer(ID3D11DeviceContext* c, ID3D11Buffer* buffer) {
 		}
 }
 
-// Reused shadow maps (ReuseShadows=1): depth-only passes into a square depth texture (the shadow
-// map is drawn from the light, not from the eye, so the left eye's one is right for the right eye
-// too). The right eye's replay skips their draws and clears; the texture still holds the left's.
-struct DsvKind {
-	ID3D11DepthStencilView* view;
-	bool isShadowMap;
+// Reused shadow maps (ReuseShadows=1): passes into a square depth texture, with or without colour
+// targets of the same size (NieR also writes the depth into an R32_FLOAT target), are the shadow map:
+// drawn from the light, not from the eye, so the left eye's is right for the right eye too. The right
+// eye's replay skips their draws and the clears of those textures; they still hold the left eye's.
+struct ViewSize {
+	ID3D11View* view;
+	UINT width, height;
 };
-DsvKind s_dsvCache[32];
-int32_t s_dsvCount;
+ViewSize s_viewSizes[64];  // this frame's
+int32_t s_viewSizeCount;
+ID3D11RenderTargetView* s_shadowRtvs[16];  // colour targets seen in a shadow pass (kept across frames: cleared before they're bound)
+int32_t s_shadowRtvCount;
 uint32_t s_skippedShadowDraws;
 bool s_loggedShadowReuse;
-bool IsShadowDsv(ID3D11DepthStencilView* view) {
-	if (!view) return false;
-	for (int i = 0; i < s_dsvCount; i++)
-		if (s_dsvCache[i].view == view) return s_dsvCache[i].isShadowMap;
-	bool isShadow = false;
+
+// A view's 2D texture size (0 x 0: not a 2D texture)
+ViewSize SizeOf(ID3D11View* view) {
+	for (int32_t i = 0; i < s_viewSizeCount; i++)
+		if (s_viewSizes[i].view == view) return s_viewSizes[i];
+	ViewSize size = {view, 0, 0};
 	ComPtr<ID3D11Resource> res;
 	view->GetResource(&res);
-	if (res) {
-		D3D11_RESOURCE_DIMENSION dim;
-		res->GetType(&dim);
-		if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
-			D3D11_TEXTURE2D_DESC desc;
-			((ID3D11Texture2D*)res.Get())->GetDesc(&desc);
-			isShadow = desc.Width == desc.Height && desc.Width >= 512;
-			if (isShadow && !s_loggedShadowReuse) {
-				s_loggedShadowReuse = true;
-				Log("synchronized: the right eye reuses the shadow map (%ux%u, format %d) drawn for the left eye", desc.Width,
-					desc.Height, (int)desc.Format);
-			}
-		}
+	D3D11_RESOURCE_DIMENSION dim;
+	if (res && (res->GetType(&dim), dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D)) {
+		D3D11_TEXTURE2D_DESC desc;
+		((ID3D11Texture2D*)res.Get())->GetDesc(&desc);
+		size.width = desc.Width;
+		size.height = desc.Height;
 	}
-	if (s_dsvCount < 32) s_dsvCache[s_dsvCount++] = {view, isShadow};
-	return isShadow;
+	if (s_viewSizeCount < (int32_t)std::size(s_viewSizes)) s_viewSizes[s_viewSizeCount++] = size;
+	return size;
 }
-bool AllNull(ID3D11RenderTargetView* const* rtvs, UINT count) {
+
+bool IsShadowDsv(ID3D11DepthStencilView* view) {
+	if (!view) return false;
+	ViewSize size = SizeOf(view);
+	return size.width == size.height && size.width >= 512;
+}
+
+bool IsShadowRtv(ID3D11RenderTargetView* view) {
+	for (int32_t i = 0; i < s_shadowRtvCount; i++)
+		if (s_shadowRtvs[i] == view) return true;
+	return false;
+}
+
+// The targets of a shadow pass: a shadow depth texture, and colour targets of its size (or none)
+bool IsShadowPass(ID3D11RenderTargetView* const* rtvs, UINT count, ID3D11DepthStencilView* dsv) {
+	if (!IsShadowDsv(dsv)) return false;
+	ViewSize depth = SizeOf(dsv);
+	for (UINT i = 0; i < count; i++) {
+		if (!rtvs || !rtvs[i]) continue;
+		ViewSize size = SizeOf(rtvs[i]);
+		if (size.width != depth.width || size.height != depth.height) return false;
+	}
 	for (UINT i = 0; i < count; i++)
-		if (rtvs && rtvs[i]) return false;
+		if (rtvs && rtvs[i] && !IsShadowRtv(rtvs[i]) && s_shadowRtvCount < (int32_t)std::size(s_shadowRtvs)) s_shadowRtvs[s_shadowRtvCount++] = rtvs[i];
+	if (!s_loggedShadowReuse) {
+		s_loggedShadowReuse = true;
+		Log("synchronized: the right eye reuses the shadow map (%ux%u, %u colour targets) drawn for the left eye", depth.width, depth.height,
+			(unsigned)s_shadowRtvCount);
+	}
 	return true;
 }
 
 void PlayRecording(ID3D11DeviceContext* c) {
 	float patchedConstants[64];
 	bool inShadowPass = false;  // inside a reused shadow pass
-	s_dsvCount = 0;
+	s_viewSizeCount = 0;
 	s_skippedShadowDraws = 0;
 	s_substituteCount = 0;
 	s_gameBindings = {};
@@ -1557,6 +1592,7 @@ void PlayRecording(ID3D11DeviceContext* c) {
 				break;
 			case OP_DISPATCH: {
 				GpuTimingCompute(c, "R ", header.arg);
+				GpuTimingWork(c, GPU_WORK_DISPATCH);
 				const uint32_t* groups = (const uint32_t*)payload;
 				if (header.arg) ViewFixBeforeDispatch(c, header.arg);
 				c->Dispatch(groups[0], groups[1], groups[2]);
@@ -1567,7 +1603,8 @@ void PlayRecording(ID3D11DeviceContext* c) {
 			case OP_OM_RT: {
 				ID3D11RenderTargetView* const* rtvs = (ID3D11RenderTargetView* const*)(payload + 8);
 				ID3D11DepthStencilView* dsv = Read<ID3D11DepthStencilView*>(payload, 0);
-				inShadowPass = g_cfg.reuseShadows && AllNull(rtvs, header.arg) && IsShadowDsv(dsv);
+				inShadowPass = g_cfg.reuseShadows && IsShadowPass(rtvs, header.arg, dsv);
+				FoveatedOnTargets(c, header.arg, rtvs, dsv);
 				c->OMSetRenderTargets(header.arg, rtvs, dsv);
 				GpuTimingTargets(c, header.arg, rtvs, dsv, inShadowPass ? "R reused " : "R ");
 				break;
@@ -1578,10 +1615,11 @@ void PlayRecording(ID3D11DeviceContext* c) {
 				UINT rtvsKept = rtvCount == D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL ? 0 : (rtvCount > 8 ? 8 : rtvCount);
 				UINT uavsKept = uavCount == D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? 0 : (uavCount > 8 ? 8 : uavCount);
 				if (rtvCount != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
-					inShadowPass = g_cfg.reuseShadows && AllNull((ID3D11RenderTargetView* const*)(payload + 24), rtvsKept) && uavCount == 0 &&
-								   IsShadowDsv(Read<ID3D11DepthStencilView*>(payload, 16));
+					inShadowPass = g_cfg.reuseShadows && uavCount == 0 &&
+								   IsShadowPass((ID3D11RenderTargetView* const*)(payload + 24), rtvsKept, Read<ID3D11DepthStencilView*>(payload, 16));
 					GpuTimingTargets(c, rtvsKept, (ID3D11RenderTargetView* const*)(payload + 24), Read<ID3D11DepthStencilView*>(payload, 16),
 									 inShadowPass ? "R reused " : "R ");
+					FoveatedOnTargets(c, rtvsKept, (ID3D11RenderTargetView* const*)(payload + 24), Read<ID3D11DepthStencilView*>(payload, 16));
 				}
 				c->OMSetRenderTargetsAndUnorderedAccessViews(
 					rtvCount, rtvsKept ? (ID3D11RenderTargetView* const*)(payload + 24) : nullptr, Read<ID3D11DepthStencilView*>(payload, 16), uavStart, uavCount,
@@ -1618,7 +1656,10 @@ void PlayRecording(ID3D11DeviceContext* c) {
 			case OP_COPY_COUNT:
 				c->CopyStructureCount(Read<ID3D11Buffer*>(payload, 0), Read<uint32_t>(payload, 16), Read<ID3D11UnorderedAccessView*>(payload, 8));
 				break;
-			case OP_CLEAR_RTV: c->ClearRenderTargetView(Read<ID3D11RenderTargetView*>(payload, 0), (const FLOAT*)(payload + 8)); break;
+			case OP_CLEAR_RTV:
+				if (g_cfg.reuseShadows && IsShadowRtv(Read<ID3D11RenderTargetView*>(payload, 0))) break;
+				c->ClearRenderTargetView(Read<ID3D11RenderTargetView*>(payload, 0), (const FLOAT*)(payload + 8));
+				break;
 			case OP_CLEAR_UAV_UINT: c->ClearUnorderedAccessViewUint(Read<ID3D11UnorderedAccessView*>(payload, 0), (const UINT*)(payload + 8)); break;
 			case OP_CLEAR_UAV_FLOAT: c->ClearUnorderedAccessViewFloat(Read<ID3D11UnorderedAccessView*>(payload, 0), (const FLOAT*)(payload + 8)); break;
 			case OP_CLEAR_DSV:
@@ -1865,11 +1906,21 @@ bool ReplaySecondEye(ID3D11DeviceContext* c, bool* inBackbuffer) {
 	CapturePipelineState(c, s_presentState);
 	StereoBeginSecondEye();
 	GpuTimingMark(c, "replay start");
+	// //use deferred context instead of global context
+	// ApplyPipelineState(g_replayCtx, s_recordStartState);
+	// PlayRecording(g_replayCtx);
+	// ID3D11CommandList* list = nullptr;
+	// g_replayCtx->FinishCommandList(FALSE, &list);
+	// c->ExecuteCommandList(list, TRUE);
+	// list->Release();
 	ApplyPipelineState(c, s_recordStartState);
+	FoveatedSceneAgain();
 	PlayRecording(c);
+	FoveatedSceneEnd(c);
 	GpuTimingMark(c, "replay end");
 	bool patched = StereoSecondEyePatched(), ready = patched;
 	if (ready && s_stoppedAtUi) {
+		GpuTimingMark(c, "R final pass");
 		ready = UiSecondEyeScene(c);
 		if (!ready) snprintf(s_lastCancelReason, sizeof(s_lastCancelReason), "%s", "the final pass wasn't seen this frame");
 	} else {

@@ -83,7 +83,7 @@ Item kView[] = {
 		"You see through the character's eyes; the right stick and your headset turn you. Also F3.",
 	},
 	{
-		"First person: character tracks your headset",
+		"Enable tracking",
 		T_BOOL,
 		&g_cfg.fpTracking,
 		0,
@@ -91,7 +91,20 @@ Item kView[] = {
 		nullptr,
 		0,
 		"Your real steps move the character in the game, their upper body follows your head and their arms your "
-		"controllers, and their head is hidden from your eyes. Off: walk around freely and see all of them.",
+		"controllers, and their head is hidden from your eyes. Where they can't go (a wall), you step out of them. "
+		"Off: walk around freely and see all of them.",
+	},
+	{
+		"Steady eyes",
+		T_BOOL,
+		&g_cfg.steadyEyes,
+		0,
+		1,
+		nullptr,
+		0,
+		"First person: the camera follows the character's body, not their head: running bob doesn't move you up and "
+		"down, and animations that swing their head (the double jump's backflip) don't move you sideways. Off: the "
+		"camera is exactly at their eyes.",
 	},
 	{
 		"Level the horizon",
@@ -135,16 +148,6 @@ Item kView[] = {
 		"Shows steep top-down views (flight unit shooting sections) on the flat screen instead of in 3D. Also Shift+F12.",
 	},
 	{
-		"Fill eye shape",
-		T_BOOL,
-		&g_cfg.anamorphic,
-		0,
-		1,
-		nullptr,
-		0,
-		"Stretches the image to each eye's own field of view (sharper). Off: a 16:9 picture that covers it.",
-	},
-	{
 		"Rendered field of view",
 		T_FLOAT,
 		&g_cfg.fovScale,
@@ -153,62 +156,7 @@ Item kView[] = {
 		"%.2fx",
 		0,
 		"More than 1 draws a margin around your view: fewer black edges when you turn your head quickly or the "
-		"game falls behind, at some cost in sharpness. 1.10 is the default; 1.00 is the sharpest.",
-	},
-	{
-		"Vertical fill",
-		T_FLOAT,
-		&g_cfg.verticalFill,
-		0.5f,
-		1.0f,
-		"%.2f",
-		0,
-		"Fraction of your vertical view that is drawn. Lower is sharper with black bars at the top and bottom.",
-	},
-	{
-		"Head pose prediction",
-		T_BOOL,
-		&g_cfg.posePrediction,
-		0,
-		1,
-		nullptr,
-		0,
-		"Renders each game frame from where your head will be when it is shown (measured), not where it was: fewer "
-		"black edges when you turn your head. The Info page shows the delay it predicts for.",
-	},
-	{
-		"Late warp",
-		T_BOOL,
-		&g_cfg.lateWarp,
-		0,
-		1,
-		nullptr,
-		0,
-		"Each headset frame, both eye images are re-aimed to where your head is now and cut to each eye's own field of "
-		"view. Needed by headsets that stream (Quest, Pico): without it alternating mode stutters and a Quest looks "
-		"cross-eyed. Off: images are sent as rendered (0.5.0).",
-	},
-	{
-		"Depth reprojection (experimental)",
-		T_BOOL,
-		&g_cfg.depthReproject,
-		0,
-		1,
-		nullptr,
-		F_ALTERNATING,
-		"Experimental, alternating mode only: moves the other eye's last image to where the camera is now, so both "
-		"eyes follow camera motion every frame.",
-	},
-	{
-		"Reprojection gap fill (exp.)",
-		T_BOOL,
-		&g_cfg.reprojectEdges,
-		0,
-		1,
-		nullptr,
-		F_ALTERNATING,
-		"Depth reprojection: where moving the image uncovers the background (around 2B), fill it with the background "
-		"instead of stretching 2B's edge over it. Off: the 0.4.0 look, to compare.",
+		"game falls behind. Less is faster: every pixel of the game and the upscaler costs. 1.10 is the default.",
 	},
 	{
 		"Recenter",
@@ -222,6 +170,18 @@ Item kView[] = {
 	},
 };
 Item kRender[] = {
+	{
+		"Foveated shading",
+		T_CHOICE,
+		&g_cfg.foveated,
+		0,
+		2,
+		"Off|Subtle|Strong",
+		0,
+		"Shades the edges of each eye's 3D image at a lower rate, where the lenses blur them anyway: faster. Subtle keeps "
+		"full detail within 30 degrees of the centre; Strong within 22, with a quarter of the detail at the far edges. "
+		"Needs an NVIDIA RTX or GTX 16 card.",
+	},
 	{
 		"Upscaler (experimental)",
 		T_CHOICE,
@@ -372,38 +332,6 @@ Item kRender[] = {
 		"Adds resolutions in your headset's shape to the game's list (1), and also patches its table (2).",
 	},
 };
-Item kCull[] = {
-	{
-		"Head culling",
-		T_BOOL,
-		&g_cfg.headCulling,
-		0,
-		1,
-		nullptr,
-		0,
-		"Turns the game's culling view the way your headset looks, so nothing vanishes when you look around. Also Ctrl+Shift+F5.",
-	},
-	{
-		"Head culling margin",
-		T_FLOAT,
-		&g_cfg.headCullMargin,
-		0,
-		60,
-		"%.0f deg",
-		0,
-		"Extra degrees around your view that are still drawn. More is safer for fast head turns, less is faster.",
-	},
-	{
-		"Culling field of view",
-		T_FLOAT,
-		&g_cfg.cullFov,
-		0,
-		170,
-		"%.0f deg",
-		0,
-		"Height of the game's culling view while in stereo (used as is when head culling is off). 0 = the game's own.",
-	},
-};
 Item kScreen[] = {
 	{
 		"Screen distance",
@@ -521,6 +449,17 @@ Item kInput[] = {
 		"The game's rumble is played on the VR controllers.",
 	},
 	{
+		"Stick moves where you look",
+		T_BOOL,
+		&g_cfg.stickFollowsHead,
+		0,
+		1,
+		nullptr,
+		0,
+		"First person: pushing the left stick forward moves you where your headset faces. Off: forward is the way you faced when "
+		"you last recentred (your play space's forward).",
+	},
+	{
 		"Motion controls",
 		T_BOOL,
 		&g_cfg.motionControls,
@@ -551,7 +490,6 @@ struct Page {
 };
 Page s_pages[] = {{"View", kView, std::size(kView)},
 				  {"Rendering", kRender, std::size(kRender)},
-				  {"Culling", kCull, std::size(kCull)},
 				  {"Screen", kScreen, std::size(kScreen)},
 				  {"Controls", kInput, std::size(kInput)},
 				  {"Info", nullptr, 0}};
@@ -567,6 +505,8 @@ constexpr float kSmall = 22.0f;  // font size of tags and hints
 std::atomic<bool> s_open, s_justOpened, s_wantRecenter;
 bool s_waitRelease;  // after closing: keep blocking the game's gamepad until every button is released
 int32_t s_page;
+float s_infoScroll;  // the Info page: -1 down to 1 up (the sticks and D-pad)
+constexpr float kInfoScrollSpeed = 900;  // pixels per second at full tilt
 bool s_pageChanged;        // select s_page's tab on the next frames (paging buttons, opening)
 bool s_focusFirst;         // put the navigation cursor on the page's first setting
 bool s_focusWindow;        // the menu window takes keyboard/gamepad focus (when it opens)
@@ -839,6 +779,8 @@ void PageContents(const Page& page, bool isInfo) {
 			for (int i = 0; i < INFO_LINE_COUNT; i++)
 				if (s_infoText[i][0]) ImGui::TextWrapped("%s", s_infoText[i]);
 		}
+		// nothing on it to move to, so the sticks and D-pad scroll it here (ImGui's own scrolling goes to the menu window)
+		ImGui::SetScrollY(ImGui::GetScrollY() - s_infoScroll * kInfoScrollSpeed * ImGui::GetIO().DeltaTime);
 		s_focusFirst = false;
 		return;
 	}
@@ -935,6 +877,9 @@ void FeedInput() {
 	};
 	scroll(ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight, rightX);
 	scroll(ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadLStickUp, rightY);
+	float dpad = (buttons & XINPUT_GAMEPAD_DPAD_UP) || stickUp ? 1.0f : (buttons & XINPUT_GAMEPAD_DPAD_DOWN) || stickDown ? -1.0f
+																														  : 0.0f;
+	s_infoScroll = fabsf(rightY) > 0.25f ? rightY : dpad;
 	io.AddKeyEvent(ImGuiKey_GamepadFaceDown, (buttons & XINPUT_GAMEPAD_A) && !s_ignoreA);
 	io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (buttons & XINPUT_GAMEPAD_B) && s_sliderActive);
 	io.AddKeyEvent(ImGuiKey_GamepadL1, (buttons & XINPUT_GAMEPAD_LEFT_SHOULDER) && s_sliderActive);

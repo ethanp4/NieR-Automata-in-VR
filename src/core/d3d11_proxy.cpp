@@ -82,10 +82,7 @@ bool ProxyLoadReal() {
 extern "C" void NVR_ResolveAll() { EnsureInit(); }
 
 // The two exports the game uses to create its renderer.
-extern "C" HRESULT WINAPI NVR_D3D11CreateDevice(IDXGIAdapter* adapter, D3D_DRIVER_TYPE driverType, HMODULE software,
-												UINT flags, const D3D_FEATURE_LEVEL* levels, UINT numLevels,
-												UINT sdkVersion, ID3D11Device** device, D3D_FEATURE_LEVEL* outLevel,
-												ID3D11DeviceContext** context) {
+extern "C" HRESULT WINAPI NVR_D3D11CreateDevice(IDXGIAdapter* adapter, D3D_DRIVER_TYPE driverType, HMODULE software, UINT flags, const D3D_FEATURE_LEVEL* levels, UINT numLevels, UINT sdkVersion, ID3D11Device** device, D3D_FEATURE_LEVEL* outLevel, ID3D11DeviceContext** context) {
 	EnsureInit();
 	if (!s_realCreateDevice) return E_FAIL;
 	HRESULT hr = s_realCreateDevice(adapter, driverType, software, flags, levels, numLevels, sdkVersion, device,
@@ -98,13 +95,7 @@ extern "C" HRESULT WINAPI NVR_D3D11CreateDevice(IDXGIAdapter* adapter, D3D_DRIVE
 	return hr;
 }
 
-extern "C" HRESULT WINAPI NVR_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter, D3D_DRIVER_TYPE driverType,
-															HMODULE software, UINT flags,
-															const D3D_FEATURE_LEVEL* levels, UINT numLevels,
-															UINT sdkVersion, const DXGI_SWAP_CHAIN_DESC* scDesc,
-															IDXGISwapChain** swapChain, ID3D11Device** device,
-															D3D_FEATURE_LEVEL* outLevel,
-															ID3D11DeviceContext** context) {
+extern "C" HRESULT WINAPI NVR_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter, D3D_DRIVER_TYPE driverType, HMODULE software, UINT flags, const D3D_FEATURE_LEVEL* levels, UINT numLevels, UINT sdkVersion, const DXGI_SWAP_CHAIN_DESC* scDesc, IDXGISwapChain** swapChain, ID3D11Device** device, D3D_FEATURE_LEVEL* outLevel, ID3D11DeviceContext** context) {
 	EnsureInit();
 	if (!g_realCreateDeviceAndSwapChain) return E_FAIL;
 	HRESULT hr = g_realCreateDeviceAndSwapChain(adapter, driverType, software, flags, levels, numLevels, sdkVersion,

@@ -133,6 +133,26 @@ int main() {
 		pure::move_bone(delta[pure::BONE_HEAD], bind, out);
 		check(same(pure::bone_point(out, eye + pure::V3{0, 0, 0.1f}), nose), "a moved bone list's matrix moves its points the same way");
 
+		{
+			// locked: an animated chest (bent 30 degrees forward) stands upright again; its arm keeps hanging off it
+			static float known[pure::kSkeletonBones][12];
+			static bool have[pure::kSkeletonBones];
+			for (int32_t bone = 0; bone < pure::kSkeletonBones; bone++) {
+				memcpy(known[bone], bind, sizeof(bind));
+				have[bone] = true;
+			}
+			pure::M4 bent = pure::m4_turn_about(pure::m4_from_pose({0.2588f, 0, 0, 0.9659f}, {0, 0, 0}), pure::kSkeleton[pure::BONE_CHEST].bind,
+												pure::kSkeleton[pure::BONE_CHEST].bind);
+			for (int32_t i = 0; i < 12; i++) known[pure::BONE_CHEST][i] = bent.m[i];
+			pure::UpperBodyLock lock = {known, have, 0};
+			pure::pose_upper_body(bind, bind, eye, facingHer, pure::m4_identity(), delta, nullptr, &lock);
+			float chest[12];
+			pure::move_bone(delta[pure::BONE_CHEST], known[pure::BONE_CHEST], chest);
+			pure::V3 top = pure::kSkeleton[pure::BONE_NECK].bind;
+			check(same(pure::bone_point(chest, top), top), "locked: the bent chest stands upright again");
+			check(same(at(pure::BONE_LEFT_ANKLE, ankle), ankle), "... her feet stay");
+		}
+
 		const pure::V3 hips = pure::kSkeleton[pure::BONE_HIPS].bind;
 		pure::pose_upper_body(bind, bind, eye, facingHer, pure::m4_yaw_about(pure::kPi / 2, hips), delta);
 		pure::V3 ankleTurned = hips + pure::V3{ankle.z - hips.z, ankle.y - hips.y, -(ankle.x - hips.x)};

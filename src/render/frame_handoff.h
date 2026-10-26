@@ -3,6 +3,8 @@
 #pragma once
 #include <d3d11.h>
 
+extern ID3D11DeviceContext* g_replayCtx;
+
 void HookFromSwapChain(IDXGISwapChain* swapChain);
 void HookWithDummySwapChain();
 void CapturePollMidFrame();  // publish finished frames without waiting for Present

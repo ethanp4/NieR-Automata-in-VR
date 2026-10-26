@@ -4,6 +4,7 @@
 #include "core/com.h"
 #include "core/config.h"
 #include "core/log.h"
+#include "input/gamepad.h"
 #include "input/vr_controllers.h"
 #include <math.h>
 #include <string.h>
@@ -12,7 +13,8 @@ namespace {
 constexpr UINT kSkinningSlot = 11;
 constexpr DWORD kFreshMs = 250;  // a head or feet older than this aren't used (cutscene, other outfit, ...)
 constexpr int32_t kMaxPartBones = 63, kMaxTinyBones = 4;
-constexpr bool kPoseFingers = true;  // false: the character's fingers keep the game's animation (grip on the sword)
+constexpr bool kLockUpperBody = true;  // false: their upper body keeps the game's animation (turned and leaned to your head)
+constexpr bool kPoseFingers = false;  // false: the character's fingers keep the game's animation (grip on the sword)
 constexpr float kMaxReach = 1.0f;  // the character's eyes follow your head at most this far (metres; further: a recentre, a glitch)
 uint32_t s_frame = 1;
 
@@ -300,6 +302,7 @@ int32_t CharacterPartOf(const void* list) {
 
 // Tracking state for the current viewer and hands.
 bool s_uploading;  // our own upload of the posed lists
+bool s_swapping;   // our own bind of a list with parts hidden
 struct Viewer {
 	bool valid;
 	pure::M4 view;               // your head (between your eyes), camera-to-world
@@ -321,6 +324,107 @@ struct Hands {
 	bool valid[2];
 	pure::M4 grip[2];  // world, at the same moment as s_viewer
 } s_hands;
+void Upload(ID3D11DeviceContext* c, ID3D11Resource* list, const float* bones, int32_t count) {
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	s_uploading = true;
+	if (SUCCEEDED(c->Map(list, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+		memcpy(mapped.pData, bones, (size_t)count * pure::kBoneBytes);
+		c->Unmap(list, 0);
+	}
+	s_uploading = false;
+}
+
+// Parts in your face: during attacks and jumps, their legs, shoulders and arms near your eyes are hidden in
+// the main view (their shadow keeps them). An arm stays while its hand is where your controller puts it.
+constexpr float kHideNear = 0.25f;     // metres from your eyes
+constexpr DWORD kActionMs = 1500;      // an attack or jump button this recently: an attack or jump animation
+constexpr float kArmFollows = 0.15f;   // the posed hand this close to your controller: the arm is yours to see
+enum HIDE_GROUP : uint8_t { HIDE_NONE,
+							HIDE_LEG,
+							HIDE_SHOULDER,
+							HIDE_LEFT_ARM,
+							HIDE_RIGHT_ARM };
+uint8_t s_hideGroup[pure::kSkeletonBones];
+bool s_hideGroupsKnown;
+ID3D11Buffer* s_hiddenLists[pure::kBodyPartCount];  // our copies of their parts' lists, with bones hidden
+bool s_hiddenThisFrame[pure::kBodyPartCount];
+int32_t s_swappedPart = -1;  // the part whose hidden copy is bound for this draw
+bool s_loggedHidingParts;
+
+// Each bone's group, from the bones it hangs off (itself included)
+void LearnHideGroups() {
+	using namespace pure;
+	for (int32_t bone = 0; bone < kSkeletonBones; bone++) {
+		uint8_t group = HIDE_NONE;
+		bool shoulder = false;
+		for (int32_t b = bone; b >= 0 && group == HIDE_NONE; b = kSkeleton[b].parent) {
+			if (b == BONE_LEFT_THIGH || b == BONE_RIGHT_THIGH) group = HIDE_LEG;
+			else if (b == BONE_LEFT_FOREARM) group = HIDE_LEFT_ARM;
+			else if (b == BONE_RIGHT_FOREARM) group = HIDE_RIGHT_ARM;
+			else if (b == BONE_LEFT_CLAVICLE || b == BONE_RIGHT_CLAVICLE) shoulder = true;
+		}
+		s_hideGroup[bone] = group == HIDE_NONE && shoulder ? HIDE_SHOULDER : group;
+	}
+	s_hideGroupsKnown = true;
+}
+
+bool InAttackOrJump() {
+	DWORD now = GetTickCount();
+	return now - GamepadAttackTick() < kActionMs || now - GamepadJumpTick() < kActionMs;
+}
+
+// The posed bones to hide this frame: in a group, and their joint (or the way to their first child) near `eye`.
+// `armFree[side]`: that arm isn't where your controller puts it.
+int32_t ChooseHidden(const pure::M4 delta[], pure::V3 eye, const bool armFree[2], bool hide[]) {
+	using namespace pure;
+	if (!s_hideGroupsKnown) LearnHideGroups();
+	int32_t count = 0;
+	for (int32_t bone = 0; bone < kSkeletonBones; bone++) {
+		hide[bone] = false;
+		uint8_t group = s_hideGroup[bone];
+		if (group == HIDE_NONE || !s_have[bone] || !plausible_bone(s_known[bone])) continue;
+		if ((group == HIDE_LEFT_ARM && !armFree[0]) || (group == HIDE_RIGHT_ARM && !armFree[1])) continue;
+		float posed[12];
+		move_bone(delta[bone], s_known[bone], posed);
+		V3 joint = bone_point(posed, kSkeleton[bone].bind), along = joint;
+		for (int32_t child = bone + 1; child < kSkeletonBones; child++)
+			if (kSkeleton[child].parent == bone) {
+				along = (joint + bone_point(posed, kSkeleton[child].bind)) * 0.5f;
+				break;
+			}
+		hide[bone] = length(joint - eye) < kHideNear || length(along - eye) < kHideNear;
+		count += hide[bone];
+	}
+	return count;
+}
+
+// Our copy of a part's list (made like the game's), filled with `bones`
+void UploadHidden(ID3D11DeviceContext* c, int32_t part, ID3D11Resource* gameList, const float* bones, int32_t count) {
+	D3D11_BUFFER_DESC desc;
+	((ID3D11Buffer*)gameList)->GetDesc(&desc);
+	ID3D11Buffer*& copy = s_hiddenLists[part];
+	if (copy) {
+		D3D11_BUFFER_DESC have;
+		copy->GetDesc(&have);
+		if (have.ByteWidth != desc.ByteWidth) {
+			copy->Release();
+			copy = nullptr;
+		}
+	}
+	if (!copy) {
+		ComPtr<ID3D11Device> device;
+		c->GetDevice(&device);
+		desc.Usage = D3D11_USAGE_DYNAMIC;
+		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		if (!device || FAILED(device->CreateBuffer(&desc, nullptr, &copy))) {
+			copy = nullptr;
+			return;
+		}
+	}
+	Upload(c, copy, bones, count);
+	s_hiddenThisFrame[part] = true;
+}
+
 struct BodyReport {
 	DWORD tick;
 	uint32_t posed, notInEyes, noViewer, notFound;
@@ -340,16 +444,6 @@ void ReportBody() {
 			(double)s_report.last.headDistance, (double)s_report.last.slide, (double)(s_report.last.bend * 57.29578f),
 			(double)(s_report.turn * 57.29578f));
 	s_report.posed = s_report.notInEyes = s_report.noViewer = s_report.notFound = 0;
-}
-
-void Upload(ID3D11DeviceContext* c, ID3D11Resource* list, const float* bones, int32_t count) {
-	D3D11_MAPPED_SUBRESOURCE mapped;
-	s_uploading = true;
-	if (SUCCEEDED(c->Map(list, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-		memcpy(mapped.pData, bones, (size_t)count * pure::kBoneBytes);
-		c->Unmap(list, 0);
-	}
-	s_uploading = false;
 }
 
 // Poses the upper body and arms before drawing, then uploads the updated bone lists.
@@ -390,7 +484,8 @@ void PoseBody(ID3D11DeviceContext* c) {
 		bodyTurn = m4_yaw_about(turn, bone_point(hips, kSkeleton[BONE_HIPS].bind));
 	}
 	static M4 delta[kSkeletonBones];
-	pose_upper_body(waist, head, eyeTarget, view, bodyTurn, delta, &s_report.last);
+	UpperBodyLock lock = {s_known, s_have, s_bodyTurn.body};
+	pose_upper_body(waist, head, eyeTarget, view, bodyTurn, delta, &s_report.last, kLockUpperBody && plausible_bone(hips) ? &lock : nullptr);
 	// Translate the viewer pose to the tracked eye target.
 	M4 headNow = view;
 	headNow.at(0, 3) = eyeTarget.x;
@@ -398,12 +493,18 @@ void PoseBody(ID3D11DeviceContext* c) {
 	headNow.at(2, 3) = eyeTarget.z;
 	M4 fromViewer = m4_mul(headNow, m4_rigid_inverse(view));
 	const ArmBones* arms[2] = {&kLeftArm, &kRightArm};
+	bool armFree[2] = {true, true};
 	for (int hand = 0; hand < 2; hand++) {
 		const ArmBones& arm = *arms[hand];
 		if (!s_hands.valid[hand] || !plausible_bone(s_known[arm.upper]) || !plausible_bone(s_known[arm.fore]) ||
 			!plausible_bone(s_known[arm.hand]) || !plausible_bone(s_known[BONE_CHEST]))
 			continue;
-		pose_arm(arm, s_known[arm.upper], s_known[arm.fore], s_known[arm.hand], s_known[BONE_CHEST], m4_mul(fromViewer, s_hands.grip[hand]), delta);
+		M4 grip = m4_mul(fromViewer, s_hands.grip[hand]);
+		pose_arm(arm, s_known[arm.upper], s_known[arm.fore], s_known[arm.hand], s_known[BONE_CHEST], grip, delta);
+		float posedHand[12];
+		move_bone(delta[arm.hand], s_known[arm.hand], posedHand);
+		V3 handAt = bone_point(posedHand, kSkeleton[arm.hand].bind);
+		armFree[hand] = length(handAt - V3{grip.at(0, 3), grip.at(1, 3), grip.at(2, 3)}) > kArmFollows;
 		if (!s_loggedArms) {
 			s_loggedArms = true;
 			Log("first person: the character's arms follow your controllers");
@@ -420,12 +521,35 @@ void PoseBody(ID3D11DeviceContext* c) {
 	s_report.posed++;
 	s_report.parts = s_character.parts;
 	s_report.headOnly = s_character.headOnlyCount;
+	static bool hide[kSkeletonBones];
+	V3 eye = {view.at(0, 3), view.at(1, 3), view.at(2, 3)};
+	int32_t hidden = InAttackOrJump() ? ChooseHidden(delta, eye, armFree, hide) : 0;
+	if (hidden && !s_loggedHidingParts) {
+		s_loggedHidingParts = true;
+		Log("first person: hiding the character's legs, shoulders or arms near your eyes during an attack or jump (%d bones)", hidden);
+	}
 	float posed[kMaxPartBones * 12];
 	for (int32_t part = 0; part < kBodyPartCount; part++) {
 		const ListCopy* copy = s_character.part[part];
 		if (!copy) continue;
-		for (int32_t slot = 0; slot < copy->bones; slot++) move_bone(delta[s_character.slots[part][slot]], copy->data + slot * 12, posed + slot * 12);
+		bool anyHidden = false;
+		for (int32_t slot = 0; slot < copy->bones; slot++) {
+			move_bone(delta[s_character.slots[part][slot]], copy->data + slot * 12, posed + slot * 12);
+			anyHidden = anyHidden || (hidden && hide[s_character.slots[part][slot]]);
+		}
 		Upload(c, copy->list, posed, copy->bones);
+		if (!anyHidden) continue;
+		for (int32_t slot = 0; slot < copy->bones; slot++) {
+			int32_t bone = s_character.slots[part][slot];
+			if (!hide[bone]) continue;
+			float* m = posed + slot * 12;
+			V3 joint = bone_point(m, kSkeleton[bone].bind);
+			for (int32_t row = 0; row < 3; row++) m[row * 4] = m[row * 4 + 1] = m[row * 4 + 2] = 0;  // its vertices collapse onto its joint
+			m[3] = joint.x;
+			m[7] = joint.y;
+			m[11] = joint.z;
+		}
+		UploadHidden(c, part, copy->list, posed, copy->bones);
 	}
 	for (int32_t i = 0; i < s_character.headOnlyCount; i++) {
 		const ListCopy* copy = s_character.headOnly[i];
@@ -459,10 +583,12 @@ void FirstPersonNewFrame() {
 	s_boundPart = -1;
 	s_copyCount = s_partCopies = s_tinyCopies = 0;
 	s_character = {};
+	memset(s_hiddenThisFrame, 0, sizeof(s_hiddenThisFrame));
+	s_swappedPart = -1;
 }
 
 void FirstPersonOnSetVSConstantBuffers(ID3D11DeviceContext* c, UINT start, UINT count, ID3D11Buffer* const* buffers) {
-	if (!g_cfg.firstPerson || kSkinningSlot < start || kSkinningSlot >= start + count) return;
+	if (s_swapping || !g_cfg.firstPerson || kSkinningSlot < start || kSkinningSlot >= start + count) return;
 	ID3D11Buffer* list = buffers[kSkinningSlot - start];
 	s_boundPart = -1;
 	if (!list) return;
@@ -521,6 +647,26 @@ bool FirstPersonSkipDraw() {
 		Log("first person: hiding the character's head in the main view (their shadow keeps it)");
 	}
 	return true;
+}
+
+void FirstPersonBeforeDraw(ID3D11DeviceContext* c) {
+	int32_t part = s_boundPart;
+	if (!s_mainTarget || !s_hiding || part < 0 || part >= pure::kBodyPartCount || !s_hiddenThisFrame[part] || !s_hiddenLists[part]) return;
+	s_swapping = true;
+	c->VSSetConstantBuffers(kSkinningSlot, 1, &s_hiddenLists[part]);
+	s_swapping = false;
+	s_swappedPart = part;
+}
+
+void FirstPersonAfterDraw(ID3D11DeviceContext* c) {
+	if (s_swappedPart < 0) return;
+	const ListCopy* copy = s_character.part[s_swappedPart];
+	s_swappedPart = -1;
+	if (!copy) return;
+	ID3D11Buffer* game = (ID3D11Buffer*)copy->list;
+	s_swapping = true;
+	c->VSSetConstantBuffers(kSkinningSlot, 1, &game);
+	s_swapping = false;
 }
 
 void FirstPersonSetGameSize(UINT width, UINT height) {

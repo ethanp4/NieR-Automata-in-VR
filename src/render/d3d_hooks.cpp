@@ -9,6 +9,7 @@
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
 #include "game/first_person.h"
+#include "render/foveated.h"
 #include "render/frame_handoff.h"
 #include "render/game_effects.h"
 #include "ui/hud_layer.h"
@@ -154,10 +155,12 @@ bool BeforeDraw(ID3D11DeviceContext* c) {
 	if (GameEffectsBeforeDraw(c, s_psClass)) return true;
 	if (UiBeforeDraw(c)) return true;
 	if (s_psClass == PS_EFFECT && GameEffectsSkipEffectDraw(c, s_psSampledSlots, s_psHash)) return true;
+	FirstPersonBeforeDraw(c);
 	GpuTimingDraw();
 	return false;
 }
 void AfterDraw(ID3D11DeviceContext* c, const DrawArgs& args) {
+	FirstPersonAfterDraw(c);
 	GameEffectsAfterDraw(c);
 	UiAfterDraw(c, args);
 }
@@ -257,6 +260,7 @@ void STDMETHODCALLTYPE H_OMSetRenderTargets(ID3D11DeviceContext* c, UINT count, 
 		GpuTimingTargets(c, count, rtvs, dsv, "");
 		if (dsv) ReprojectNoteDsv(dsv);
 		FirstPersonOnSetRenderTargets(count, rtvs, dsv);
+		FoveatedOnTargets(c, count, rtvs, dsv);
 	}
 	if (CaptureRecording(c)) CaptureSetRenderTargets(count, rtvs, dsv);
 	o_OMSetRenderTargets(c, count, rtvs, dsv);
@@ -306,7 +310,10 @@ void STDMETHODCALLTYPE H_CSSetShader(ID3D11DeviceContext* c, void* shader, ID3D1
 void STDMETHODCALLTYPE H_Dispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z) {
 	if (g_replaying) return o_Dispatch(c, x, y, z);
 	if (ShouldRecord(c)) RecDispatch(x, y, z, c == s_context ? s_csClass : 0);
-	if (c == s_context) GpuTimingCompute(c, "", s_csClass);
+	if (c == s_context) {
+		GpuTimingCompute(c, "", s_csClass);
+		GpuTimingWork(c, GPU_WORK_DISPATCH);
+	}
 	if (CaptureRecording(c)) CaptureDispatch(x, y, z);
 	bool runsViewFix = c == s_context && s_csClass != CS_OTHER;
 	if (runsViewFix) {  // the fix's own calls aren't the game's: not recorded (playback runs the fix again)

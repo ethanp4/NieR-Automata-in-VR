@@ -10,11 +10,24 @@
 
 namespace {
 constexpr int32_t kMaxMarks = 320;
+constexpr int32_t kPassesLogged = 16, kPassesShown = 5;
 struct Mark {
 	char label[56];
 	uint32_t draws;
+	uint32_t work[GPU_WORK_COUNT];
 	double cpuMs;  // NowMs() at the mark
 };
+
+// "413 draws, 2 copies, 1 clear" (nothing: "no work counted")
+void DescribeWork(const Mark& mark, char* out, size_t cap) {
+	static const char* const kNames[GPU_WORK_COUNT] = {"copies", "clears", "compute", "mips/resolves"};
+	size_t used = 0;
+	out[0] = 0;
+	if (mark.draws) used += (size_t)snprintf(out, cap, "%u draws", mark.draws);
+	for (int32_t kind = 0; kind < GPU_WORK_COUNT && used < cap; kind++)
+		if (mark.work[kind]) used += (size_t)snprintf(out + used, cap - used, "%s%u %s", used ? ", " : "", mark.work[kind], kNames[kind]);
+	if (!used) snprintf(out, cap, "no work counted");
+}
 struct Frame {
 	ID3D11Query* disjoint;
 	ID3D11Query* timestamps[kMaxMarks];
@@ -112,6 +125,7 @@ void GpuTimingMark(ID3D11DeviceContext* c, const char* label) {
 	Mark& mark = s_frame.marks[s_frame.markCount];
 	snprintf(mark.label, sizeof(mark.label), "%s", label);
 	mark.draws = 0;
+	memset(mark.work, 0, sizeof(mark.work));
 	mark.cpuMs = NowMs();
 	c->End(s_frame.timestamps[s_frame.markCount]);
 	s_frame.markCount++;
@@ -145,6 +159,9 @@ void GpuTimingCompute(ID3D11DeviceContext* c, const char* prefix, int kind) {
 void GpuTimingDraw() {
 	if (s_active && s_frame.markCount > 0) s_frame.marks[s_frame.markCount - 1].draws++;
 }
+void GpuTimingWork(ID3D11DeviceContext* c, GPU_WORK kind) {
+	if (s_active && c == s_context && s_frame.markCount > 0) s_frame.marks[s_frame.markCount - 1].work[kind]++;
+}
 
 // At Present, after everything of this frame (including the replay) was submitted.
 void GpuTimingFrameEnd(ID3D11DeviceContext* c) {
@@ -174,19 +191,19 @@ void GpuTimingPoll(ID3D11DeviceContext* c) {
 		double ms;
 	} segs[kMaxMarks];
 	int segCount = 0;
-	double total = (double)(timestamps[s_frame.markCount - 1] - timestamps[0]) * toMs, left = 0, ui = 0, right = 0, shadowR = 0;
-	int phase = 0;  // 0 left scene, 1 UI and final, 2 replay, 3 after
+	double total = (double)(timestamps[s_frame.markCount - 1] - timestamps[0]) * toMs, left = 0, ui = 0, right = 0, handoff = 0, shadowR = 0;
+	int phase = 0;  // 0 left scene, 1 UI and final, 2 the right eye (replay and its final pass); handoff: to the headset
 	for (int i = 0; i + 1 < s_frame.markCount; i++) {
 		const char* label = s_frame.marks[i].label;
 		if (!strcmp(label, "UI start") || !strcmp(label, "present")) phase = 1;
 		if (!strcmp(label, "replay start")) phase = 2;
-		if (!strcmp(label, "replay end")) phase = 3;
 		double ms = (double)(timestamps[i + 1] - timestamps[i]) * toMs;
 		if (ms < 0) ms = 0;
-		if (phase == 0) left += ms;
-		if (phase == 1) ui += ms;
-		if (phase == 2) right += ms;
-		if (phase == 2 && strstr(label, "depth only")) shadowR += ms;
+		if (strstr(label, "to headset") || strstr(label, "upscale") || !strcmp(label, "depth reprojection")) handoff += ms;
+		else if (phase == 0) left += ms;
+		else if (phase == 1) ui += ms;
+		else right += ms;
+		if (phase == 2 && strstr(label, "reused")) shadowR += ms;
 		if (strstr(label, "compute: GI volumes")) giMs += ms, giCount++;
 		segs[segCount++] = {i, ms};
 	}
@@ -200,20 +217,22 @@ void GpuTimingPoll(ID3D11DeviceContext* c) {
 			}
 	double cpuTotal = s_frame.marks[s_frame.markCount - 1].cpuMs - s_frame.marks[0].cpuMs;
 	Log("gpu timing: frame %.2f ms on the GPU (%.2f ms of CPU time between the first and last mark): left eye scene "
-		"%.2f, UI + final %.2f, right eye replay %.2f (depth-only passes in it %.2f); GI volumes pass %.2f ms (%d x, "
-		"GIVolumes=%d); %d passes",
-		total, cpuTotal, left, ui, right, shadowR, giMs, giCount, g_cfg.giVolumes, s_frame.markCount - 1);
+		"%.2f, UI + final %.2f, right eye %.2f (reused shadow passes in it %.2f), to the headset %.2f; GI volumes pass "
+		"%.2f ms (%d x, GIVolumes=%d); %d passes",
+		total, cpuTotal, left, ui, right, shadowR, handoff, giMs, giCount, g_cfg.giVolumes, s_frame.markCount - 1);
 	char info[160];
-	snprintf(info, sizeof(info), "GPU per frame %.1f ms: left scene %.1f, UI %.1f, right eye %.1f; GI pass %.2f ms",
-			 total, left, ui, right, giMs);
+	snprintf(info, sizeof(info), "GPU per frame %.1f ms: left scene %.1f, UI %.1f, right eye %.1f, to headset %.1f; GI pass %.2f ms",
+			 total, left, ui, right, handoff, giMs);
 	MenuSetInfo(INFO_GPU_TOTAL, info);
-	for (int k = 0; k < segCount && k < 10; k++) {
+	for (int k = 0; k < segCount && k < kPassesLogged; k++) {
 		const Mark& mark = s_frame.marks[segs[k].mark];
 		// CPU time to the next mark: when it is as long as the GPU time, the GPU was waiting for the game
 		double cpu = s_frame.marks[segs[k].mark + 1].cpuMs - mark.cpuMs;
-		Log("gpu timing:   %6.2f ms  %-44s %4u draws  (CPU %.2f ms)", segs[k].ms, mark.label, mark.draws, cpu);
-		if (k < 5) {
-			snprintf(info, sizeof(info), "  %.2f ms  %s (%u draws)", segs[k].ms, mark.label, mark.draws);
+		char work[96];
+		DescribeWork(mark, work, sizeof(work));
+		Log("gpu timing:   %6.2f ms  %-44s %s  (CPU %.2f ms)", segs[k].ms, mark.label, work, cpu);
+		if (k < kPassesShown) {
+			snprintf(info, sizeof(info), "  %.2f ms  %s (%s)", segs[k].ms, mark.label, work);
 			MenuSetInfo(INFO_GPU_PASSES + k, info);
 		}
 	}

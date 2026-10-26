@@ -1,7 +1,9 @@
 // gamepad.cpp - XInput hooks: the VR controllers as pad 0, the game's rumble to them, and the pad blocked while the menu is open.
 #include "core/hook.h"
 #include "core/log.h"
+#include "core/config.h"
 #include "input/vr_controllers.h"
+#include "render/camera.h"
 #include <atomic>
 #include <string.h>
 #include "input/gamepad.h"
@@ -35,14 +37,35 @@ void MergeVrPad(XINPUT_GAMEPAD& pad, const XINPUT_GAMEPAD& vr) {
 	if (lengthSq(vr.sThumbRX, vr.sThumbRY) > lengthSq(pad.sThumbRX, pad.sThumbRY)) pad.sThumbRX = vr.sThumbRX, pad.sThumbRY = vr.sThumbRY;
 }
 
-std::atomic<DWORD> s_attackTick;
-WORD s_lastAttackButtons;
+std::atomic<DWORD> s_attackTick, s_moveTick, s_jumpTick;
+WORD s_lastAttackButtons, s_lastJumpButton;
 
 // An attack button going down (first person turns the character to where you look: game/player.cpp).
 void NoteAttacks(const XINPUT_GAMEPAD& pad) {
 	WORD attack = pad.wButtons & (XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y);
 	if (attack & ~s_lastAttackButtons) s_attackTick = GetTickCount();
 	s_lastAttackButtons = attack;
+	WORD jump = pad.wButtons & XINPUT_GAMEPAD_A;
+	if (jump & ~s_lastJumpButton) s_jumpTick = GetTickCount();
+	s_lastJumpButton = jump;
+	int32_t x = pad.sThumbLX, y = pad.sThumbLY;
+	if (x * x + y * y > XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE * XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) s_moveTick = GetTickCount();
+}
+
+// StickFollowsHeadset (first person only): the left stick turned from the game camera's forward to the headset's (its yaw only).
+void TurnStickWithHead(XINPUT_GAMEPAD& pad) {
+	pure::M4 head;
+	if (!g_cfg.stickFollowsHead || !g_cfg.firstPerson || !StereoHeadRelative(&head)) return;
+	float fx = -head.at(0, 2), fz = -head.at(2, 2), flat = pure::fsqrt(fx * fx + fz * fz);  // where the headset faces (camera space)
+	if (flat < 0.1f) return;                                                             // looking straight up or down
+	fx /= flat;
+	fz /= flat;
+	float x = pad.sThumbLX, y = pad.sThumbLY;
+	float turnedX = -x * fz + y * fx, turnedY = -x * fx - y * fz;  // the stick's right and forward, along the head's
+	auto toShort = [](float v) { return (SHORT)(v > 32767 ? 32767 : v < -32768 ? -32768
+																			   : v); };
+	pad.sThumbLX = toShort(turnedX);
+	pad.sThumbLY = toShort(turnedY);
 }
 
 DWORD FilterState(DWORD user, DWORD result, XINPUT_STATE* state) {
@@ -65,7 +88,10 @@ DWORD FilterState(DWORD user, DWORD result, XINPUT_STATE* state) {
 	}
 	// Block input when mod menu is open
 	if (result == ERROR_SUCCESS && g_blockPad) state->Gamepad = {};
-	if (user == 0 && result == ERROR_SUCCESS) NoteAttacks(state->Gamepad);
+	if (user == 0 && result == ERROR_SUCCESS) {
+		TurnStickWithHead(state->Gamepad);
+		NoteAttacks(state->Gamepad);
+	}
 	return result;
 }
 template <int I>
@@ -157,6 +183,8 @@ void InstallGamepad() {
 // Call ReadPhysicalPad, then get VR controller inputs and return the two combined
 // Only called from the mod menu
 DWORD GamepadAttackTick() { return s_attackTick; }
+DWORD GamepadMoveTick() { return s_moveTick; }
+DWORD GamepadJumpTick() { return s_jumpTick; }
 
 bool ReadGamepad(XINPUT_GAMEPAD* out) {
 	bool found = ReadPhysicalPad(out);

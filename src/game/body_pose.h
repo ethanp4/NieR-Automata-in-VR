@@ -106,9 +106,18 @@ struct BodyPoseInfo {
 	float headDistance, slide, bend;
 };
 
+// The upper body locked: these bones stand as in the bind pose instead of the game's animation, turned to
+// `yaw` (world, yaw_of) and leaned towards your head. What hangs off them (arms, hair, clothes) follows.
+inline constexpr int32_t kLockedBones[] = {BONE_WAIST, BONE_SPINE, BONE_CHEST, BONE_NECK, BONE_LEFT_CLAVICLE, BONE_RIGHT_CLAVICLE};
+struct UpperBodyLock {
+	const float (*known)[12];  // the game's matrices for the bones (by kSkeleton index)
+	const bool* have;          // ... which are known
+	float yaw;
+};
+
 // Computes world-space bone deltas to place the head at eyeTarget and orient it like view.
 inline void pose_upper_body(const float waist[12], const float head[12], V3 eyeTarget, const M4& view, const M4& bodyTurn,
-							M4 delta[kSkeletonBones], BodyPoseInfo* info = nullptr) {
+							M4 delta[kSkeletonBones], BodyPoseInfo* info = nullptr, const UpperBodyLock* lock = nullptr) {
 	// The head bone faces +Z; the camera faces -Z.
 	M4 headTurn = m4_identity();
 	for (int r = 0; r < 3; r++) {
@@ -134,10 +143,27 @@ inline void pose_upper_body(const float waist[12], const float head[12], V3 eyeT
 	V3 waistPivot = moved_point(base, bone_point(waist, kSkeleton[BONE_WAIST].bind));
 	Q bend = q_towards(neck + slide - waistPivot, neckTarget - waistPivot, kMaxBend);
 	M4 waistDelta = m4_mul(m4_turn_about(m4_from_pose(bend, {0, 0, 0}), waistPivot, waistPivot), base);
+	// Locked: the bind pose's upper body, its waist on the game's, turned to the body's yaw, then leaned
+	M4 upright = m4_identity();
+	bool locked = lock && lock->have[BONE_WAIST] && plausible_bone(lock->known[BONE_WAIST]);
+	if (locked) {
+		V3 waistBind = kSkeleton[BONE_WAIST].bind;
+		M4 placed = m4_identity();
+		placed.at(0, 3) = waistPivot.x - waistBind.x;
+		placed.at(1, 3) = waistPivot.y - waistBind.y;
+		placed.at(2, 3) = waistPivot.z - waistBind.z;
+		placed = m4_mul(m4_yaw_about(lock->yaw, waistPivot), placed);
+		bend = q_towards(moved_point(placed, kNeckPivotBind) - waistPivot, neckTarget - waistPivot, kMaxBend);
+		upright = m4_mul(m4_turn_about(m4_from_pose(bend, {0, 0, 0}), waistPivot, waistPivot), placed);
+	}
 	if (info) *info = {length(eyeTarget - eye), length(slide), 2 * fatan(length(V3{bend.x, bend.y, bend.z}) / bend.w)};
 
 	for (int32_t bone = 0; bone < kSkeletonBones; bone++) {
+		bool lockThis = false;
+		if (locked)
+			for (int32_t lockedBone : kLockedBones) lockThis = lockThis || (bone == lockedBone && lock->have[bone] && plausible_bone(lock->known[bone]));
 		if (bone == BONE_HEAD) delta[bone] = headDelta;
+		else if (lockThis) delta[bone] = m4_mul(upright, m4_rigid_inverse(m4_from_bone(lock->known[bone])));
 		else if (bone == BONE_WAIST) delta[bone] = waistDelta;
 		else delta[bone] = kSkeleton[bone].parent < 0 ? base : delta[kSkeleton[bone].parent];
 	}

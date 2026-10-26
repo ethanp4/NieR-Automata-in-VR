@@ -5,12 +5,15 @@
 #include "core/log.h"
 #include "core/pure.h"
 #include "render/culling.h"
+#include "render/foveated.h"
 #include "game/first_person.h"
 #include "game/player.h"
+#include "input/gamepad.h"
 #include "render/frame_share.h"
 #include "render/replay.h"
 #include "render/upscale.h"
 #include <atomic>
+#include <math.h>
 #include <string.h>
 
 StereoShared g_stereo;
@@ -122,23 +125,63 @@ pure::M4 LoadMatrix(const float* floats) {
 bool s_firstPerson;
 bool s_fpOnHead;  // ... at their eyes
 float s_fpSteadyLift;  // how far steady height moved this camera from their eyes (up)
+// Sideways the camera follows their body (their object's position), not their head bone, which flips and
+// sways with animations (a backflip in the double jump): their eyes' place from it is followed slowly.
+constexpr float kEyeDriftSeconds = 1.0f;  // time constant of following their eyes' place from their body
+constexpr float kMaxEyeDrift = 0.3f;      // metres: their eyes are taken at most this far from their body
+constexpr double kDriftGapMs = 500;       // a gap this long starts over at their eyes
+struct EyeDrift {
+	bool valid;
+	pure::V3 offset;  // their eyes from their body (world, sideways)
+	double ms;
+} s_eyeDrift;
+
+// Their eyes, sideways at their body plus the slowly followed offset (unchanged if their body isn't found).
+pure::V3 SteadyEyePlace(pure::V3 eye) {
+	pure::V3 body;
+	if (!g_cfg.steadyEyes || !PlayerPosition(&body)) {
+		s_eyeDrift.valid = false;
+		return eye;
+	}
+	pure::V3 now = {eye.x - body.x, 0, eye.z - body.z};
+	double ms = NowMs();
+	if (!s_eyeDrift.valid || ms - s_eyeDrift.ms > kDriftGapMs) s_eyeDrift.offset = now;
+	else s_eyeDrift.offset = s_eyeDrift.offset + (now - s_eyeDrift.offset) * (1 - expf(-(float)(ms - s_eyeDrift.ms) / 1000 / kEyeDriftSeconds));
+	s_eyeDrift.valid = true;
+	s_eyeDrift.ms = ms;
+	float drift = pure::length(s_eyeDrift.offset);
+	if (drift > kMaxEyeDrift) s_eyeDrift.offset = s_eyeDrift.offset * (kMaxEyeDrift / drift);
+	return {body.x + s_eyeDrift.offset.x, eye.y, body.z + s_eyeDrift.offset.z};
+}
 uint32_t s_fpHead, s_fpOwnLookAt, s_fpNewestLookAt, s_fpNoLookAt;
 DWORD s_fpReportTick;
 bool s_loggedFirstPerson, s_loggedHeadCamera;
 float WorldScale() { return s_firstPerson ? 1.0f : g_cfg.worldScale; }  // first person is life size
 
-// First person tracking (FirstPersonTracking): your real steps move the character (game/player.cpp), so
-// the camera doesn't move with them a second time: its sideways place from their eyes is `offset` (what
-// wasn't walked: when they can't be moved) instead of your head's place in the room. Your height still counts.
-constexpr float kRecentredJump = 0.3f;  // your head moving this far in one frame was recentred, not a step
-constexpr float kCatchUp = 0.02f;       // what wasn't walked goes to them this much per frame once they can be moved
+// First person tracking (FirstPersonTracking): your real steps move the camera, and the character
+// follows it (game/player.cpp). The camera's sideways place from their eyes is `offset` instead of your
+// head's place in the room; your height still counts. Where the game stops them (a wall), the camera
+// stays ahead: you step out of them, and back in by walking back.
+constexpr float kRecentredJump = 0.3f;    // your head moving this far in one frame was recentred, not a step
+constexpr float kFollowStep = 0.05f;      // the character moves at most this far towards the camera per frame
+constexpr float kAwayFrom = 0.3f;         // the camera this far from their eyes: out of them (head shown, not posed)
+constexpr float kBackWithin = 0.2f;       // ... and back in within this
+constexpr DWORD kStickMs = 200;           // the stick moved them this recently: their own movement carries the camera
+constexpr float kOwnMove = 0.01f;         // they moved this much more than asked in a frame: the game moved them too (attack, dodge)
+constexpr float kBlockedShare = 0.5f;     // they got less than this share of the way asked, or slid this much of it sideways: a wall
+constexpr float kStillBlocked = 0.5f;     // a wall stops them until the camera's way from them turns away from it (cos)
 struct Walking {
 	bool active;
 	pure::V3 lastHead;  // your head in the room (scaled like the eyes) last frame
 	pure::V3 offset;    // the camera's sideways place from their eyes (camera axes)
 	pure::V3 shift;     // this frame: added to the eyes' place (offset less your head's place)
+	bool moving;        // asked them to move last frame: from `from` by `asked` (world)
+	pure::V3 from, asked;
+	bool away;          // the camera is out of them
+	bool blocked;       // a wall stopped them: not moved towards `wall` (world, unit) any more
+	pure::V3 wall;
 } s_walk;
-bool s_loggedWalking;
+bool s_loggedWalking, s_loggedBlocked;
 
 pure::M4 EyeMatrixScaled() {
 	pure::M4 eye = s_frame.eyeRel;
@@ -175,41 +218,79 @@ pure::V3 HeadInRoom() {
 }
 
 // Once per game frame, the first person camera `cam` (camera-to-world, level) known: your head's
-// sideways movement since last frame goes to the character.
+// sideways movement since last frame moves the camera, and the character is moved towards it.
 void UpdateWalking(const pure::M4& cam) {
 	pure::V3 head = HeadInRoom();
 	if (!g_cfg.fpTracking || !s_firstPerson || !s_fpOnHead) {
 		s_walk.active = false;
+		s_walk.away = false;
 		return;
 	}
-	if (!s_walk.active) s_walk = {true, head, {0, 0, 0}, {}};  // starting: the camera on their eyes
+	if (!s_walk.active) s_walk = {true, head};  // starting: the camera on their eyes
 	pure::V3 step = {head.x - s_walk.lastHead.x, 0, head.z - s_walk.lastHead.z};
 	s_walk.lastHead = head;
-	if (pure::length(step) >= kRecentredJump) step = {};
+	if (pure::length(step) < kRecentredJump) s_walk.offset = s_walk.offset + step;
+	else s_walk.offset = {};  // recentred: back in them
+	pure::V3 right = {cam.at(0, 0), 0, cam.at(2, 0)}, back = {cam.at(0, 2), 0, cam.at(2, 2)};
+	// Where they got to from last frame's move: the game may have stopped them, or slid them along a wall,
+	// and all of that stays with them (the camera stays with your head). When the game moved them too (the
+	// stick, an attack, a dodge), that carries the camera: only what went the asked way counts.
+	pure::V3 now;
+	if (s_walk.moving && PlayerPosition(&now)) {
+		pure::V3 moved = {now.x - s_walk.from.x, 0, now.z - s_walk.from.z};
+		float asked = pure::length(s_walk.asked);
+		pure::V3 direction = s_walk.asked * (1 / asked);
+		float walked = pure::dot(moved, direction);
+		if (walked < 0) walked = 0;
+		if (walked > asked) walked = asked;
+		pure::V3 forward = direction * walked;
+		if (GetTickCount() - GamepadMoveTick() < kStickMs || pure::length(moved) > asked + kOwnMove) {
+			moved = forward;  // the game moved them too: that carries the camera
+		} else if (walked < asked * kBlockedShare || pure::length(moved - forward) > asked * kBlockedShare) {
+			// a wall stopped them or slid them along it: back to where they got to the asked way, and no more
+			// moving towards it
+			pure::V3 undo = forward - moved, at;
+			PlayerMove(undo, &at);
+			moved = forward;
+			if (!s_loggedBlocked) {
+				s_loggedBlocked = true;
+				Log("first person: a wall stops the character; your steps take you out of them");
+			}
+			s_walk.blocked = true;
+			s_walk.wall = direction;
+		}
+		s_walk.offset = s_walk.offset - pure::V3{pure::dot(moved, right), 0, pure::dot(moved, back)};
+	}
+	s_walk.moving = false;
 	float behind = pure::length(s_walk.offset);
-	pure::V3 catchUp = behind > kCatchUp ? s_walk.offset * (kCatchUp / behind) : s_walk.offset;
-	pure::V3 move = step + catchUp;
-	if (pure::length(move) > 0) {
-		pure::V3 world = {cam.at(0, 0) * move.x + cam.at(0, 2) * move.z, 0, cam.at(2, 0) * move.x + cam.at(2, 2) * move.z};
-		if (PlayerMove(world)) {
-			s_walk.offset = s_walk.offset - catchUp;
+	pure::V3 towardsCamera = right * s_walk.offset.x + back * s_walk.offset.z;
+	if (s_walk.blocked && (behind < 0.001f || pure::dot(towardsCamera, s_walk.wall) < behind * kStillBlocked)) s_walk.blocked = false;
+	if (behind > 0.001f && !s_walk.blocked) {
+		pure::V3 move = behind > kFollowStep ? s_walk.offset * (kFollowStep / behind) : s_walk.offset;
+		pure::V3 world = right * move.x + back * move.z;
+		if (PlayerMove(world, &s_walk.from)) {
+			s_walk.moving = true;
+			s_walk.asked = world;
 			if (!s_loggedWalking) {
 				s_loggedWalking = true;
 				Log("first person: your real steps move the character");
 			}
-		} else {
-			s_walk.offset = s_walk.offset + step;  // not walked: the camera moves instead
 		}
 	}
+	behind = pure::length(s_walk.offset);
+	bool away = s_walk.away ? behind > kBackWithin : behind > kAwayFrom;
+	if (away != s_walk.away) Log("first person: %s the character (%.2f m from their eyes)", away ? "stepped out of" : "back in", (double)behind);
+	s_walk.away = away;
 	s_walk.shift = {s_walk.offset.x - head.x, 0, s_walk.offset.z - head.z};
 }
 
 // First person at the character's eyes, level, turning with the game camera (the right stick); your
-// headset turns you on top. Running bob doesn't move you up and down (jumps still do).
+// headset turns you on top. With SteadyEyes, running bob doesn't move you up and down (jumps still do),
+// and their animations don't move you sideways (SteadyEyePlace).
 bool HeadCamera(const pure::HeadPose& head, const pure::M4& C, pure::M4* out) {
-	pure::V3 eye = head.eye;
+	pure::V3 eye = SteadyEyePlace(head.eye);
 	float steadyY;
-	if (FirstPersonSteadyEyeHeight(&steadyY)) eye.y = steadyY;
+	if (g_cfg.steadyEyes && FirstPersonSteadyEyeHeight(&steadyY)) eye.y = steadyY;
 	s_fpSteadyLift = eye.y - head.eye.y;
 	*out = pure::m4_level_camera(C);
 	out->at(0, 3) = eye.x;
@@ -292,7 +373,7 @@ void PatchScene(float* data) {
 	if (!s_secondEye) NotePitch(pure::camera_pitch_deg(C));
 	pure::M4 fpCam = {};
 	s_firstPerson = g_cfg.firstPerson && FirstPersonCamera(C, &fpCam);
-	FirstPersonSetHiding(s_firstPerson && s_fpOnHead);
+	FirstPersonSetHiding(s_firstPerson && s_fpOnHead && !s_walk.away);  // out of them: their head shown, not posed
 	if (s_firstPerson) {
 		// s_lastCameraOffset: the camera's move away from the game's, also for CamParam's position
 		for (int k = 0; k < 3; k++) s_lastCameraOffset[k] = fpCam.at(k, 3) - C.at(k, 3);
@@ -520,6 +601,7 @@ void StereoBeginFrame() {
 	s_frame = frame;
 	FirstPersonNewFrame();
 	FirstPersonSetHiding(false);  // until this frame's camera is at the character's eyes
+	FoveatedFrameStart();
 	if (!on) s_synchronized = false;
 	s_rightEyeFrame.active = on;
 	s_rightEyeFrame.observe = false;
@@ -560,6 +642,12 @@ void StereoGetFrameTag(FrameTag* tag) {
 }
 
 bool StereoActive() { return s_frame.active; }
+bool StereoEyeTangents(float* halfW, float* halfH) {
+	if (!s_frame.active || !(s_frame.halfW > 0.05f && s_frame.halfH > 0.05f)) return false;
+	*halfW = s_frame.halfW;
+	*halfH = s_frame.halfH;
+	return true;
+}
 bool StereoSynchronizedFrame() { return s_synchronized && s_frame.active; }
 void StereoBeginSecondEye() {
 	FrameState frame = s_rightEyeFrame;

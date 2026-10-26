@@ -18,7 +18,6 @@ cbuffer P : register(b0) {
 	row_major float4x4 T;   // old eye view -> eye view now
 	float4 proj;            // x scale, y scale, P22, P23 (z_ndc = (P22 z + P23) / -z)
 	float4 size;            // width, height, grid step, grid width in cells
-	float4 edge;            // depth ratio and stretch (in grid steps) above which a triangle is a gap; x = 0: off
 	float4 dscale;          // depth pixels per colour pixel (x, y): 1, or less for an upscaled colour image
 };
 Texture2D<float> dep : register(t0);
@@ -27,66 +26,25 @@ SamplerState smp : register(s0);
 struct V {
 	float4 pos : SV_Position;
 	float2 uv : TEXCOORD0;
-	nointerpolation float gap : TEXCOORD1;
 };
 // one grid corner: the old image's pixel there, moved into the eye's view as it is now
-void Corner(uint2 c, out float4 clip, out float2 uv, out float dist) {
-	float2 px = min(float2(c) * size.z, size.xy - 1);
-	float d = dep.Load(int3(px * dscale.xy, 0));
-	uv = (px + 0.5) / size.xy;
-	float2 ndc = float2(uv.x * 2 - 1, 1 - uv.y * 2);
-	float z = proj.w / (-d - proj.z);                   // view-space z (negative in front)
-	float3 p = float3(ndc.x * -z / proj.x, ndc.y * -z / proj.y, z);
-	float3 q = mul(T, float4(p, 1)).xyz;
-	clip = float4(q.x * proj.x, q.y * proj.y, proj.z * q.z + proj.w, -q.z);
-	clip.z *= 0.999;  // real surfaces stay in front of the gap fill, the sky (depth 1) included
-	dist = -z;
-}
 V vs(uint id : SV_VertexID) {
 	uint cell = id / 6, k = id % 6, j = k % 3;
 	uint gw = (uint)size.w;
-	uint2 c = uint2(cell % gw, cell / gw);
-	// each vertex works out its whole triangle, so all three agree whether it spans a gap
-	uint2 c0 = k < 3 ? uint2(0, 0) : uint2(1, 0);
-	uint2 c1 = k < 3 ? uint2(1, 0) : uint2(1, 1);
-	uint2 c2 = uint2(0, 1);
-	float4 p0, p1, p2;
-	float2 u0, u1, u2;
-	float d0, d1, d2;
-	Corner(c + c0, p0, u0, d0);
-	Corner(c + c1, p1, u1, d1);
-	Corner(c + c2, p2, u2, d2);
-	float dmin = min(d0, min(d1, d2)), dmax = max(d0, max(d1, d2));
-	bool gap = false;
-	if (edge.x > 0 && p0.w > 0 && p1.w > 0 && p2.w > 0) {
-		float2 h = 0.5 * size.xy;
-		float2 s0 = p0.xy / p0.w * h, s1 = p1.xy / p1.w * h, s2 = p2.xy / p2.w * h;
-		float e = max(length(s0 - s1), max(length(s1 - s2), length(s2 - s0)));
-		// a depth edge in the old image that the camera motion pulled open
-		gap = dmax > dmin * edge.x && e > size.z * edge.y;
-	}
+	uint2 corners[6] = {uint2(0, 0), uint2(1, 0), uint2(0, 1), uint2(1, 0), uint2(1, 1), uint2(0, 1)};
+	uint2 c = uint2(cell % gw, cell / gw) + corners[k];
+	float2 px = min(float2(c) * size.z, size.xy - 1);
+	float d = dep.Load(int3(px * dscale.xy, 0));
 	V o;
-	o.pos = j == 0 ? p0 : (j == 1 ? p1 : p2);
-	o.uv = j == 0 ? u0 : (j == 1 ? u1 : u2);
-	o.gap = gap ? 1 : 0;
-	if (gap) o.pos.z = o.pos.w * 0.9999;  // behind everything real: only fills what nothing else covers
+	o.uv = (px + 0.5) / size.xy;
+	float2 ndc = float2(o.uv.x * 2 - 1, 1 - o.uv.y * 2);
+	float z = proj.w / (-d - proj.z);                   // view-space z (negative in front)
+	float3 p = float3(ndc.x * -z / proj.x, ndc.y * -z / proj.y, z);
+	float3 q = mul(T, float4(p, 1)).xyz;
+	o.pos = float4(q.x * proj.x, q.y * proj.y, proj.z * q.z + proj.w, -q.z);
 	return o;
 }
-float4 ps(V i) : SV_Target {
-	if (i.gap < 0.5) return col.SampleLevel(smp, i.uv, 0);
-	// uncovered background: take the colour of the farthest pixel around (the background, not 2B's
-	// edge stretched over the gap)
-	float2 px = i.uv * size.xy - 0.5;
-	float best = -1;
-	float2 bp = px;
-	[unroll] for (int y = -1; y <= 1; y++)
-		[unroll] for (int x = -1; x <= 1; x++) {
-			float2 q = clamp(px + float2(x, y) * size.z, 0, size.xy - 1);
-			float d = dep.Load(int3(q * dscale.xy, 0));
-			if (d > best) { best = d; bp = q; }
-		}
-	return col.Load(int3(bp, 0));
-}
+float4 ps(V i) : SV_Target { return col.SampleLevel(smp, i.uv, 0); }
 )";
 
 ID3D11VertexShader* s_warpVs;
@@ -164,7 +122,7 @@ bool CreateGpuObjects(ID3D11Device* dev) {
 	if (psBlob) psBlob->Release();
 	if (err) err->Release();
 	D3D11_BUFFER_DESC bd = {};
-	bd.ByteWidth = 128;
+	bd.ByteWidth = 112;
 	bd.Usage = D3D11_USAGE_DEFAULT;
 	bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 	if (SUCCEEDED(hr)) hr = dev->CreateBuffer(&bd, nullptr, &s_warpConstants);
@@ -403,10 +361,9 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
 			float T[16];
 			float proj[4];
 			float size[4];
-			float edge[4];
 			float dscale[4];
 		} constants;
-		static_assert(sizeof(constants) == 128, "cbuffer P");
+		static_assert(sizeof(constants) == 112, "cbuffer P");
 		const float gridStep = 4;
 		UINT gridW = (sceneDesc.Width + 3) / 4, gridH = (sceneDesc.Height + 3) / 4;
 		memcpy(constants.T, T, 64);
@@ -415,11 +372,6 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
 		constants.size[1] = (float)sceneDesc.Height;
 		constants.size[2] = gridStep;
 		constants.size[3] = (float)gridW;
-		// gaps: depth jumps by more than 3% inside a triangle that the motion stretched to more
-		// than 2.5 grid steps (a normal triangle's longest side is 1.4 steps)
-		constants.edge[0] = g_cfg.reprojectEdges ? 1.03f : 0.f;  //TODO this has a strange borderline useless effect
-		constants.edge[1] = 2.5f;
-		constants.edge[2] = constants.edge[3] = 0;
 		constants.dscale[0] = (float)s_depthCopyDesc.Width / (float)sceneDesc.Width;
 		constants.dscale[1] = (float)s_depthCopyDesc.Height / (float)sceneDesc.Height;
 		constants.dscale[2] = constants.dscale[3] = 0;

@@ -35,6 +35,7 @@ struct Config {
 	float cameraDolly;           // metres to move the camera along its line of sight (towards the character)
 	int32_t firstPerson;         // eyes at the character's eyes (or the game camera's look-at target), not behind them
 	int32_t fpTracking;          // first person: the character tracks your headset and controllers, its head hidden
+	int32_t steadyEyes;          // first person: sideways the camera follows their body, not their head's animations
 	int32_t keyFirstPerson;      // [Keys] FirstPerson
 	// [Render]
 	int32_t extraResolutions;
@@ -54,19 +55,20 @@ struct Config {
 	int32_t synchronized;     // both eyes rendered every frame (record + replay)
 	int32_t reuseShadows;     // Synchronized: the replay reuses the left eye's shadow map
 	int32_t depthReproject;   // alternating mode: move the older eye's image to the new camera with its depth
-	int32_t reprojectEdges;   // fill the gaps it opens with background instead of stretching edges
 	int32_t posePrediction;   // [Stereo] PosePrediction: predict the game's head pose for when its frame is shown
 	int32_t lateWarp;         // [Stereo] LateWarp: submit the headset's pose/fov, eye images re-aimed to it
 	int32_t maxFrameLatency;  // [Render] MaxFrameLatency: frames the game's CPU may queue ahead of the GPU; 0 = game's
 	int32_t giVolumes;        // [Render] GIVolumes: GI volumes the game's GI pass reads (nearest first); >= 128 = all
 	// [Upscaler] (render/upscale.cpp)
 	int32_t upscaler;     // 0 off, 1 DLSS
+	int32_t foveated;     // [Render] FoveatedShading: 0 off, 1 subtle, 2 strong (render/foveated.cpp)
 	float upscaleOutput;  // the upscaled image's size: % of the detail the headset recommends
 	int32_t dlssModel;    // 0 CNN (preset E, fast), 1 transformer (preset K)
 	// [Input]
 	int32_t vrControllers;            // VR controllers act as an XInput gamepad
 	int32_t vrRumble;                 // the game's rumble goes to the VR controllers
 	int32_t motionControls;           // swing a hand to attack (vr_controllers.cpp)
+	int32_t stickFollowsHead;         // the left stick's forward is where your headset faces, not the recentred forward
 	int32_t swingSensitivity;         // motion controls: 0 = relaxed, 1 = normal (input/waggle.h)
 	int32_t iniAdded;                 // settings added to an older ini at startup
 	int32_t flatBelowDraws;           // frames with fewer draws than this render mono (title screen); 0 = off

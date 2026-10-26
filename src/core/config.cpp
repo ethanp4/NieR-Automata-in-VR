@@ -61,6 +61,15 @@ constexpr Setting kSettings[] = {
 		"1 = the game's rumble is played on the VR controllers"),
 	S_INT(
 		"Input",
+		"StickFollowsHeadset",
+		stickFollowsHead,
+		0,
+		0,
+		1,
+		"First person: 1 = pushing the left stick forward moves you where your headset faces. 0 = forward is the way you\n"
+		"faced when you last recentred (your play space's forward)"),
+	S_INT(
+		"Input",
 		"MotionControls",
 		motionControls,
 		0,
@@ -195,15 +204,6 @@ constexpr Setting kSettings[] = {
 		"camera using its depth"),
 	S_INT(
 		"Stereo",
-		"ReprojectionEdges",
-		reprojectEdges,
-		0,
-		0,
-		1,
-		"Depth reprojection: 1 = fill the gaps it opens behind 2B and other near things with the\n"
-		"background; 0 = stretch their edges over the gap"),
-	S_INT(
-		"Stereo",
 		"Synchronized",
 		synchronized,
 		0,
@@ -294,6 +294,16 @@ constexpr Setting kSettings[] = {
 		"First person: 1 = the character tracks your headset: your real steps move them in the game, their upper\n"
 		"body follows your head and their arms your controllers, and their head is hidden from your eyes.\n"
 		"0 = the camera starts at their eyes but you walk around freely and see all of them, head included"),
+	S_INT(
+		"Stereo",
+		"SteadyEyes",
+		steadyEyes,
+		0,
+		0,
+		1,
+		"First person: 1 = the camera follows the character's body, not their head: running bob doesn't move you\n"
+		"up and down (jumps do), and animations that swing their head (the double jump's backflip) don't move you\n"
+		"sideways. 0 = the camera is exactly at their eyes"),
 	S_INT(
 		"Stereo",
 		"Anamorphic",
@@ -455,6 +465,16 @@ constexpr Setting kSettings[] = {
 		"are added on every side (more = safer when turning your head fast, less = faster).\n"
 		"0 = use CullingFov as before."),
 
+	S_INT(
+		"Render",
+		"FoveatedShading",
+		foveated,
+		1,
+		0,
+		2,
+		"The edges of each eye's 3D image are shaded at a lower rate, where the lenses blur them anyway: faster.\n"
+		"0 = off, 1 = subtle (full detail within 30 degrees of the centre), 2 = strong (full within 22, then half,\n"
+		"a quarter beyond 35). Needs an NVIDIA RTX or GTX 16 card (variable rate shading); does nothing on others"),
 	S_INT(
 		"Upscaler",
 		"Mode",
