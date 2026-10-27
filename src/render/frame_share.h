@@ -44,6 +44,11 @@ struct FrameShare {
 		FrameTag tag;
 	} latest[3];   // [0] left eye, [1] right eye, [2] mono
 	int32_t lastSeq;  // last sequence number handed out
+	// the mod's menu and stats overlay as last drawn (VR thread, under lock): for the game's window (desktop_mirror.cpp)
+	struct Panel {
+		HANDLE handle;  // legacy shared handle (null: none)
+		UINT width, height;
+	} menuPanel, overlayPanel;
 	// GPU that runs the game
 	LUID gameLuid;
 	bool gameLuidValid;

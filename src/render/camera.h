@@ -13,6 +13,7 @@ struct StereoShared {  // written by the VR thread, read by the game thread
 	bool handValid[2];                 // the controllers' grip poses (left, right), LOCAL space, same time as the eyes
 	float handPos[2][3], handRot[2][4];
 	bool menuMode;                     // the UI covers the screen: render flat (mono)
+	DWORD shownTick;                   // GetTickCount() of the last VR frame the headset showed (0: none yet)
 	bool refValid;                     // recentred reference (yaw-only head pose)
 	float refPos[3], refRot[4];
 	int64_t poseBase;  // VR frame display time (XrTime) the poses were predicted from;

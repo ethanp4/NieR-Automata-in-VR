@@ -95,6 +95,16 @@ Item kView[] = {
 		"Off: walk around freely and see all of them.",
 	},
 	{
+		"Hide the character (testing)",
+		T_BOOL,
+		&g_cfg.fpHideBody,
+		0,
+		1,
+		nullptr,
+		0,
+		"First person: the character isn't drawn at all in your view; their shadow stays.",
+	},
+	{
 		"Steady eyes",
 		T_BOOL,
 		&g_cfg.steadyEyes,
@@ -483,6 +493,20 @@ Item kInput[] = {
 	},
 };
 
+Item kOther[] = {
+	{
+		"Controllers in the background",
+		T_BOOL,
+		&g_cfg.backgroundInput,
+		0,
+		1,
+		nullptr,
+		0,
+		"Controllers (VR and gamepads) keep working while the game's window isn't focused, from the title screen on: "
+		"the game's own background play setting is held on. The keyboard and mouse still only work while it's focused.",
+	},
+};
+
 struct Page {
 	const char* name;
 	Item* items;
@@ -492,6 +516,7 @@ Page s_pages[] = {{"View", kView, std::size(kView)},
 				  {"Rendering", kRender, std::size(kRender)},
 				  {"Screen", kScreen, std::size(kScreen)},
 				  {"Controls", kInput, std::size(kInput)},
+				  {"Other", kOther, std::size(kOther)},
 				  {"Info", nullptr, 0}};
 constexpr int32_t kPageCount = std::size(s_pages);
 

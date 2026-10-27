@@ -61,6 +61,16 @@ constexpr Setting kSettings[] = {
 		"1 = the game's rumble is played on the VR controllers"),
 	S_INT(
 		"Input",
+		"BackgroundInput",
+		backgroundInput,
+		1,
+		0,
+		1,
+		"1 = controllers (VR and gamepads) work while the game's window isn't focused, from the title screen on:\n"
+		"the game's own background play setting is held on. The keyboard and mouse still only work while it's\n"
+		"focused. 0 = the game's own setting decides"),
+	S_INT(
+		"Input",
 		"StickFollowsHeadset",
 		stickFollowsHead,
 		0,
@@ -294,6 +304,14 @@ constexpr Setting kSettings[] = {
 		"First person: 1 = the character tracks your headset: your real steps move them in the game, their upper\n"
 		"body follows your head and their arms your controllers, and their head is hidden from your eyes.\n"
 		"0 = the camera starts at their eyes but you walk around freely and see all of them, head included"),
+	S_INT(
+		"Stereo",
+		"HideCharacter",
+		fpHideBody,
+		0,
+		0,
+		1,
+		"First person: 1 = the character isn't drawn at all in your view (their shadow stays), for testing"),
 	S_INT(
 		"Stereo",
 		"SteadyEyes",

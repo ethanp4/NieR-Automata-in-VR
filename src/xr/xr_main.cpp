@@ -197,9 +197,14 @@ void DestroySwap(Swapchain& swap) {
 }
 
 void DestroyPanel(Panel& panel) {
+	FrameShare::Panel* published = &panel == &g_vr.menuPanel ? &g_share.menuPanel : &g_share.overlayPanel;
+	EnterCriticalSection(&g_share.lock);
+	*published = {};
+	LeaveCriticalSection(&g_share.lock);
 	DestroySwap(panel.swap);
 	SafeRelease(panel.rtv);
 	SafeRelease(panel.tex);
+	SafeRelease(panel.shared);
 	panel.shown = false;
 }
 

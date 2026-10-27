@@ -58,6 +58,8 @@ bool s_synchronized;  // this frame: left eye live, right eye replayed
 bool s_secondEye;     // the replay is running (s_frame = the right eye)
 uint32_t s_frameNo;
 float s_backbufferAspect = 16.f / 9.f;
+constexpr DWORD kHeadsetGoneMs = 500;  // no headset frame shown for this long: flat
+bool s_headsetShown;
 float GameCameraAspect() { return s_backbufferAspect > kGameMinAspect ? s_backbufferAspect : kGameMinAspect; }
 pure::M4 s_lastCam;      // camera used for the last eye (after levelling), camera-to-world
 pure::M4 s_lastGameCam;  // the game's own camera, camera-to-world
@@ -574,7 +576,13 @@ void StereoBeginFrame() {
 	}
 	FrameState frame = {};
 	AcquireSRWLockShared(&g_stereo.lock);
-	bool on = g_stereo.enabled && g_stereo.valid && g_stereo.refValid && !g_stereo.menuMode && !s_simpleScene;
+	// the headset showing frames: else (disconnected, taken off, the runtime paused) the game renders flat
+	bool shown = g_stereo.shownTick && GetTickCount() - g_stereo.shownTick < kHeadsetGoneMs;
+	if (shown != s_headsetShown) {
+		s_headsetShown = shown;
+		Log("stereo: %s", shown ? "the headset shows frames: stereo" : "the headset shows no frames (disconnected or idle): flat");
+	}
+	bool on = g_stereo.enabled && shown && g_stereo.valid && g_stereo.refValid && !g_stereo.menuMode && !s_simpleScene;
 	// TopDownFlat: steep top-down views (e.g. the flight unit) go to the flat screen about 1 s after
 	// the camera tilts down TopDownFlatFrom or more, and back about 2 s after it is below
 	// TopDownFlatUntil.
