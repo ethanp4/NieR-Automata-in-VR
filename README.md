@@ -17,7 +17,8 @@ A mod that converts the game NieR: Automata into a VR mod!
 
 - Broad headset and runtime support
 
-- The same sharpness for about a third less graphics work: each eye's camera faces the middle of what that eye can
+- A correct implementation of the headset's asymmetric field of view, for the same sharpness with about a third
+  less graphics work: each eye's camera faces the middle of what that eye can
   see, so no part of the picture is drawn without being seen
 
 - Menus, loading screens and the title as a steady window in the room, drawn into both eyes
