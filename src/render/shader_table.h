@@ -17,6 +17,8 @@ enum PixelShaderClass {
 	PS_TONE_MAPPING = 3,  // holds the vignette parameters
 	PS_EFFECT = 4,        // NieR's effect system: particles, screen filters
 	PS_LIGHT_SCATTERING = 5,
+	PS_GLARE = 6,  // the glare (bloom) around the sun: "g_GlareParam" - not the lens flare
+	PS_CLASS_COUNT  // keep last: tables indexed by the class are this long
 };
 
 // Compute shader passes the mod acts on (viewfix.cpp).

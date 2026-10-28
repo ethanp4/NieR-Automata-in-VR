@@ -5,6 +5,7 @@
 #include "core/config.h"
 #include "core/hook.h"
 #include "core/log.h"
+#include "debug/frame_capture.h"
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
 #include "render/foveated.h"
@@ -12,6 +13,7 @@
 #include "render/viewfix.h"
 #include "ui/menu.h"
 #include "render/frame_handoff.h"
+#include "render/game_effects.h"
 #include <atomic>
 #include <iterator>
 #include <stdio.h>
@@ -690,6 +692,9 @@ static_assert(std::size(s_slotHooks) == 12, "H_Slots<0..11> below");
 template <int I>
 void STDMETHODCALLTYPE H_Slots(ID3D11DeviceContext* c, UINT startSlot, UINT count, void* const* objs) {
 	if (ShouldRecord(c)) RecSetSlots(s_slotHooks[I].op, s_slotHooks[I].stage, startSlot, count, objs);
+	// the frame capture sees vertex-shader resources too (the effect system's per-object data is read there)
+	if (s_slotHooks[I].op == OP_SET_SRV && s_slotHooks[I].stage == RS_VS && !g_replaying && CaptureRecording(c))
+		CaptureShaderResources(ST_VS, startSlot, count, (ID3D11ShaderResourceView* const*)objs);
 	s_slotHooks[I].orig(c, startSlot, count, objs);
 }
 struct ShaderHook {
@@ -1454,7 +1459,7 @@ bool IsShadowPass(ID3D11RenderTargetView* const* rtvs, UINT count, ID3D11DepthSt
 }
 
 void PlayRecording(ID3D11DeviceContext* c) {
-	float patchedConstants[64];
+	float patchedConstants[kPatchScratchFloats];
 	bool inShadowPass = false;  // inside a reused shadow pass
 	s_viewSizeCount = 0;
 	s_skippedShadowDraws = 0;

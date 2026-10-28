@@ -21,6 +21,14 @@ int main() {
 	check(n == 4 && hw[0] == 704, "headset: sizes below 640x480 left out");
 	n = pure::headset_sizes(12000, 20000, nullptr, 0, hw, hh);
 	check(n == 4 && hh[3] == 16000, "headset: only sizes within 16384");
+	// the panel's own render size: the finished picture (headset detail x Output) divided by the
+	// enlargement the chosen quality asks for, which is what PanelRenderSize() sets the game to
+	for (int mode = 0; mode < 4; mode++) {
+		uint32_t w, h;
+		pure::upscale_input_for(2336, 2520, mode, &w, &h);
+		check(pure::upscale_mode((float)2336 / w) == mode, "panel size: lands on the quality it was asked for");
+		check(w <= 2336 && h <= 2520 && w % 8 == 0 && h % 8 == 0, "panel size: no larger than the finished picture");
+	}
 	if (!fails) std::printf("resolution tests passed\n");
 	return fails ? 1 : 0;
 }

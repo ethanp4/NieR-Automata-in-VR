@@ -60,7 +60,7 @@ void ApplyStyle(float fontSize) {
 	colors[ImGuiCol_FrameBgHovered] = ToImVec4(Colors::bar);
 	colors[ImGuiCol_FrameBgActive] = ToImVec4(Colors::accent, 0.35f);
 	colors[ImGuiCol_SliderGrab] = ToImVec4(Colors::accent, 0.55f);
-	colors[ImGuiCol_SliderGrabActive] = ToImVec4(Colors::text);
+	colors[ImGuiCol_SliderGrabActive] = ToImVec4(Colors::accent, 0.9f);  // not white: the value is written over it
 	colors[ImGuiCol_CheckMark] = ToImVec4(Colors::accent);
 	colors[ImGuiCol_CheckboxSelectedBg] = ToImVec4(Colors::bar);
 	colors[ImGuiCol_Button] = ToImVec4(Colors::bar);

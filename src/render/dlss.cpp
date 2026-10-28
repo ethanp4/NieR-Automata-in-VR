@@ -232,7 +232,8 @@ bool DlssInit(ID3D11Device* device) {
 	s_ready = true;
 	char ver[32];
 	ModuleVersion(GetModuleHandleW(L"nvngx_dlss.dll"), ver, sizeof(ver));  // loaded by the capability check
-	snprintf(s_status, sizeof(s_status), "DLSS %s", ver);
+	if (ver[0] && ver[0] != '?') snprintf(s_status, sizeof(s_status), "DLSS %s", ver);
+	else snprintf(s_status, sizeof(s_status), "DLSS is running");  // its file's version wasn't readable ("?" confused JJ)
 	Log("DLSS: ready (nvngx_dlss.dll %s; NGX loader %s)", ver, Utf8(path).s);
 	return true;
 }

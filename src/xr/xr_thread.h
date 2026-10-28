@@ -89,6 +89,7 @@ struct VrState {
 	ID3D11PixelShader* blitPs;
 	ID3D11PixelShader* hudKeyPs;    // HUD/menu extraction: alpha from |full - scene|
 	ID3D11PixelShader* lateWarpPs;  // late warp: an eye image re-aimed to the headset's pose of this frame
+	ID3D11PixelShader* screenPs;    // the flat screen as a window in the room, drawn into both eyes
 	ID3D11Buffer* lateWarpConstants;
 	ID3D11SamplerState* linearSampler;
 	ID3D11Buffer* blitConstants;
@@ -104,6 +105,7 @@ struct VrState {
 
 	int64_t swapFormat;
 	Swapchain screenSwap, eyeSwap[2], hudSwap;
+	Swapchain screenEyeSwap[2];  // the flat screen drawn into the eyes (kept at the headset's own size)
 	Panel menuPanel, overlayPanel;  // the settings menu (ui/menu.cpp), the stats overlay (ui/stats_overlay.cpp)
 	XrPosef menuPose;
 	pure::Q menuYaw;         // the menu faces where you looked when it opened...
@@ -183,9 +185,16 @@ inline bool IsSrgb(int64_t format) {
 		   format == DXGI_FORMAT_B8G8R8X8_UNORM_SRGB;
 }
 
+// The flat screen drawn into an eye: the same 80-byte constant buffer as WarpParams.
+struct ScreenParams {
+	float outTan[4];  // shown eye: tangents of left, right, up, down
+	float half[4];    // the screen: half width, half height in metres (z, w spare)
+	float m[3][4];    // rows of R_screen^T * R_eye, and in .w the eye's position in the screen's space
+};
+
 struct WarpParams {
 	float outTan[4];  // shown eye: tangents of left, right, up, down
-	float srcTan[4];  // rendered image: tangent half-width, half-height
+	float srcTan[4];  // rendered image: tangent half-width, half-height, and its lens centre (x, y)
 	float m[3][4];    // rows of R_render^T * R_shown
 };
 
@@ -194,7 +203,9 @@ bool EnsureSwap(Swapchain& swap, uint32_t width, uint32_t height, const char* wh
 // Draws `srv` (or, with `scene`, the keyed-out UI of `srv`; with `warp`, the late-warped eye image)
 // into the next image of `swap`. Returns false if nothing could be submitted.
 bool RenderInto(Swapchain& swap, ID3D11ShaderResourceView* srv, ID3D11ShaderResourceView* scene = nullptr,
-				const WarpParams* warp = nullptr);
+				const WarpParams* warp = nullptr, bool asScreen = false);
+// Draws the flat screen as a window in the room into one eye of `swap`.
+bool RenderScreenInto(Swapchain& swap, ID3D11ShaderResourceView* srv, const ScreenParams& screen);
 
 // xr_device.cpp
 bool InitDevice();     // created on the game's GPU as soon as the VR thread starts
@@ -202,7 +213,7 @@ void ServiceShare();   // answers the game thread's request for capture textures
 void UpdateContent();  // copies newly finished game frames into views[]
 void MeasureUICoverage();
 void Blit(ID3D11RenderTargetView* rtv, uint32_t width, uint32_t height, ID3D11ShaderResourceView* srv,
-		  ID3D11ShaderResourceView* scene, bool dstSrgb, const WarpParams* warp = nullptr);
+		  ID3D11ShaderResourceView* scene, bool dstSrgb, const WarpParams* warp = nullptr, bool asScreen = false);
 ID3D11ShaderResourceView* KeySrv(const GameView& view);  // the scene image the HUD is cut out against
 
 // xr_frame.cpp

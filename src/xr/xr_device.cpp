@@ -38,7 +38,8 @@ float4 PS(VSOut i) : SV_Target {
 // Late warp: the eye image re-aimed to the headset's pose for this frame, covering exactly
 // the eye's own field of view. Output pixel -> direction in the shown eye (outTan: tangents of left,
 // right, up, down) -> rotated into the eye the image was rendered from (m0..m2 = R_render^T R_shown)
-// -> its symmetric frustum (srcTan: tangent half-width, half-height). Rotation is exact; the small
+// -> the frustum it was rendered with (srcTan: tangent half-width, half-height, and where that lens
+// points when AsymmetricEyes is on). Rotation is exact; the small
 // eye translation between the two poses is ignored, as a compositor's rotational reprojection does.
 cbuffer Warp : register(b1) { float4 outTan; float4 srcTan; float4 m0; float4 m1; float4 m2; };
 float4 PSWarp(VSOut i) : SV_Target {
@@ -46,7 +47,24 @@ float4 PSWarp(VSOut i) : SV_Target {
 	float3 r = float3(dot(m0.xyz, d), dot(m1.xyz, d), dot(m2.xyz, d));
 	if (r.z > -1e-4) return float4(0, 0, 0, 1);
 	float2 t = r.xy / -r.z;
-	float2 uv = float2(t.x / srcTan.x * 0.5 + 0.5, 0.5 - t.y / srcTan.y * 0.5);
+	float2 uv = float2((t.x - srcTan.z) / srcTan.x * 0.5 + 0.5, 0.5 - (t.y - srcTan.w) / srcTan.y * 0.5);
+	if (any(uv < 0) || any(uv > 1)) return float4(0, 0, 0, 1);
+	return float4(Convert(src.SampleLevel(samp, uv, 0).rgb), 1);
+}
+// The flat screen (menus, loading screens, the title) as a window hanging in the room, drawn into
+// both eyes of a projection layer instead of handed over as a quad layer. A quad layer is composited
+// by the VR software from one picture for both eyes, which smears and shears it while the head turns;
+// drawn here, each eye sees the window through its own lens, from where that eye really is, so it
+// stays still and square-on. Output pixel -> direction in the shown eye -> the screen's own space
+// (m0..m2: rows of R_screen^T R_eye, and in .w where that eye is in the screen's space) -> the point
+// where the ray crosses the screen's plane (half: its half width and height in metres).
+float4 PSScreen(VSOut i) : SV_Target {
+	float3 d = float3(lerp(outTan.x, outTan.y, i.uv.x), lerp(outTan.z, outTan.w, i.uv.y), -1);
+	float3 dir = float3(dot(m0.xyz, d), dot(m1.xyz, d), dot(m2.xyz, d));
+	float3 eye = float3(m0.w, m1.w, m2.w);
+	if (dir.z > -1e-6 || eye.z < 1e-4) return float4(0, 0, 0, 1);  // behind the screen, or facing away
+	float2 hit = eye.xy + (-eye.z / dir.z) * dir.xy;
+	float2 uv = float2(hit.x / srcTan.x * 0.5 + 0.5, 0.5 - hit.y / srcTan.y * 0.5);
 	if (any(uv < 0) || any(uv > 1)) return float4(0, 0, 0, 1);
 	return float4(Convert(src.SampleLevel(samp, uv, 0).rgb), 1);
 }
@@ -110,11 +128,20 @@ bool CompileShaders() {
 		SafeRelease(errors);
 		if (SUCCEEDED(warpResult)) g_vr.device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_vr.lateWarpPs);
 		SafeRelease(psBlob);
+		HRESULT screenResult = compile(kShader, sizeof(kShader) - 1, "niervr_screen", nullptr, nullptr, "PSScreen", "ps_4_0",
+									   D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psBlob, &errors);
+		if (FAILED(screenResult)) Log("flat screen: shader compile 0x%08x: %s", (unsigned)screenResult, errors ? (const char*)errors->GetBufferPointer() : "");
+		SafeRelease(errors);
+		if (SUCCEEDED(screenResult)) g_vr.device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_vr.screenPs);
+		SafeRelease(psBlob);
 		D3D11_BUFFER_DESC warpDesc = {};
 		warpDesc.ByteWidth = 80;
 		warpDesc.Usage = D3D11_USAGE_DEFAULT;
 		warpDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-		if (g_vr.lateWarpPs && FAILED(g_vr.device->CreateBuffer(&warpDesc, nullptr, &g_vr.lateWarpConstants))) SafeRelease(g_vr.lateWarpPs);
+		if ((g_vr.lateWarpPs || g_vr.screenPs) && FAILED(g_vr.device->CreateBuffer(&warpDesc, nullptr, &g_vr.lateWarpConstants))) {
+			SafeRelease(g_vr.lateWarpPs);
+			SafeRelease(g_vr.screenPs);
+		}
 	}
 	if (FAILED(hr)) {
 		Log("ERROR: CreateShader 0x%08x", (unsigned)hr);
@@ -398,7 +425,7 @@ void UpdateContent() {
 }
 
 void Blit(ID3D11RenderTargetView* rtv, uint32_t width, uint32_t height, ID3D11ShaderResourceView* srv,
-		  ID3D11ShaderResourceView* scene, bool dstSrgb, const WarpParams* warp) {
+		  ID3D11ShaderResourceView* scene, bool dstSrgb, const WarpParams* warp, bool asScreen) {
 	int mode = (!g_vr.gameImageLinear && dstSrgb) ? 1 : ((g_vr.gameImageLinear && !dstSrgb) ? 2 : 0);
 	// key thresholds on the difference between full and scene-only frames (0..1 colour units)
 	float params[4] = {(float)mode, 0.004f, 0.03f, 0};
@@ -418,10 +445,13 @@ void Blit(ID3D11RenderTargetView* rtv, uint32_t width, uint32_t height, ID3D11Sh
 	g_vr.context->VSSetShader(g_vr.blitVs, nullptr, 0);
 	if (warp) {
 		static_assert(sizeof(WarpParams) == 80, "matches the Warp cbuffer");
+		static_assert(sizeof(ScreenParams) == sizeof(WarpParams), "the screen shader shares it");
 		g_vr.context->UpdateSubresource(g_vr.lateWarpConstants, 0, nullptr, warp, 0, 0);
 		g_vr.context->PSSetConstantBuffers(1, 1, &g_vr.lateWarpConstants);
 	}
-	g_vr.context->PSSetShader(warp ? g_vr.lateWarpPs : (scene ? g_vr.hudKeyPs : g_vr.blitPs), nullptr, 0);
+	g_vr.context->PSSetShader(asScreen ? g_vr.screenPs : warp ? g_vr.lateWarpPs
+															  : (scene ? g_vr.hudKeyPs : g_vr.blitPs),
+							  nullptr, 0);
 	ID3D11ShaderResourceView* srvs[2] = {srv, scene};
 	g_vr.context->PSSetShaderResources(0, 2, srvs);
 	g_vr.context->PSSetSamplers(0, 1, &g_vr.linearSampler);

@@ -16,6 +16,8 @@ void CaptureDraw(uint8_t kind, UINT arg0, UINT arg1, UINT arg2);  // kind: a Dra
 void CaptureMap(ID3D11Resource* buffer, void* data, UINT size);
 void CaptureUnmap(ID3D11Resource* buffer);
 void CaptureUpdate(ID3D11Resource* buffer, const void* data, UINT size);
+// A shader-resource buffer (structured) written with UpdateSubresource: `size` bytes from byte `offset`
+void CaptureBufferUpdate(ID3D11Resource* buffer, UINT offset, const void* data, UINT size);
 void CaptureSetRenderTargets(UINT count, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv);
 void CaptureViewports(UINT count, const D3D11_VIEWPORT* viewports);
 void CaptureExecuteCommandList();

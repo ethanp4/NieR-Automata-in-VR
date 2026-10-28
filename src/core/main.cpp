@@ -1,9 +1,11 @@
 // main.cpp - DLL entry, one-time initialisation, crash reporting.
 #include "core/main.h"
+#include "render/game_resolution.h"
 #include "core/config.h"
 #include "core/d3d11_proxy.h"
 #include "core/log.h"
 #include "render/culling.h"
+#include "game/frame_rate.h"
 #include "render/extra_resolutions.h"
 #include "render/frame_share.h"
 #include "xr/xr_main.h"
@@ -134,9 +136,40 @@ LONG WINAPI CrashFilter(EXCEPTION_POINTERS* pointers) {
 }
 
 // Stack overflows are never meant to be survived; catch them first-chance in case the game's
-// own handler swallows them before our unhandled-exception filter sees them.
+// own handler swallows them before our unhandled-exception filter sees them. Access violations are
+// only noted in the log, first-chance: the game's own handler may deal with them (and then kill the
+// process without our filter ever running), so the log is the only place the address survives.
+int32_t s_avLogs = 12;
 LONG WINAPI StackOverflowWatcher(EXCEPTION_POINTERS* pointers) {
-	if (pointers && pointers->ExceptionRecord && pointers->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) ReportCrash(pointers);
+	if (!pointers || !pointers->ExceptionRecord) return EXCEPTION_CONTINUE_SEARCH;
+	const EXCEPTION_RECORD* record = pointers->ExceptionRecord;
+	if (record->ExceptionCode == EXCEPTION_STACK_OVERFLOW) ReportCrash(pointers);
+	else if (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && s_avLogs > 0) {
+		s_avLogs--;
+		char where[512];
+		DescribeAddress(record->ExceptionAddress, where, sizeof(where));
+		Log("access violation (first chance) at %s: %s address %p, thread %u%s", where,
+			record->NumberParameters >= 2 && record->ExceptionInformation[0] == 1 ? "writing" : "reading",
+			record->NumberParameters >= 2 ? (void*)record->ExceptionInformation[1] : nullptr, (unsigned)GetCurrentThreadId(),
+			s_avLogs ? "" : " (no more of these are logged)");
+		if (pointers->ContextRecord) {  // code addresses on the stack: a rough call path, no symbols needed
+			void** stack = (void**)pointers->ContextRecord->Rsp;
+			int shown = 0;
+			for (int i = 0; i < 256 && shown < 10; i++) {
+				void* value = nullptr;
+				if (!ReadProcessMemory(GetCurrentProcess(), stack + i, &value, sizeof(value), nullptr)) break;
+				HMODULE module = nullptr;
+				if (value && (uintptr_t)value > 0x10000 &&
+					GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)value,
+									   &module) &&
+					module) {
+					DescribeAddress(value, where, sizeof(where));
+					Log("  stack[%d] %s", i, where);
+					shown++;
+				}
+			}
+		}
+	}
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 }  // namespace
@@ -239,12 +272,14 @@ BOOL CALLBACK InitOnceCallback(PINIT_ONCE, PVOID, PVOID*) {
 	lstrcatW(logPath, L"NieRVR.log");
 	LogOpen(logPath);
 	LogEnvironment();
+	GameResolutionInit();  // before the game reads its own settings, when it can
 
 	InitializeCriticalSection(&g_share.lock);
 	InstallCrashHandler();
 	if (!ProxyLoadReal()) Log("FATAL: could not load the real d3d11.dll - the game will not start");
 	ExtraResolutionsInstallHooks();
 	CullingInstallHook();
+	FrameRateInstall();
 	g_initDone = true;
 	return TRUE;
 }

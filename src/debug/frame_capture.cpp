@@ -6,6 +6,7 @@
 #include "core/log.h"
 #include "core/main.h"
 #include "core/pure.h"
+#include "render/texture_tags.h"
 #include <atomic>
 #include <stdio.h>
 #include <string.h>
@@ -25,6 +26,8 @@ enum RecordType : uint16_t {
 	R_FRAME_END = 12,
 	R_SET_SRV = 13,  // u8 stage, pad[3], u32 start, u32 count, count * {u64 res, u32 w, u32 h, u32 fmt, u32 dim}
 	R_SET_UAV = 14,  // same layout as R_SET_SRV (stage = CS)
+	R_BUF_DATA = 16,  // u64 buf, u32 offset, u32 len, data: part of a shader-resource buffer written by UpdateSubresource
+	R_TEX_HASH = 15,  // u64 res, u32 hash (3Dmigoto's texture hash, render/texture_tags.cpp), u32 0: after R_SET_SRV
 };
 static_assert(sizeof(D3D11_VIEWPORT) == 24, "R_VIEWPORT layout");
 
@@ -153,6 +156,18 @@ void EmitViews(uint16_t type, uint8_t stage, UINT start, UINT count, View* const
 		ViewRecord records[16];
 		for (UINT i = 0; i < chunk; i++) DescribeView(views[base + i], &records[i]);
 		EmitRecord(type, &header, sizeof(header), records, chunk * sizeof(ViewRecord));
+		for (UINT i = 0; i < chunk; i++)  // buffers: their contents are read back at the end of the frame
+			if (type == R_SET_SRV && records[i].dim == D3D11_RESOURCE_DIMENSION_BUFFER)
+				AddSeen((ID3D11Buffer*)(uintptr_t)records[i].res, false);
+		// which texture each one is, so an effect's draws can be told apart by their textures (lens flare)
+		for (UINT i = 0; i < chunk; i++) {
+			struct {
+				uint64_t res;
+				uint32_t hash, pad;
+			} tag = {records[i].res, 0, 0};
+			if (records[i].dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D && TextureTagsHash((ID3D11Resource*)(uintptr_t)records[i].res, &tag.hash))
+				EmitRecord(R_TEX_HASH, &tag, sizeof(tag), nullptr, 0);
+		}
 	}
 }
 
@@ -163,7 +178,8 @@ void ReadbackUnseenBuffers(int* readbacks) {
 		if (seen.hasData) continue;
 		D3D11_BUFFER_DESC desc;
 		seen.buf->GetDesc(&desc);
-		if (desc.ByteWidth > 65536) continue;
+		bool constant = (desc.BindFlags & D3D11_BIND_CONSTANT_BUFFER) != 0;
+		if (desc.ByteWidth > (constant ? 65536u : 16u << 20)) continue;
 		desc.Usage = D3D11_USAGE_STAGING;
 		desc.BindFlags = 0;
 		desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
@@ -411,6 +427,16 @@ void CaptureUnmap(ID3D11Resource* buffer) {
 
 void CaptureUpdate(ID3D11Resource* buffer, const void* data, UINT size) {
 	EmitCbData((ID3D11Buffer*)buffer, size, 1, data, size);
+}
+
+void CaptureBufferUpdate(ID3D11Resource* buffer, UINT offset, const void* data, UINT size) {
+	struct {
+		uint64_t buf;
+		uint32_t offset, len;
+	} header = {(uint64_t)(uintptr_t)buffer, offset, size};
+	static_assert(sizeof(header) == 16, "R_BUF_DATA layout");
+	EmitRecord(R_BUF_DATA, &header, sizeof(header), data, size);
+	AddSeen((ID3D11Buffer*)buffer, true);
 }
 
 void CaptureSetRenderTargets(UINT count, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {

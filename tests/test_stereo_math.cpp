@@ -58,6 +58,52 @@ int main() {
 	// symmetric projection keeps depth row and sets focal lengths
 	M4 Ps = m4_symmetric_projection(P, 1.5f, 1.0f);
 	EXPECT(Ps.at(2, 2) == P.at(2, 2) && Ps.at(2, 3) == P.at(2, 3) && Ps.at(3, 2) == -1 && fabsf(Ps.at(0, 0) - 0.6667f) < 1e-4f);
+	// off-centre frustum (AsymmetricEyes): a Quest 3 left eye, l=-1.170 r=0.714 u=0.821 d=-1.213
+	{
+		float l = -1.170f, r = 0.714f, u = 0.821f, d = -1.213f;
+		float hw = (r - l) / 2, hh = (u - d) / 2, cx = (r + l) / 2, cy = (u + d) / 2;
+		M4 Pa = m4_frustum(P, hw, hh, cx, cy);
+		EXPECT(Pa.at(2, 2) == P.at(2, 2) && Pa.at(2, 3) == P.at(2, 3) && Pa.at(3, 2) == -1);
+		// a direction at tangent (tx, ty) one metre in front lands at this NDC
+		auto ndc = [&](float tx, float ty, float* nx, float* ny) {
+			float z = -3.5f;  // any depth: the mapping is the same
+			float px = tx * -z, py = ty * -z;
+			float cw = Pa.at(3, 2) * z;
+			*nx = (Pa.at(0, 0) * px + Pa.at(0, 2) * z) / cw;
+			*ny = (Pa.at(1, 1) * py + Pa.at(1, 2) * z) / cw;
+		};
+		float nx, ny;
+		ndc(cx, cy, &nx, &ny);
+		EXPECT(fabsf(nx) < 1e-5f && fabsf(ny) < 1e-5f);  // the lens centre is the middle of the picture
+		ndc(l, d, &nx, &ny);
+		EXPECT(fabsf(nx + 1) < 1e-5f && fabsf(ny + 1) < 1e-5f);  // and its corners are the picture's
+		ndc(r, u, &nx, &ny);
+		EXPECT(fabsf(nx - 1) < 1e-5f && fabsf(ny - 1) < 1e-5f);
+		// an eye looking straight ahead is exactly the old symmetric projection
+		EXPECT(maxdiff(m4_frustum(P, 1.5f, 1.0f, 0, 0), m4_symmetric_projection(P, 1.5f, 1.0f)) == 0);
+		// and it is cheaper: the symmetric frustum covering the same eye needs this much more picture
+		float cover = (2 * (-l > r ? -l : r)) * (2 * (u > -d ? u : -d));
+		EXPECT(cover / ((r - l) * (u - d)) > 1.4f);
+	}
+	// turned eye (AsymmetricEyes=1): the camera looks at the middle of its own field of view, and a
+	// symmetric frustum of half the eye's angular width then covers exactly what that eye sees
+	{
+		float l = -1.170f, r = 0.714f, u = 0.821f, d = -1.213f;  // a Quest 3 left eye
+		float tanX = (r + l) / 2, tanY = (u + d) / 2;
+		M4 turn = m4_turn_to(tanX, tanY);
+		EXPECT(m4_is_rigid(turn));
+		// straight ahead now points at (tanX, tanY) - the middle of the eye's view, i.e. outwards
+		V3 fwd{-turn.at(0, 2), -turn.at(1, 2), -turn.at(2, 2)};
+		EXPECT(fwd.z < 0);
+		EXPECT(fabsf(fwd.x / -fwd.z - tanX) < 1e-4f);
+		EXPECT(fabsf(fwd.y / -fwd.z - tanY) < 1e-4f);
+		EXPECT(tanX < 0);  // a left eye sees further to the left, so it is turned left
+		// the frustum is half the eye's angular width, and that is cheaper than covering it straight on
+		float halfW = ftan((fatan(r) - fatan(l)) / 2), halfH = ftan((fatan(u) - fatan(d)) / 2);
+		float straightW = -l > r ? -l : r, straightH = u > -d ? u : -d;
+		EXPECT(halfW < straightW && halfH < straightH);
+		EXPECT((straightW * straightH) / (halfW * halfH) > 1.4f);
+	}
 	// cover box: canted asymmetric eye (l=-1.3,r=1.0,u=1.1,d=-1.2) at 16:9
 	float hw, hh;
 	cover_fov(-1.3f, 1.0f, 1.1f, -1.2f, 16.f / 9, &hw, &hh);

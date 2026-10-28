@@ -341,7 +341,10 @@ inline bool upscale_output(uint32_t w, uint32_t h, uint32_t targetW, uint32_t ta
 		float rw = (float)targetW / w, rh = (float)targetH / h;
 		r = rw > rh ? rw : rh;
 	}
-	if (r < 1.02f) r = 1;  // about the target already: anti-aliasing only
+	// Below the Quality band the upscaler's own mode is DLAA, which means "do not resize": asking for
+	// it with an output larger than the input is a configuration NGX does not have, so the picture is
+	// left at its own size and only cleaned up (2026-10-27: the mismatch reached the driver).
+	if (r < 1.22f) r = 1;
 	if (r > 3) r = 3;
 	float big = (float)(w > h ? w : h) * r;
 	if (big > 8192) r *= 8192 / big;
@@ -367,6 +370,47 @@ inline void upscale_input_for(uint32_t ow, uint32_t oh, int mode, uint32_t* w, u
 inline uint32_t jitter_phases(float ratio) {
 	float n = 8 * ratio * ratio;
 	return n < 8 ? 8u : (n > 72 ? 72u : (uint32_t)(n + 0.5f));
+}
+
+// Texture identity (texture_tags.cpp): 3Dmigoto's texture hash, so the TextureOverride hashes of a 3Dmigoto /
+// HelixMod fix name the same textures here. CRC32C (Castagnoli), appending to `crc` like 3Dmigoto's crc32c_hw.
+inline uint32_t crc32c(uint32_t crc, const uint8_t* p, size_t n) {
+	crc = ~crc;
+	for (size_t i = 0; i < n; i++) {
+		crc ^= p[i];
+		for (int k = 0; k < 8; k++) crc = crc >> 1 ^ (0x82F63B78u & (0u - (crc & 1)));
+	}
+	return ~crc;
+}
+typedef uint32_t (*Crc32cFn)(uint32_t crc, const uint8_t* p, size_t n);
+
+// Bytes per 4x4 block of a block-compressed DXGI format (BC1-BC7), 0 for any other format.
+inline uint32_t bc_block_bytes(uint32_t dxgiFormat) {
+	if ((dxgiFormat >= 70 && dxgiFormat <= 72) || (dxgiFormat >= 79 && dxgiFormat <= 81)) return 8;  // BC1, BC4
+	if ((dxgiFormat >= 73 && dxgiFormat <= 78) || (dxgiFormat >= 82 && dxgiFormat <= 84)) return 16;  // BC2, BC3, BC5
+	if (dxgiFormat >= 94 && dxgiFormat <= 99) return 16;                                               // BC6H, BC7
+	return 0;
+}
+
+// 3Dmigoto's hash of a Texture2D created with initial data (ResourceHash.cpp, the default texture_hash=0):
+// the first array slice's top mip, then the 44-byte D3D11_TEXTURE2D_DESC as the game passed it. Its v1.2.1 length
+// (width x height x array size bytes) is used when it fits inside the top mip; otherwise each row of 4x4 blocks
+// without the pitch padding (block-compressed only). False for the one case not reproduced here: an uncompressed
+// texture array. (3Dmigoto also renames screen-sized widths and heights first; the textures this is for are not.)
+inline bool migoto_texture_hash(const uint8_t desc[44], uint32_t width, uint32_t height, uint32_t arraySize, uint32_t format,
+								const uint8_t* data, uint32_t rowPitch, Crc32cFn crc, uint32_t* out) {
+	uint32_t hash = 0;
+	uint32_t block = bc_block_bytes(format);
+	size_t v12 = (size_t)width * height * arraySize;
+	size_t rowBytes = block ? (size_t)((width + 3) / 4) * block : 0;
+	size_t rows = block ? (height + 3) / 4 : height;
+	size_t length = block ? rowBytes * rows : (size_t)rowPitch * height;
+	if (v12 <= length) hash = crc(0, data, v12);
+	else if (!block) return false;
+	else
+		for (size_t r = 0; r < rows; r++) hash = crc(hash, data + r * rowPitch, rowBytes < rowPitch ? rowBytes : rowPitch);
+	*out = crc(hash, desc, 44);
+	return true;
 }
 
 }  // namespace pure

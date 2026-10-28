@@ -27,6 +27,9 @@ struct FrameState {
 	bool handValid[2];
 	pure::M4 handRel[2];  // the controllers' grip poses relative to the reference (metres)
 	float halfW, halfH;
+	float centreX, centreY;  // AsymmetricEyes: where the eye's own axis sits in the picture, in tangent units
+	float lensX, lensY;      // AsymmetricEyes=2: the off-centre lens, in tangent units (0 = centred lens)
+	float turn[2];           // AsymmetricEyes=1: yaw and pitch (radians) the eye camera is turned by
 	float localPos[3], localRot[4];  // eye pose in LOCAL space, for submission
 	bool patchedScene, patchedCam;
 	bool observe;      // stereo is held off only by TopDownFlat: watch the game camera's pitch, don't patch
@@ -42,7 +45,7 @@ struct EyeShot {
 	bool valid;
 	uint32_t frameNo;
 	pure::M4 Ce, Pe, E;
-	float localPos[3], localRot[4], halfW, halfH;
+	float localPos[3], localRot[4], halfW, halfH, centreX, centreY;
 };
 EyeShot s_lastShot[2];  // Synchronized: the right eye, same head pose, for the replay at Present
 // Upscaling (upscale.cpp): each eye's camera this frame [0] and the last frame it was drawn [1], for
@@ -67,6 +70,8 @@ SRWLOCK s_headRelLock = SRWLOCK_INIT;
 pure::M4 s_headRel;
 DWORD s_headRelTick;
 pure::M4 s_viewFix, s_viewFixInv;  // game view -> eye view, and back (this frame)
+pure::M4 s_lastViewFix[2];         // each eye's last game view -> eye view, for data the game uploads before its camera
+bool s_haveLastViewFix[2];
 float s_lastCameraOffset[3];       // world-space offset applied for CameraDolly last frame
 bool s_haveCamera;
 bool s_loggedSteep;
@@ -75,6 +80,48 @@ uint32_t s_pitchFrame;
 int32_t s_steepFrames, s_levelFrames;
 bool s_topDownFlat;
 float s_lastPitch;
+
+// Camera steadiness (logged every 10 s in stereo): how much the GAME's camera itself moves from one frame to the
+// next - tilt steps, how often the tilt reverses (the signature of a shake), height steps - and how much of its tilt
+// the levelling kept. Tells a shaking game camera (near the ground) from shake we add (JJ 2026-10-28).
+struct Steadiness {
+	uint32_t frames, reversals;
+	float lastPitch, lastStep, lastHeight, sumStep, maxStep, sumRise, maxRise, minPitch, maxPitch, maxKept;
+	bool have;
+	DWORD since;
+} s_steady;
+
+void NoteSteadiness(const pure::M4& cam, float pitch, float kept) {
+	Steadiness& s = s_steady;
+	float height = cam.at(1, 3);
+	if (s.have) {
+		float step = pitch - s.lastPitch, rise = height - s.lastHeight;
+		float a = step < 0 ? -step : step, r = rise < 0 ? -rise : rise;
+		if (a > 0.05f && s.lastStep * step < 0) s.reversals++;
+		if (a > 0.05f) s.lastStep = step;
+		s.sumStep += a;
+		s.maxStep = a > s.maxStep ? a : s.maxStep;
+		s.sumRise += r;
+		s.maxRise = r > s.maxRise ? r : s.maxRise;
+		s.frames++;
+	} else {
+		s = {};
+		s.have = true;
+		s.since = GetTickCount();
+		s.minPitch = s.maxPitch = pitch;
+	}
+	s.lastPitch = pitch;
+	s.lastHeight = height;
+	s.minPitch = pitch < s.minPitch ? pitch : s.minPitch;
+	s.maxPitch = pitch > s.maxPitch ? pitch : s.maxPitch;
+	s.maxKept = kept > s.maxKept ? kept : s.maxKept;
+	if (GetTickCount() - s.since < 10000 || !s.frames) return;
+	Log("camera steadiness (10 s, game camera): tilt %.0f..%.0f deg (+ = up), step per frame avg %.2f max %.2f deg, "
+		"%u tilt reversals; height step avg %.3f max %.3f; levelling %s, most tilt kept %.0f%%",
+		(double)s.minPitch, (double)s.maxPitch, (double)(s.sumStep / s.frames), (double)s.maxStep, s.reversals,
+		(double)(s.sumRise / s.frames), (double)s.maxRise, g_cfg.levelCamera ? "on" : "off", (double)(s.maxKept * 100));
+	s.have = false;
+}
 
 void NotePitch(float pitch) {
 	if (s_pitchFrame == s_frameNo) return;
@@ -357,10 +404,11 @@ void PatchScene(float* data) {
 	pure::M4 C = pure::m4_rigid_inverse(V);
 	s_lastGameCam = C;
 	pure::M4 C0 = C;
+	float kept = g_cfg.levelCamera ? 0 : 1;  // fraction of the game camera's tilt that reaches the eyes
 	if (g_cfg.levelCamera) {
 		// Levelled while the game camera looks roughly horizontally; in steep (top-down) views its
 		// pitch is kept, so the arena lies in front of you instead of at your feet.
-		float pitch = 0, kept = 0;
+		float pitch = 0;
 		C0 = pure::m4_level_camera_adaptive(C, g_cfg.steepFrom, g_cfg.steepFull, &pitch, &kept);
 		bool steep = kept > 0.5f;
 		if (steep != s_loggedSteep) {
@@ -370,7 +418,10 @@ void PatchScene(float* data) {
 				steep ? "steep (top-down) view, keeping the camera's tilt" : "levelled again");
 		}
 	}
-	if (!s_secondEye) NotePitch(pure::camera_pitch_deg(C));
+	if (!s_secondEye) {
+		NotePitch(pure::camera_pitch_deg(C));
+		if (StereoActive()) NoteSteadiness(C, pure::camera_pitch_deg(C), kept);
+	}
 	pure::M4 fpCam = {};
 	s_firstPerson = g_cfg.firstPerson && FirstPersonCamera(C, &fpCam);
 	FirstPersonSetHiding(s_firstPerson && s_fpOnHead && !s_walk.away);  // out of them: their head shown, not posed
@@ -425,7 +476,7 @@ void PatchScene(float* data) {
 		s_headRelTick = GetTickCount();
 	}
 	pure::M4 Ve = pure::m4_rigid_inverse(Ce);
-	pure::M4 Pe = pure::m4_symmetric_projection(P, s_frame.halfW, s_frame.halfH);
+	pure::M4 Pe = pure::m4_frustum(P, s_frame.halfW, s_frame.halfH, s_frame.lensX, s_frame.lensY);
 	// Upscaling: shift the image by a different fraction of a pixel each frame (clip-space
 	// translation; w = -z, so the offset goes into the z column with a minus)
 	float jitterClip[2] = {0, 0}, jitterPixels[2] = {0, 0};
@@ -448,6 +499,10 @@ void PatchScene(float* data) {
 	CullingObserveGameFov(2 * pure::fatan(1 / P.at(1, 1)) * 57.29578f);
 	s_viewFix = pure::m4_mul(Ve, C);     // game view space -> world -> eye view space
 	s_viewFixInv = pure::m4_mul(V, Ce);  // and back
+	if (s_frame.eye >= 0 && s_frame.eye < 2) {
+		s_lastViewFix[s_frame.eye] = s_viewFix;
+		s_haveLastViewFix[s_frame.eye] = true;
+	}
 	memcpy(data, Ve.m, 64);
 	memcpy(data + 16, PeJ.m, 64);
 	memcpy(data + 32, VPe.m, 64);
@@ -464,15 +519,19 @@ void PatchScene(float* data) {
 		memcpy(shot.localRot, s_frame.localRot, 16);
 		shot.halfW = s_frame.halfW;
 		shot.halfH = s_frame.halfH;
+		shot.centreX = s_frame.lensX;
+		shot.centreY = s_frame.lensY;
 	}
 	if (!s_loggedFirstPatch) {
 		s_loggedFirstPatch = true;
 		Log("stereo: first camera patch. game camera at (%.2f, %.2f, %.2f), game vfov %.1f deg; eye frustum "
-			"tan %.3f x %.3f (%.1f x %.1f deg%s), world scale %.2f, level camera %d",
+			"tan %.3f x %.3f (%.1f x %.1f deg%s), eye turned %.1f %.1f deg, off-centre lens %.3f %.3f, world scale %.2f, "
+			"level camera %d",
 			(double)C.at(0, 3), (double)C.at(1, 3), (double)C.at(2, 3),
 			(double)(2 * pure::fatan(1 / P.at(1, 1)) * 57.29578f), (double)s_frame.halfW, (double)s_frame.halfH,
 			(double)(2 * pure::fatan(s_frame.halfW) * 57.29578f), (double)(2 * pure::fatan(s_frame.halfH) * 57.29578f),
-			g_cfg.anamorphic ? ", anamorphic" : "", (double)g_cfg.worldScale, g_cfg.levelCamera);
+			g_cfg.anamorphic ? ", anamorphic" : "", (double)(s_frame.turn[0] * 57.29578f), (double)(s_frame.turn[1] * 57.29578f),
+			(double)s_frame.lensX, (double)s_frame.lensY, (double)g_cfg.worldScale, g_cfg.levelCamera);
 		// for depth-based reprojection: how the game maps view depth to the depth buffer
 		Log("stereo: scene projection depth terms: P22 %.6f P23 %.6f P32 %.3f P33 %.3f (column-vector layout)",
 			(double)P.at(2, 2), (double)P.at(2, 3), (double)P.at(3, 2), (double)P.at(3, 3));
@@ -480,6 +539,9 @@ void PatchScene(float* data) {
 }
 
 void PatchCamParam(float* data) {
+	// The game's own screen-space passes rebuild a view ray from these two tangents, and the buffer
+	// has no room for a lens centre: with AsymmetricEyes their rays are tilted by (centreX, centreY)
+	// against the picture. Watch ambient occlusion, the GI volumes pass and the screen distortions.
 	data[2] = s_frame.halfW;
 	data[3] = s_frame.halfH;
 	if (s_haveCamera) {
@@ -530,7 +592,41 @@ void FillEye(FrameState& frame, int eyeIndex) {
 	memcpy(frame.localRot, eyeRot, 16);
 	frame.poseBase = g_stereo.poseBase;
 	const float* tangents = g_stereo.eyeTan[frame.eye];  // tan of left, right, up, down
-	if (g_cfg.anamorphic) {
+	if (g_cfg.anamorphic && g_cfg.asymmetricEyes) {
+		// A headset's eyes look outwards, so a straight-ahead frustum wide enough to cover one of
+		// them wastes about a third of its pixels on the narrow side. Two ways to spend only what
+		// the eye sees:
+		//   1 (default) turn the eye to look at the middle of its own field of view and keep the
+		//     lens centred. Same saving, and every centred-lens assumption in the game's own
+		//     screen-space passes still holds. The turn travels with the eye's pose, so the late
+		//     warp and the runtime get the picture aimed where it was really drawn.
+		//   2 an off-centre lens, which is geometrically the cleanest - but NieR's screen-space
+		//     passes rebuild their view rays from two tangents with no room for a lens centre, so
+		//     the shadows end up tilted against the picture and slide as the head moves.
+		float left = pure::fatan(tangents[0]), right = pure::fatan(tangents[1]);
+		float up = pure::fatan(tangents[2]), down = pure::fatan(tangents[3]);
+		frame.centreX = (tangents[1] + tangents[0]) * 0.5f;  // where the eye's own axis sits in the picture
+		frame.centreY = (tangents[2] + tangents[3]) * 0.5f;
+		if (g_cfg.asymmetricEyes >= 2) {
+			frame.halfW = (tangents[1] - tangents[0]) * 0.5f;
+			frame.halfH = (tangents[2] - tangents[3]) * 0.5f;
+			frame.lensX = frame.centreX;
+			frame.lensY = frame.centreY;
+		} else {
+			// turned eye: the frustum is symmetric about the middle of the eye's field of view,
+			// which is half its angular width. The pose turn is applied below.
+			frame.turn[0] = (left + right) * 0.5f;
+			frame.turn[1] = (up + down) * 0.5f;
+			frame.halfW = pure::ftan((right - left) * 0.5f);
+			frame.halfH = pure::ftan((up - down) * 0.5f);
+			frame.centreX = pure::ftan(frame.turn[0]);  // the axis, in the turned picture's tangents
+			frame.centreY = pure::ftan(frame.turn[1]);
+		}
+		if (g_cfg.verticalFill < 1) {  // optional: crop the vertical angle for more detail
+			float fill = g_cfg.verticalFill < 0.5f ? 0.5f : g_cfg.verticalFill;
+			frame.halfH = pure::ftan(pure::fatan(frame.halfH) * fill);
+		}
+	} else if (g_cfg.anamorphic) {
 		// Fill the eye's own field of view in both directions: the 16:9 image is stretched to
 		// the eye's shape (non-square pixels) instead of wasting width. CamParam stores the
 		// horizontal and vertical tangents separately, so depth-based effects stay correct.
@@ -553,6 +649,21 @@ void FillEye(FrameState& frame, int eyeIndex) {
 	}
 	frame.halfW *= g_cfg.fovScale;
 	frame.halfH *= g_cfg.fovScale;
+	if (frame.turn[0] != 0 || frame.turn[1] != 0) {
+		// Turn the eye camera to look at the middle of its own field of view: yaw about the eye's up
+		// axis, then pitch. Built straight from the tangents (cos = 1/sqrt(1 + tan^2)), so no trig is
+		// needed. Straight ahead then lands at (centreX, centreY), which is what makes the symmetric
+		// frustum above cover exactly what this eye sees.
+		pure::M4 turn = pure::m4_turn_to(frame.centreX, frame.centreY);
+		frame.eyeRel = pure::m4_mul(frame.eyeRel, turn);
+		// the pose the picture is submitted with has to carry the turn too, or the runtime (and the
+		// late warp) would aim it straight ahead
+		pure::Q turned = pure::q_from_m4(pure::m4_mul(eye, turn));
+		frame.localRot[0] = turned.x;
+		frame.localRot[1] = turned.y;
+		frame.localRot[2] = turned.z;
+		frame.localRot[3] = turned.w;
+	}
 }
 }  // namespace
 
@@ -588,7 +699,7 @@ void StereoBeginFrame() {
 	frame.observe = on && s_topDownFlat;
 	on = on && !s_topDownFlat;
 	if (on) {
-		bool synchronized = g_cfg.synchronized && ReplayAvailable();
+		bool synchronized = StereoSynchronized() && ReplayAvailable();
 		FillEye(frame, synchronized ? 0 : (int)(s_frameNo & 1));
 		s_synchronized = synchronized;
 		if (synchronized) {
@@ -619,6 +730,8 @@ void StereoGetFrameTag(FrameTag* tag) {
 	memcpy(tag->rot, s_frame.localRot, 16);
 	tag->tanHalfW = s_frame.halfW;
 	tag->tanHalfH = s_frame.halfH;
+	tag->tanCentreX = s_frame.lensX;
+	tag->tanCentreY = s_frame.lensY;
 	tag->poseBase = s_frame.active ? s_frame.poseBase : 0;
 	tag->hasWorld = false;
 	if (s_frame.active && s_frame.patchedScene && s_haveCamera) {
@@ -642,10 +755,12 @@ void StereoGetFrameTag(FrameTag* tag) {
 }
 
 bool StereoActive() { return s_frame.active; }
-bool StereoEyeTangents(float* halfW, float* halfH) {
+bool StereoEyeTangents(float* halfW, float* halfH, float centre[2]) {
 	if (!s_frame.active || !(s_frame.halfW > 0.05f && s_frame.halfH > 0.05f)) return false;
 	*halfW = s_frame.halfW;
 	*halfH = s_frame.halfH;
+	centre[0] = s_frame.centreX;
+	centre[1] = s_frame.centreY;
 	return true;
 }
 bool StereoSynchronizedFrame() { return s_synchronized && s_frame.active; }
@@ -659,7 +774,7 @@ void StereoBeginSecondEye() {
 // Depth reprojection: the other eye's image from the previous frame, moved to this frame's camera.
 // T = that eye's view as it would be now (same head pose relative to the camera) <- its view then;
 // proj = its projection's x/y scale and depth terms. Returns false when there is no such image.
-bool StereoReprojectParams(int eye, float T[16], float proj[4], FrameTag* tag) {
+bool StereoReprojectParams(int eye, float T[16], float proj[4], float centre[2], FrameTag* tag) {
 	if (eye < 0 || eye > 1 || !s_frame.active || !s_frame.patchedScene || s_frame.eye == eye || !s_haveCamera) return false;
 	const EyeShot& shot = s_lastShot[eye];
 	if (!shot.valid || shot.frameNo + 1 != s_frameNo) return false;
@@ -670,6 +785,10 @@ bool StereoReprojectParams(int eye, float T[16], float proj[4], FrameTag* tag) {
 	proj[1] = shot.Pe.at(1, 1);
 	proj[2] = shot.Pe.at(2, 2);
 	proj[3] = shot.Pe.at(2, 3);
+	// the lens centre, as clip-space terms: the same eye's lens then and now, so one pair does both
+	// the unprojecting and the projecting
+	centre[0] = shot.Pe.at(0, 2);
+	centre[1] = shot.Pe.at(1, 2);
 	*tag = {};
 	tag->eye = eye;
 	tag->patched = true;
@@ -679,15 +798,56 @@ bool StereoReprojectParams(int eye, float T[16], float proj[4], FrameTag* tag) {
 	memcpy(tag->rot, shot.localRot, 16);
 	tag->tanHalfW = shot.halfW;
 	tag->tanHalfH = shot.halfH;
+	tag->tanCentreX = shot.centreX;
+	tag->tanCentreY = shot.centreY;
 	return true;
 }
+// AFW: THIS frame's eye moved into the other eye's view. Source = the eye drawn this frame, destination =
+// the other eye at this frame's game camera with its last head-relative offset (the same place the
+// previous-frame warp above puts it, so the two can be combined). T = destination view <- source view;
+// each side has its own projection and lens centre (equal with turned eyes, mirrored with the off-centre
+// lens). The tag describes the synthesised other eye.
+bool StereoAfwParams(int eye, float T[16], float projSrc[4], float lensSrc[2], float projDst[4], float lensDst[2], FrameTag* tag) {
+	int other = 1 - eye;
+	if (eye < 0 || eye > 1 || !s_frame.active || !s_frame.patchedScene || s_frame.eye != eye || !s_haveCamera) return false;
+	const EyeShot& source = s_lastShot[eye];
+	const EyeShot& destination = s_lastShot[other];
+	if (!source.valid || source.frameNo != s_frameNo || !destination.valid) return false;
+	pure::M4 now = pure::m4_mul(s_lastCam, destination.E);
+	pure::M4 transform = pure::m4_mul(pure::m4_rigid_inverse(now), source.Ce);
+	memcpy(T, transform.m, 64);
+	const pure::M4* projections[2] = {&source.Pe, &destination.Pe};
+	float* scales[2] = {projSrc, projDst};
+	float* lenses[2] = {lensSrc, lensDst};
+	for (int k = 0; k < 2; k++) {
+		scales[k][0] = projections[k]->at(0, 0);
+		scales[k][1] = projections[k]->at(1, 1);
+		scales[k][2] = projections[k]->at(2, 2);
+		scales[k][3] = projections[k]->at(2, 3);
+		lenses[k][0] = projections[k]->at(0, 2);
+		lenses[k][1] = projections[k]->at(1, 2);
+	}
+	*tag = {};
+	tag->eye = other;
+	tag->patched = true;
+	tag->hasScene = true;
+	tag->noUI = true;
+	memcpy(tag->pos, destination.localPos, 12);
+	memcpy(tag->rot, destination.localRot, 16);
+	tag->tanHalfW = destination.halfW;
+	tag->tanHalfH = destination.halfH;
+	tag->tanCentreX = destination.centreX;
+	tag->tanCentreY = destination.centreY;
+	return true;
+}
+
 int StereoFrameEye() { return s_frame.active ? s_frame.eye : -1; }
 
 // Upscaling: this frame's camera of `eye` and how it moved since that eye's previous frame.
 // T = previous eye view <- this eye view; cur/prev = x scale, y scale, P22, P23 of the projections
 // (without jitter); jitter = this frame's offset in render pixels. False if the camera of `eye`
 // wasn't found this frame. *hasPrev: there is a previous frame close enough to compare with.
-bool StereoUpscaleCams(int eye, float T[16], float cur[4], float prev[4], float jitter[2], bool* hasPrev) {
+bool StereoUpscaleCams(int eye, float T[16], float cur[4], float prev[4], float centres[4], float jitter[2], bool* hasPrev) {
 	if (eye < 0 || eye > 1) return false;
 	const UpscaleCamera& current = s_upscaleCams[eye][0];
 	const UpscaleCamera& previous = s_upscaleCams[eye][1];
@@ -702,6 +862,8 @@ bool StereoUpscaleCams(int eye, float T[16], float cur[4], float prev[4], float 
 		outs[k][1] = projs[k]->at(1, 1);
 		outs[k][2] = projs[k]->at(2, 2);
 		outs[k][3] = projs[k]->at(2, 3);
+		centres[k * 2] = projs[k]->at(0, 2);  // lens centre, as clip-space terms (0 when centred)
+		centres[k * 2 + 1] = projs[k]->at(1, 2);
 	}
 	jitter[0] = current.jitter[0];
 	jitter[1] = current.jitter[1];
@@ -731,7 +893,8 @@ bool StereoHeadRelative(pure::M4* rel) {
 // that holds the eye's whole view plus marginDeg on every side (game frames lag the head a little).
 // 0 if no eye has been rendered yet.
 float StereoHeadCullFov(float marginDeg) {
-	float halfW = s_frame.halfW, halfH = s_frame.halfH;
+	// an off-centre lens reaches further on one side: cull by the outermost corner either way
+	float halfW = fabsf(s_frame.lensX) + s_frame.halfW, halfH = fabsf(s_frame.lensY) + s_frame.halfH;
 	if (!(halfW > 0.05f && halfH > 0.05f && s_backbufferAspect > 0.1f)) return 0;
 	float halfV = halfH > halfW / s_backbufferAspect ? halfH : halfW / s_backbufferAspect;  // the frustum has the game's aspect
 	float half = pure::fatan(halfV) + marginDeg * 0.0174533f;
@@ -744,6 +907,26 @@ bool StereoGetViewFix(float T[16], float Tinv[16]) {
 	if (!s_frame.active || !s_frame.patchedScene) return false;
 	memcpy(T, s_viewFix.m, 64);
 	memcpy(Tinv, s_viewFixInv.m, 64);
+	return true;
+}
+
+bool StereoGetEyeViewFix(float T[16]) {
+	if (!s_frame.active) return false;
+	if (s_frame.patchedScene) {
+		memcpy(T, s_viewFix.m, 64);
+		return true;
+	}
+	// Before the camera: this frame's eye pose (already set for this eye, s_frame) on the last game camera. Only the
+	// levelling depends on the game camera, so this is right to a fraction of a degree. The last frame's whole view fix
+	// lagged a head nod by a frame - up to 7 deg on quick nods: the sun glow flickered (JJ 2026-10-28, sun trace).
+	if (s_haveCamera) {
+		pure::M4 Ce = pure::m4_mul(s_lastCam, EyeMatrixScaled());
+		pure::M4 fix = pure::m4_mul(pure::m4_rigid_inverse(Ce), s_lastGameCam);
+		memcpy(T, fix.m, 64);
+		return true;
+	}
+	if (s_frame.eye < 0 || s_frame.eye > 1 || !s_haveLastViewFix[s_frame.eye]) return false;
+	memcpy(T, s_lastViewFix[s_frame.eye].m, 64);
 	return true;
 }
 

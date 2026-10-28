@@ -16,6 +16,7 @@
 #include "render/d3d_hooks.h"
 #include "game/first_person.h"
 #include "render/extra_resolutions.h"
+#include "render/game_resolution.h"
 #include "render/foveated.h"
 #include "render/frame_share.h"
 #include "render/game_effects.h"
@@ -398,6 +399,15 @@ void CaptureFrame(IDXGISwapChain* swapChain) {
 
 // Right after the game's Present: the copy has been submitted with it.
 void AfterPresent() {
+	// The game installs its own unhandled-exception filter after ours, so a crash never reached our
+	// report. Put ours back every few seconds: it chains to the game's, so nothing is taken away.
+	static DWORD s_filterRefreshed;
+	DWORD now = GetTickCount();
+	if (now - s_filterRefreshed > 3000) {
+		s_filterRefreshed = now;
+		InstallCrashHandler();
+	}
+	GameResolutionTick();
 	FrameLatencyTick();
 	if (s_ring[0]) PollPending();
 	UiBeginFrame();
@@ -493,6 +503,7 @@ void InstallPresentHook(void* target, const char* how) {
 // The backbuffer changes size: every feature frees its textures of the old size first.
 HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swapChain, UINT count, UINT width, UINT height, DXGI_FORMAT format,
 											  UINT flags) {
+	RememberGameSize(width, height);
 	UiOnResizeBuffers();
 	ReplayRelease();
 	ReprojectRelease();

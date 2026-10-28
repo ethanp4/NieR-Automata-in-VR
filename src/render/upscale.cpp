@@ -16,6 +16,8 @@
 #include <d3dcompiler.h>
 
 namespace {
+// the shader's cbuffer P, the struct that fills it and the buffer it is copied into: one size
+constexpr UINT kPrepConstantsSize = 144;
 constexpr char kHlsl[] = R"(
 cbuffer P : register(b0) {
 	row_major float4x4 T;  // this eye's view now -> the same eye's view in its previous frame
@@ -23,6 +25,7 @@ cbuffer P : register(b0) {
 	float4 prev;           // its previous projection
 	float4 jit;            // this frame's jitter in NDC (x, y), render width, height
 	float4 opt;            // x > 0: the previous frame is known (else no motion)
+	float4 lens;           // AsymmetricEyes: lens centre as clip-space terms, now (x, y) and then (z, w)
 };
 Texture2D<float> dep : register(t0);
 Texture2D col : register(t1);
@@ -42,10 +45,10 @@ void prep(uint3 id : SV_DispatchThreadID) {
 		float den = -d - cur.z;
 		float z = abs(den) > 1e-9 ? cur.w / den : -1e7;
 		if (!(z < -1e-4) || z < -1e7) z = -1e7;  // sky: so far away only turning moves it
-		float3 p = float3(ndc.x * -z / cur.x, ndc.y * -z / cur.y, z);
+		float3 p = float3((ndc.x + lens.x) * -z / cur.x, (ndc.y + lens.y) * -z / cur.y, z);
 		float3 q = mul(T, float4(p, 1)).xyz;
 		if (q.z < -1e-4) {
-			float2 pn = float2(q.x * prev.x, q.y * prev.y) / -q.z;
+			float2 pn = float2(q.x * prev.x + lens.z * q.z, q.y * prev.y + lens.w * q.z) / -q.z;
 			mv = float2(pn.x - ndc.x, ndc.y - pn.y) * 0.5 * jit.zw;  // pixels to where it was (y down)
 		}
 	}
@@ -179,7 +182,7 @@ bool InitShaders(ID3D11Device* dev) {
 	if (FAILED(hr)) Log("ERROR: upscaler shaders: 0x%08x %s", (unsigned)hr, err ? (const char*)err->GetBufferPointer() : "");
 	SafeRelease(cs), SafeRelease(vs), SafeRelease(ps), SafeRelease(err);
 	D3D11_BUFFER_DESC bd = {};
-	bd.ByteWidth = 128;
+	bd.ByteWidth = kPrepConstantsSize;
 	bd.Usage = D3D11_USAGE_DEFAULT;
 	bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 	if (SUCCEEDED(hr)) hr = dev->CreateBuffer(&bd, nullptr, &s_prepConstants);
@@ -307,19 +310,19 @@ void CopyDepth(ID3D11DeviceContext* c, int eye, uint32_t present) {
 // Upscales `scene` (render size) for `eye` into s_dlssOutput. False if this frame can't be.
 bool RunDlss(ID3D11DeviceContext* c, ID3D11Device* dev, int eye, ID3D11ShaderResourceView* sceneSrv) {
 	EyeState& e = s_eyes[eye];
-	float T[16], cur[4], prev[4], jit[2];
+	float T[16], cur[4], prev[4], centres[4], jit[2];
 	bool hasPrev = false;
 	if (!e.depthValid || e.depthPresentCount != s_presentCount) return false;
-	if (!StereoUpscaleCams(eye, T, cur, prev, jit, &hasPrev)) return false;
+	if (!StereoUpscaleCams(eye, T, cur, prev, centres, jit, &hasPrev)) return false;
 	// depth convention: farther = larger value normally, smaller with reversed depth
 	float dNear = -cur[2] - cur[3] / -1.0f, dFar = -cur[2] - cur[3] / -1000.0f;
 	bool inverted = dFar < dNear;
 	if (!DlssPrepare(c, eye, s_renderW, s_renderH, s_outputW, s_outputH, s_dlssMode, g_cfg.dlssModel, inverted)) return false;
 	struct {
 		float T[16];
-		float cur[4], prev[4], jit[4], opt[4];
+		float cur[4], prev[4], jit[4], opt[4], lens[4];
 	} constants;
-	static_assert(sizeof(constants) == 128, "cbuffer P");
+	static_assert(sizeof(constants) == kPrepConstantsSize, "cbuffer P");
 	memcpy(constants.T, T, 64);
 	memcpy(constants.cur, cur, 16);
 	memcpy(constants.prev, prev, 16);
@@ -329,6 +332,7 @@ bool RunDlss(ID3D11DeviceContext* c, ID3D11Device* dev, int eye, ID3D11ShaderRes
 	constants.jit[3] = (float)s_renderH;
 	constants.opt[0] = hasPrev ? 1.f : 0.f;
 	constants.opt[1] = constants.opt[2] = constants.opt[3] = 0;
+	memcpy(constants.lens, centres, 16);  // this frame's lens centre (x, y) and the previous frame's (z, w)
 	c->UpdateSubresource(s_prepConstants, 0, nullptr, &constants, 0, 0);
 	c->CSSetShader(s_prepShader, nullptr, 0);
 	c->CSSetConstantBuffers(0, 1, &s_prepConstants);
@@ -403,11 +407,11 @@ bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UIN
 	if (!g_cfg.upscaler)
 		status[0] = 0;
 	else if (s_upscaling)
-		snprintf(status, sizeof(status), "%s %s (%.2fx), %ux%u -> %ux%u", DlssStatus(), kModeNames[s_dlssMode], (double)s_outputW / s_renderW, s_renderW,
-				 s_renderH, s_outputW, s_outputH);
+		snprintf(status, sizeof(status), "Upscaler: %s (%.2fx) - the game draws %ux%u, your headset gets %ux%u. %s", kModeNames[s_dlssMode],
+				 (double)s_outputW / s_renderW, s_renderW, s_renderH, s_outputW, s_outputH, DlssStatus());
 	else
 		snprintf(status, sizeof(status), "%s", DlssStatus());
-	if (s_upscaling && s_targetW && s_targetH) {
+	if (s_upscaling && s_targetW && s_targetH && !g_cfg.panelResolution) {
 		// the game resolutions that give each mode for this output (same shape as the game's image)
 		uint32_t qualityW = w, qualityH = h, balancedW, balancedH, performanceW, performanceH;
 		pure::upscale_output(w, h, s_targetW, s_targetH, &qualityW, &qualityH);  // the target in the game's shape
@@ -419,8 +423,10 @@ bool UpscaleBeginPresent(ID3D11DeviceContext* c, UINT w, UINT h, UINT* outW, UIN
 		pure::upscale_input_for(ow, oh, 1, &qualityW, &qualityH);
 		pure::upscale_input_for(ow, oh, 2, &balancedW, &balancedH);
 		pure::upscale_input_for(ow, oh, 3, &performanceW, &performanceH);
-		snprintf(advice, sizeof(advice), "Set the game to: DLAA %ux%u, Quality %ux%u, Balanced %ux%u, Performance %ux%u", ow, oh,
-				 qualityW, qualityH, balancedW, balancedH, performanceW, performanceH);
+		snprintf(advice, sizeof(advice),
+				 "In the game's own resolution list: %ux%u = sharpest, %ux%u = quality, %ux%u = balanced, "
+				 "%ux%u = fastest",
+				 ow, oh, qualityW, qualityH, balancedW, balancedH, performanceW, performanceH);
 	}
 	SetStatus(status, advice);
 	static char lastAdvice[160];

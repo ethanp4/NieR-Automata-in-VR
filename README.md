@@ -17,6 +17,16 @@ A mod that converts the game NieR: Automata into a VR mod!
 
 - Broad headset and runtime support
 
+- Each eye's camera turned to the middle of its own view: the same picture from about a third fewer pixels
+
+- Menus, loading screens and the title as a steady window in the room, drawn into both eyes
+
+- Game resolution and DLSS quality set from the VR panel
+
+- Frame rates above 60 (experimental): 72, 80, 90, 120 or the headset's own rate, with the game kept at its normal speed
+
+- Lens flare off by default, sun glow correct in both eyes
+
 ## Install
 1. Download the the latest release. Open the game folder: in Steam, right-click NieR:Automata > Manage > Browse local files
 
@@ -36,8 +46,11 @@ can comfortably run. If performance is poor, try a lower resolution and upscale 
 
 ## Performance tips
 
-- Alternating mode (the default) is the fastest; Synchronized (F5) looks smoother but needs about twice the GPU work
-- Try DLSS to improve resolution
+- Alternating mode (the default) is the fastest; Synchronized (F5) looks smoother but needs about twice the GPU work;
+  AFW draws one eye per frame and builds the other from it, so both eyes show the same moment
+- Try DLSS to improve resolution. The fast DLSS model (the default) costs 2-3 ms less per frame than "best"
+- Above 60 fps: back up your saves first. Set the headset to a rate your graphics card holds, then pick
+  "Headset rate" in the panel (Rendering > Game frame rate)
 
 
 ## VR controllers
@@ -64,7 +77,7 @@ trackpads = sticks.
   Insert          settings menu
   F8              recenter the view and the screen in front of you
   F12             stereo 3D / flat screen
-  F5              stereo mode: alternating / synchronized
+  F5              stereo mode: alternating / synchronized / AFW
   Shift+F12       steep top-down views flat on/off
   F6 / F7         screen and HUD closer / farther
   F9 / F10        screen and HUD smaller / larger

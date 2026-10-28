@@ -34,13 +34,18 @@ int StereoFrameEye();  // the eye this frame renders (-1 = mono)
 bool StereoGameCamera(float pos[3], float fwd[3], float up[3]);
 bool StereoHeadRelative(pure::M4* rel);              // eye pose relative to the game camera (head culling)
 float StereoHeadCullFov(float marginDeg);            // radians; 0 = not known yet
-bool StereoEyeTangents(float* halfW, float* halfH);  // this frame's eye image: tangents of its half-angles (false: mono)
+bool StereoEyeTangents(float* halfW, float* halfH, float centre[2]);  // this frame's eye image: tangents of its half-angles and where its lens points (false: mono)
 bool StereoGetViewFix(float T[16], float Tinv[16]);  // game view -> eye view (and back), this frame
+// The same for data the game uploads BEFORE this eye's camera (light scattering): this frame's once the camera is
+// patched, else this frame's eye pose on the last game camera (only the levelling depends on the camera).
+bool StereoGetEyeViewFix(float T[16]);
 void StereoOnMap(ID3D11Resource* res, void* data, UINT size);
 void StereoBeforeUnmap(ID3D11Resource* res);
 const void* StereoPatchUpdate(UINT size, const void* data, float* scratch);
 bool StereoSynchronizedFrame();  // this frame renders the left eye and replays the right one
 void StereoBeginSecondEye();     // switch the camera patching to the right eye (same head pose)
 bool StereoSecondEyePatched();
-bool StereoReprojectParams(int eye, float T[16], float proj[4], FrameTag* tag);  // depth reprojection
-bool StereoUpscaleCams(int eye, float T[16], float cur[4], float prev[4], float jitter[2], bool* hasPrev);
+bool StereoReprojectParams(int eye, float T[16], float proj[4], float centre[2], FrameTag* tag);  // depth reprojection
+// AFW: this frame's eye moved into the other eye's view (source/destination projection and lens centre each)
+bool StereoAfwParams(int eye, float T[16], float projSrc[4], float lensSrc[2], float projDst[4], float lensDst[2], FrameTag* tag);
+bool StereoUpscaleCams(int eye, float T[16], float cur[4], float prev[4], float centres[4], float jitter[2], bool* hasPrev);

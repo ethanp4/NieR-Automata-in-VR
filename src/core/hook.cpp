@@ -4,10 +4,15 @@
 #include "core/main.h"
 #include "MinHook.h"
 
+namespace {
+SRWLOCK s_suspendLock = SRWLOCK_INIT;
+}
+void ThreadSuspendLock() { AcquireSRWLockExclusive(&s_suspendLock); }
+void ThreadSuspendUnlock() { ReleaseSRWLockExclusive(&s_suspendLock); }
+
 bool HookFunction(void* target, void* detour, void** orig, const char* name) {
-	static SRWLOCK lock = SRWLOCK_INIT;
 	static bool ready = false;
-	AcquireSRWLockExclusive(&lock);
+	ThreadSuspendLock();  // MH_EnableHook suspends the other threads
 	if (!ready) {
 		MH_STATUS st = MH_Initialize();
 		ready = st == MH_OK || st == MH_ERROR_ALREADY_INITIALIZED;
@@ -15,7 +20,7 @@ bool HookFunction(void* target, void* detour, void** orig, const char* name) {
 	}
 	MH_STATUS st = ready ? MH_CreateHook(target, detour, orig) : MH_ERROR_NOT_INITIALIZED;
 	if (st == MH_OK) st = MH_EnableHook(target);
-	ReleaseSRWLockExclusive(&lock);
+	ThreadSuspendUnlock();
 	if (st != MH_OK) {
 		char where[300];
 		DescribeAddress(target, where, sizeof(where));
