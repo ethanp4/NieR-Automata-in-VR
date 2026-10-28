@@ -341,7 +341,10 @@ XrVector2f StickDeadzone(XrVector2f v) {
 	if (v.x * v.x + v.y * v.y < 0.06f * 0.06f) return {0, 0};
 	return v;
 }
-float TriggerDeadzone(float v) { return v < 0.04f ? 0 : v; }
+// A resting or lightly touching finger reads up to about 0.25 on Touch controllers, and the game counts a
+// trigger as pressed from 30 of 255 (0.12): below kTriggerDeadzone nothing, above it the rest of the travel
+constexpr float kTriggerDeadzone = 0.3f;
+float TriggerDeadzone(float v) { return v <= kTriggerDeadzone ? 0 : (v - kTriggerDeadzone) / (1 - kTriggerDeadzone); }
 
 void UpdateRumble() {
 	float amplitude[2] = {(float)s_rumbleLeft / 65535.0f, (float)s_rumbleRight / 65535.0f};

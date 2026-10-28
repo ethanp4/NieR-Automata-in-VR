@@ -641,7 +641,9 @@ void FirstPersonOnSetRenderTargets(UINT count, ID3D11RenderTargetView* const* rt
 }
 
 bool FirstPersonSkipDraw() {
-	if (!s_hiding || !g_cfg.fpTracking || !s_mainTarget || s_boundPart < 0 || !pure::is_head_only_part(s_boundPart)) return false;
+	if (!s_hiding || !s_mainTarget || s_boundPart < 0) return false;
+	if (g_cfg.fpHideBody) return true;  // HideCharacter: all of them (their shadow keeps them)
+	if (!g_cfg.fpTracking || !pure::is_head_only_part(s_boundPart)) return false;
 	if (!s_loggedHiding) {
 		s_loggedHiding = true;
 		Log("first person: hiding the character's head in the main view (their shadow keeps it)");

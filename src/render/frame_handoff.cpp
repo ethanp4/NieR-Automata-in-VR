@@ -9,6 +9,7 @@
 #include "core/log.h"
 #include "core/main.h"
 #include "debug/hot_module.h"
+#include "game/background_input.h"
 #include "debug/position_finder.h"
 #include "debug/frame_capture.h"
 #include "debug/gpu_timing.h"
@@ -18,6 +19,7 @@
 #include "render/extra_resolutions.h"
 #include "render/game_resolution.h"
 #include "render/foveated.h"
+#include "ui/desktop_mirror.h"
 #include "render/frame_share.h"
 #include "render/game_effects.h"
 #include "ui/hud_layer.h"
@@ -264,6 +266,8 @@ void CaptureFrame(IDXGISwapChain* swapChain) {
 	D3D11_TEXTURE2D_DESC desc;
 	backbuffer->GetDesc(&desc);
 	DXGI_FORMAT format = ConcreteFormat(desc.Format);
+	DXGI_SWAP_CHAIN_DESC swapDesc = {};
+	HWND window = SUCCEEDED(swapChain->GetDesc(&swapDesc)) ? swapDesc.OutputWindow : nullptr;
 	if (s_presentCount++ == 0) {
 		Log("first Present: backbuffer %ux%u format %d msaa %u", desc.Width, desc.Height, (int)desc.Format, desc.SampleDesc.Count);
 		ExtraResolutionsOnFirstPresent(swapChain);
@@ -353,6 +357,7 @@ void CaptureFrame(IDXGISwapChain* swapChain) {
 			ID3D11Texture2D* upscaledScene = UpscaleScene(g_replayCtx, StereoFrameEye(), scene);
 			GpuTimingMark(g_replayCtx, "eye to headset");
 			int eyeSlot = PushToRing(backbuffer.Get(), false, format, upscaledScene, false, nullptr, scene);
+			if (StereoFrameEye() == 0) DesktopMirrorCompose(g_replayCtx, backbuffer.Get(), scene, window);
 			FrameTag tag;
 			GpuTimingMark(g_replayCtx, "depth reprojection");
 			ID3D11Texture2D* warped = eyeSlot >= 0 && (!upscaling || upscaledScene) ? ReprojectOtherEye(g_replayCtx, upscaledScene, backbuffer.Get(), &tag) : nullptr;
@@ -366,6 +371,7 @@ void CaptureFrame(IDXGISwapChain* swapChain) {
 			ID3D11Texture2D* upscaledScene = UpscaleScene(g_replayCtx, StereoFrameEye(), scene);
 			GpuTimingMark(g_replayCtx, "eye to headset");
 			int left = PushToRing(backbuffer.Get(), desc.SampleDesc.Count > 1, format, upscaledScene, false, nullptr, scene);
+			if (StereoFrameEye() == 0) DesktopMirrorCompose(g_replayCtx, backbuffer.Get(), scene, window);
 			// Synchronized: the same frame again for the right eye (replay.cpp), into the next slot.
 			if (synchronized && left >= 0) {
 				bool inBackbuffer = false;
@@ -388,6 +394,7 @@ void CaptureFrame(IDXGISwapChain* swapChain) {
 				}
 			}
 		}
+		if (StereoFrameEye() >= 0) DesktopMirrorShow(g_replayCtx, backbuffer.Get());  // the window: the last left eye, UI unsqueezed
 		if (s_droppedPairs && GetTickCount() - s_dropReportTick > 30000) {
 			s_dropReportTick = GetTickCount();
 			Log("synchronized: %u game frames not shown in the last 30 s (GPU behind: lower the game's resolution)",
@@ -438,6 +445,7 @@ HRESULT PresentCommon(int hookIndex, void* returnAddress, IDXGISwapChain* swapCh
 			if (g_replayCtx) FoveatedSceneEnd(g_replayCtx);  // a frame without UI: off before our own passes
 			CaptureBeforePresent();
 			PositionFinderPoll();
+			BackgroundInputPoll();
 			HotModulePoll();
 			CaptureFrame(swapChain);
 			if (g_replayCtx) GpuTimingFrameEnd(g_replayCtx);

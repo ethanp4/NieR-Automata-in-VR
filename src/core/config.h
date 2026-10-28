@@ -39,6 +39,7 @@ struct Config {
 	float cameraDolly;           // metres to move the camera along its line of sight (towards the character)
 	int32_t firstPerson;         // eyes at the character's eyes (or the game camera's look-at target), not behind them
 	int32_t fpTracking;          // first person: the character tracks your headset and controllers, its head hidden
+	int32_t fpHideBody;          // first person: the character isn't drawn at all in your view (testing)
 	int32_t steadyEyes;          // first person: sideways the camera follows their body, not their head's animations
 	int32_t keyFirstPerson;      // [Keys] FirstPerson
 	// [Render]
@@ -85,6 +86,7 @@ struct Config {
 	int32_t vrControllers;            // VR controllers act as an XInput gamepad
 	int32_t vrRumble;                 // the game's rumble goes to the VR controllers
 	int32_t motionControls;           // swing a hand to attack (vr_controllers.cpp)
+	int32_t backgroundInput;          // the game's background play setting held on: controllers work while unfocused
 	int32_t stickFollowsHead;         // the left stick's forward is where your headset faces, not the recentred forward
 	int32_t swingSensitivity;         // motion controls: 0 = relaxed, 1 = normal (input/waggle.h)
 	int32_t iniAdded;                 // settings added to an older ini at startup

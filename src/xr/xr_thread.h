@@ -52,6 +52,7 @@ struct Panel {
 	Swapchain swap;
 	ID3D11Texture2D* tex;
 	ID3D11RenderTargetView* rtv;
+	ID3D11Texture2D* shared;  // a copy the game's device can open: the game's window shows it (desktop_mirror.cpp)
 	bool shown;  // the swapchain has a released image
 };
 

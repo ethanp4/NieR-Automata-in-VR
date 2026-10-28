@@ -31,6 +31,7 @@ bool KeyPressed(int vk) {
 	return pressed;
 }
 
+constexpr XrDuration kShownPeriodNs = 40000000;  // frames slower than 25 a second: no headset is showing them
 namespace {
 // The game resolution with the headset's full detail, for the headset-shaped sizes in the game's
 // resolution list (extra_resolutions.cpp) from the next start. Saved when it changes by over 2%.
@@ -415,6 +416,19 @@ void Frame() {
 	if (MenuTakeRecenter()) g_vr.recenterRequested = true;
 	UpdateEyePoses(frameState.predictedDisplayTime);
 	WatchSpace();  // TODO: i dont think this function works perfectly
+	// Shown: the session visible, and frames at a headset's rate. Virtual Desktop keeps a disconnected
+	// headset's session focused but paces it at 10 frames a second
+	bool shown = frameState.shouldRender && (g_vr.state == XR_SESSION_STATE_VISIBLE || g_vr.state == XR_SESSION_STATE_FOCUSED) &&
+				 frameState.predictedDisplayPeriod > 0 && frameState.predictedDisplayPeriod < kShownPeriodNs;
+	if (shown) {
+		ExclusiveLock guard(&g_stereo.lock);
+		g_stereo.shownTick = GetTickCount();
+	}
+	static XrDuration loggedPeriod;
+	if (!shown && frameState.predictedDisplayPeriod >= kShownPeriodNs && frameState.predictedDisplayPeriod != loggedPeriod) {
+		loggedPeriod = frameState.predictedDisplayPeriod;
+		Log("headset: frames paced at %.0f Hz: not shown on a headset (disconnected?)", 1e9 / (double)frameState.predictedDisplayPeriod);
+	}
 	if (frameState.shouldRender) {
 		if (!g_vr.screenPlaced || g_vr.recenterRequested) PlaceScreen(frameState.predictedDisplayTime);
 		UpdateContent();
@@ -731,6 +745,20 @@ bool RenderPanel(Panel& panel, int width, int height, const char* what, PanelDra
 			return false;
 		}
 		panel.shown = false;
+		// a copy for the game's window
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+		desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+		HANDLE handle = nullptr;
+		ComPtr<IDXGIResource> dxgi;
+		if (SUCCEEDED(g_vr.device->CreateTexture2D(&desc, nullptr, &panel.shared)) &&
+			SUCCEEDED(panel.shared->QueryInterface(__uuidof(IDXGIResource), (void**)&dxgi)) && SUCCEEDED(dxgi->GetSharedHandle(&handle))) {
+			FrameShare::Panel* published = &panel == &g_vr.menuPanel ? &g_share.menuPanel : &g_share.overlayPanel;
+			EnterCriticalSection(&g_share.lock);
+			*published = {handle, (UINT)width, (UINT)height};
+			LeaveCriticalSection(&g_share.lock);
+		} else {
+			SafeRelease(panel.shared);
+		}
 	}
 	if (!draw(g_vr.device, g_vr.context, panel.rtv, width, height)) return panel.shown;
 	uint32_t imageIndex = 0;
@@ -747,6 +775,10 @@ bool RenderPanel(Panel& panel, int width, int height, const char* what, PanelDra
 		if (image) {
 			g_vr.context->CopyResource(image.Get(), panel.tex);
 		}
+	}
+	if (panel.shared) {
+		g_vr.context->CopyResource(panel.shared, panel.tex);
+		g_vr.context->Flush();  // the game's device reads it
 	}
 	XrSwapchainImageReleaseInfo releaseInfo = {};
 	releaseInfo.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
