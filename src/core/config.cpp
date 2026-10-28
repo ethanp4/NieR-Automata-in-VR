@@ -595,6 +595,33 @@ constexpr Setting kSettings[] = {
 		"headset they can\'t be seen in 3D, and in AFW mode they flicker). 1 = keep it"),
 	S_INT(
 		"Render",
+		"GameVsync",
+		gameVsync,
+		0,
+		0,
+		1,
+		"0 = the game's V-sync is ignored: its desktop window never waits for the monitor, so the monitor's\n"
+		"refresh can't hold back the headset's frame rate. 1 = use the game's own V-sync setting"),
+	S_INT(
+		"Render",
+		"GameAntiAliasing",
+		gameAntiAliasing,
+		0,
+		0,
+		1,
+		"0 = the mod sets the game's own anti-aliasing to off at start (DLSS smooths the edges better, and with\n"
+		"the game's MSAA DLSS cannot run). 1 = leave the game's setting alone"),
+	S_INT(
+		"Render",
+		"GameMotionBlur",
+		gameMotionBlur,
+		0,
+		0,
+		1,
+		"0 = the mod sets the game's motion blur to off at start (it smears the picture in a headset).\n"
+		"1 = leave the game's setting alone"),
+	S_INT(
+		"Render",
 		"GameFrameRate",
 		gameFrameRate,
 		0,

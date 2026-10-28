@@ -28,6 +28,7 @@ A mod that converts the game NieR: Automata into a VR mod!
 - Frame rates above 60 (experimental): 72, 80, 90, 120 or the headset's own rate, with the game kept at its normal speed
 
 - Lens flare off by default, sun glow correct in both eyes
+- The game's own anti-aliasing and motion blur are switched off for you at start (DLSS smooths the edges better, and the game's MSAA would stop DLSS), and its V-sync is ignored so the monitor can't hold back the headset's frame rate. `GameAntiAliasing=1`, `GameMotionBlur=1` or `GameVsync=1` in NieRVR.ini keep the game's own setting
 
 ## Install
 1. Download the the latest release. Open the game folder: in Steam, right-click NieR:Automata > Manage > Browse local files
@@ -36,7 +37,7 @@ A mod that converts the game NieR: Automata into a VR mod!
 
 3. Launch the game, VR should work automatically as long as your headset is connected and steamvr is running like normal
 
-4. It's highly recommended to **DISABLE BLUR** in game, it will ruin the image. And to use DLSS instead of the games own antialiasing which looks much better
+4. Motion blur, the game's anti-aliasing and V-sync are turned off by the mod (blur would ruin the image, and DLSS smooths better than the game's own anti-aliasing)
 
 5. In the game's settings, use borderless mode and pick a resolution that your computer
 can comfortably run. If performance is poor, try a lower resolution and upscale with dlss

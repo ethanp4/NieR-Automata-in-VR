@@ -72,6 +72,9 @@ struct Config {
 	int32_t panelResolution;  // the mod sets the size the game renders (from the two settings above)
 	int32_t sunGlare;         // 0 = the game's glare pass (the bloom around the sun) draws nothing
 	int32_t lensFlare;        // 0 = the lens flare's draws (found by their textures) draw nothing
+	int32_t gameVsync;        // 0 = the game's Present never waits for the monitor (the headset sets the pace)
+	int32_t gameAntiAliasing; // 0 = the game's own anti-aliasing is set to off in its settings (DLSS smooths)
+	int32_t gameMotionBlur;   // 0 = the game's motion blur is set to off in its settings
 	int32_t scatterPerEye;    // the light scattering's sun direction turned into each eye's view
 	int32_t gameFrameRate;    // 0 = the game's own 60, 1..4 = 72 / 80 / 90 / 120 (game/frame_rate.cpp)
 	int32_t gameSpeedFix;     // above 60: the game advances by the real frame time, not a 60th per frame

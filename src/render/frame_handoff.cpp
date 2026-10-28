@@ -450,6 +450,12 @@ HRESULT PresentCommon(int hookIndex, void* returnAddress, IDXGISwapChain* swapCh
 			CaptureFrame(swapChain);
 			if (g_replayCtx) GpuTimingFrameEnd(g_replayCtx);
 		}
+		if (syncInterval && !g_cfg.gameVsync) {
+			static bool logged = false;
+			if (!logged) Log("game V-sync: the game presents with sync interval %u; ignored (GameVsync=0)", syncInterval);
+			logged = true;
+			syncInterval = 0;
+		}
 	} else {
 		if (LogBudget(s_nestedLogs, 5)) {
 			// Present re-entered on the same thread (some overlay/wrapper calls it from inside Present).

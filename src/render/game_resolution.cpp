@@ -17,6 +17,10 @@
 namespace {
 constexpr DWORD kFileSize = 72;
 constexpr DWORD kWidthOffset = 8, kHeightOffset = 12;
+// more of the game's graphics settings (found 2026-10-28 by changing each in its menu): V-sync 0 = off,
+// anti-aliasing 4 = off (0-3 its SMAA/MSAA choices), motion blur 0 = off
+constexpr DWORD kVsyncOffset = 0x1c, kAntiAliasingOffset = 0x20, kMotionBlurOffset = 0x28;
+constexpr uint32_t kAntiAliasingOff = 4;
 
 wchar_t s_path[MAX_PATH];
 bool s_havePath;
@@ -73,7 +77,44 @@ void ShowState(uint32_t panelW, uint32_t panelH) {
 	MenuSetInfo(INFO_PANEL_RESOLUTION, text);
 }
 
-// Writes the size into the game's settings (a copy of the original is kept the first time).
+// Replaces the game's settings file (a copy of the original is kept the first time).
+bool WriteFileBytes(const uint8_t* data, const char* what) {
+	wchar_t backup[MAX_PATH];
+	_snwprintf(backup, MAX_PATH, L"%ls.niervr-original", s_path);
+	CopyFileW(s_path, backup, TRUE);  // TRUE: only the first time - it keeps the player's own setting
+	HANDLE file = CreateFileW(s_path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (file == INVALID_HANDLE_VALUE) {
+		Log("%s: cannot write the game's settings (error %u)", what, (unsigned)GetLastError());
+		return false;
+	}
+	DWORD written = 0;
+	bool ok = WriteFile(file, data, kFileSize, &written, nullptr) && written == kFileSize;
+	CloseHandle(file);
+	return ok;
+}
+
+// The game's own anti-aliasing and motion blur, off unless the ini keeps them: DLSS does the smoothing (and
+// cannot read the depth of an MSAA picture), and blur smears in a headset. Its V-sync is handled at Present.
+void TurnOffGameEffects() {
+	if (g_cfg.gameAntiAliasing && g_cfg.gameMotionBlur) return;
+	uint8_t data[kFileSize];
+	if (!ReadFileBytes(data)) return;
+	uint32_t aa = At(data, kAntiAliasingOffset), blur = At(data, kMotionBlurOffset), vsync = At(data, kVsyncOffset);
+	if (!Plausible(At(data, kWidthOffset), At(data, kHeightOffset)) || aa > kAntiAliasingOff || blur > 1 || vsync > 1) {
+		Log("game effects: the game's settings do not look as expected (anti-aliasing %u, motion blur %u, V-sync %u); left alone", aa,
+			blur, vsync);
+		return;
+	}
+	bool aaChange = !g_cfg.gameAntiAliasing && aa != kAntiAliasingOff, blurChange = !g_cfg.gameMotionBlur && blur != 0;
+	if (!aaChange && !blurChange) return;
+	if (aaChange) Put(data, kAntiAliasingOffset, kAntiAliasingOff);
+	if (blurChange) Put(data, kMotionBlurOffset, 0);
+	if (WriteFileBytes(data, "game effects"))
+		Log("game effects: turned off in the game's settings:%s%s (was anti-aliasing %u, motion blur %u)", aaChange ? " anti-aliasing" : "",
+			blurChange ? " motion blur" : "", aa, blur);
+}
+
+// Writes the size into the game's settings.
 bool Apply(uint32_t w, uint32_t h, const char* why) {
 	uint8_t data[kFileSize];
 	if (!ReadFileBytes(data)) {
@@ -87,20 +128,9 @@ bool Apply(uint32_t w, uint32_t h, const char* why) {
 	}
 	s_writtenW = savedW, s_writtenH = savedH;
 	if (savedW == w && savedH == h) return true;
-	wchar_t backup[MAX_PATH];
-	_snwprintf(backup, MAX_PATH, L"%ls.niervr-original", s_path);
-	CopyFileW(s_path, backup, TRUE);  // TRUE: only the first time - it keeps the player's own setting
 	Put(data, kWidthOffset, w);
 	Put(data, kHeightOffset, h);
-	HANDLE file = CreateFileW(s_path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (file == INVALID_HANDLE_VALUE) {
-		Log("resolution: cannot write the game's settings (error %u)", (unsigned)GetLastError());
-		return false;
-	}
-	DWORD written = 0;
-	bool ok = WriteFile(file, data, kFileSize, &written, nullptr) && written == kFileSize;
-	CloseHandle(file);
-	if (!ok) return false;
+	if (!WriteFileBytes(data, "resolution")) return false;
 	s_writtenW = w, s_writtenH = h;
 	Log("resolution: the game's saved resolution is now %ux%u, was %ux%u (%s)", w, h, savedW, savedH, why);
 	return true;
@@ -121,8 +151,10 @@ bool GameResolutionSizes(uint32_t* drawW, uint32_t* drawH, uint32_t* headsetW, u
 void GameResolutionInit() {
 	s_headsetW = (uint32_t)g_cfg.headsetWidth;
 	s_headsetH = (uint32_t)g_cfg.headsetHeight;
+	if (!SettingsPath()) return;
+	TurnOffGameEffects();
 	uint32_t w, h;
-	if (!PanelSize(&w, &h) || !SettingsPath()) return;
+	if (!PanelSize(&w, &h)) return;
 	Apply(w, h, "the panel's Resolution and DLSS quality");
 }
 
