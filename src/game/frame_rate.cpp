@@ -33,6 +33,11 @@
 //   0x56029c, 0x560452, 0x561291; factors up to 1 = snap): detours call BlendForStep (1 - (1 - t)^step, exact), with every
 //   volatile register saved. Timed clock effects (slow motion) count their delay (+0x28) and duration (+0x24) in frames
 //   (0x14c0d2, 0x14c0e0): lowered by the whole 60ths that really passed (0 or 1 a frame above 60, always 1 at 60).
+// - The limiter skips its wait while the game's window is minimised (`test byte [0x177f6c4], 4; jne` at 0x24a1ae: bit 4
+//   = the window procedure's WM_SIZE with SIZE_MINIMIZED, block +0x34, copied into the flags after the message pump at
+//   0x26e444). An exclusive-fullscreen game minimises when it loses focus, and BackgroundInput keeps it running, so it
+//   ran uncapped there - still a 60th of a second per frame, so too fast - and capped again once focused (Ethan, PR 1).
+//   The jump is turned into a no-op: the chosen rate holds whether the window is focused, covered or minimised.
 // Not covered yet (NOTES A8): three inline copies of the getter's fallback paths (0x19f81c, 0x1d5c60, 0x223afa), and
 // anything counted in whole frames (slow-motion countdowns are, `dec [clock+0x24]`).
 #include "game/frame_rate.h"
@@ -51,14 +56,18 @@ constexpr uintptr_t kLimiter = 0x24a150, kPeriod60Imm = 0x24a817, kPeriod30Imm =
 					kOneConst = 0xdba840, kStepGetter = 0x14b990, kGamePtr = 0x177f1a0, kTimeScalePtr = 0x176dea0,
 					kStepClampJump = 0x14beb4, kStepClampContext = 0x14beac, kMeasuredStep = 0x1029fd0;
 constexpr uint32_t kPeriodOffset = 0x308, kGameUnitsPer60 = 50;  // thirds of a millisecond
-// [Render] GameFrameRate: 0 = the game's own 60; -1 = the headset's rate, paced by us (PaceToHeadset)
-constexpr int kRates[] = {0, 72, 80, 90, 120, -1};
+// [Render] GameFrameRate: 0 = the game's own 60; -1 = the headset's rate, paced by us (PaceToHeadset); 250 = unlimited
+// (as fast as the graphics card goes, kept below 250 so menus and loading screens don't spin at thousands)
+constexpr int kRates[] = {0, 72, 80, 90, 120, -1, 250};
 constexpr int32_t kOutOfTheWayUnits = 12;  // the game's own limiter at 250 fps: it never waits while we pace
 
 // What the code must look like before anything is touched (JJ's build; anything else: left alone)
 constexpr uint8_t kLimiterBytes[] = {0x48, 0x8b, 0xc4, 0x48, 0x89, 0x48, 0x08, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56, 0x41, 0x57};
 constexpr uint8_t kPeriod60Bytes[] = {0xb8, 0x32, 0x00, 0x00, 0x00};
 constexpr uint8_t kPeriod30Bytes[] = {0xb8, 0x64, 0x00, 0x00, 0x00};
+constexpr uintptr_t kMinimisedSkip = 0x24a1b5;
+constexpr uint8_t kMinimisedSkipBytes[] = {0x0f, 0x85, 0x0b, 0x01, 0x00, 0x00};  // jne 0x24a2c6: past the Sleep and spin
+constexpr uint8_t kNop6[] = {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00};
 constexpr uint8_t kClockBaseBytes[] = {0xf3, 0x0f, 0x10, 0x15};  // movss xmm2, [rip + disp32] -> the shared 1.0
 constexpr uint8_t kStepGetterBytes[] = {0x48, 0x8b, 0x01, 0x48, 0x85, 0xc0, 0x75, 0x1e};
 // movss [rbx+0xb0], xmm1; jae +0x0f; mov dword [rbx+0xb0], 1.0 (the measured step's minimum)
@@ -90,6 +99,7 @@ uint8_t s_clampOpcode = 0x73;  // what the minimum's jump is now: 0x73 jae (the 
 std::atomic<int64_t> s_headsetPeriodNs, s_headsetFrameQpc;  // from the VR thread (FrameRateNoteHeadsetFrame)
 bool HeadsetMode();
 int32_t s_appliedUnits;  // the period we last wrote (0 = the game's own)
+bool s_minimisedSkipOk;  // the limiter's skip-while-minimised jump is where expected (written once, from the game thread)
 
 typedef uint64_t(__fastcall* PFN_Limiter)(void*, void*, void*, void*);
 typedef float(__fastcall* PFN_Step)(void**);
@@ -959,6 +969,11 @@ uint64_t __fastcall H_Limiter(void* a, void* b, void* c, void* d) {
 	QueryPerformanceCounter(&now);
 	double dt = s_lastEntry.QuadPart ? (double)(now.QuadPart - s_lastEntry.QuadPart) / (double)s_freq.QuadPart : 0;
 	s_lastEntry = now;
+	if (s_minimisedSkipOk) {  // here, on the only thread that runs the limiter: it can't be inside the jump being written
+		WriteCode(s_exe + kMinimisedSkip, kNop6, sizeof(kNop6));
+		s_minimisedSkipOk = false;
+		Log("game frame rate: the game's limiter now also waits while its window is minimised (same rate focused or not)");
+	}
 	// the settings once per frame: the panel (VR thread) may change them meanwhile
 	const bool stepFixWanted = g_cfg.gameStepFix != 0, speedFixWanted = g_cfg.gameSpeedFix != 0;
 	int32_t units = TargetUnits();
@@ -1046,6 +1061,8 @@ void FrameRateInstall() {
 	}
 	s_clampOk = Matches(kStepClampContext, kStepClampBytes, sizeof(kStepClampBytes));
 	if (!s_clampOk) Log("game frame rate: the measured step's minimum isn't where expected: left as it is");
+	s_minimisedSkipOk = Matches(kMinimisedSkip, kMinimisedSkipBytes, sizeof(kMinimisedSkipBytes));
+	if (!s_minimisedSkipOk) Log("game frame rate: the limiter's minimised-window jump isn't where expected: left as it is");
 	s_near = AllocNearExe();
 	s_clockBase = s_near ? (float*)s_near + NV_CLOCK_BASE : nullptr;
 	if (s_clockBase) *s_clockBase = 1.0f;

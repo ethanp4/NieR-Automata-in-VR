@@ -76,7 +76,7 @@ struct Config {
 	int32_t gameAntiAliasing; // 0 = the game's own anti-aliasing is set to off in its settings (DLSS smooths)
 	int32_t gameMotionBlur;   // 0 = the game's motion blur is set to off in its settings
 	int32_t scatterPerEye;    // the light scattering's sun direction turned into each eye's view
-	int32_t gameFrameRate;    // 0 = the game's own 60, 1..4 = 72 / 80 / 90 / 120 (game/frame_rate.cpp)
+	int32_t gameFrameRate;    // 0 = the game's own 60, 1..4 = 72 / 80 / 90 / 120, 5 = headset, 6 = unlimited (game/frame_rate.cpp)
 	int32_t gameSpeedFix;     // above 60: the game advances by the real frame time, not a 60th per frame
 	int32_t gameStepFix;      // above 60: the game's own measured frame step may go below a 60th (animation)
 	int32_t frameTimers;      // above 60: the game's timers that move a 60th per frame follow the real time

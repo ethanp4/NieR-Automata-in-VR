@@ -626,9 +626,10 @@ constexpr Setting kSettings[] = {
 		gameFrameRate,
 		0,
 		0,
-		5,
+		6,
 		"EXPERIMENTAL. The game's frame rate: 0 = its own 60 (default), 1 = 72, 2 = 80, 3 = 90, 4 = 120, 5 = the\n"
-		"headset's own rate, in step with it (no hitches: set the headset to a rate your graphics card holds).\n"
+		"headset's own rate, in step with it (no hitches: set the headset to a rate your graphics card holds),\n"
+		"6 = unlimited (as fast as your graphics card goes, up to 250; suits the alternating modes, one eye per frame).\n"
 		"Above 60 some things in the game may run too fast; back up your saves first"),
 	S_INT(
 		"Render",

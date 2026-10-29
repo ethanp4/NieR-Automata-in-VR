@@ -225,14 +225,15 @@ Item kRender[] = {
 		T_CHOICE,
 		&g_cfg.gameFrameRate,
 		0,
-		5,
-		"60 (the game's own)|72|80|90|120|Headset rate",
+		6,
+		"60 (the game's own)|72|80|90|120|Headset rate|Unlimited",
 		0,
 		"Lets the game run faster than its 60 frames a second, so the world moves more smoothly in the headset. Some "
 		"things in the game may run too fast at a higher rate: back up your saves first. Your graphics card must also "
 		"keep up: if the rate shown in the headset stays lower, pick a lower rate or a lower resolution. Headset rate: the "
 		"game runs at exactly your headset's refresh rate and in step with it, so no hitches - set the headset to a rate "
-		"your graphics card can hold (72 or 80 Hz in Virtual Desktop, or 90 with the OFXR bridge).",
+		"your graphics card can hold (72 or 80 Hz in Virtual Desktop, or 90 with the OFXR bridge). Unlimited: as fast as "
+		"your graphics card goes (up to 250) - for the alternating modes, where each frame draws only one eye.",
 	},
 	{
 		"Keep game speed",
