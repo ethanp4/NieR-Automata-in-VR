@@ -34,6 +34,8 @@ void StereoCountDraw();
 int StereoFrameEye();  // the eye this frame renders (-1 = mono)
 bool StereoGameCamera(float pos[3], float fwd[3], float up[3]);
 bool StereoHeadRelative(pure::M4* rel);              // eye pose relative to the game camera (head culling)
+// The middle of the head (no eye turn) relative to the game camera, turned on by leadMs of its current turn (sun shadows)
+bool StereoHeadCentreRelative(pure::M4* rel, float leadMs);
 float StereoHeadCullFov(float marginDeg);            // radians; 0 = not known yet
 bool StereoEyeTangents(float* halfW, float* halfH, float centre[2]);  // this frame's eye image: tangents of its half-angles and where its lens points (false: mono)
 bool StereoGetViewFix(float T[16], float Tinv[16]);  // game view -> eye view (and back), this frame

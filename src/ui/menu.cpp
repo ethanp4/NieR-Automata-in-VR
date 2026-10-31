@@ -433,6 +433,17 @@ Item kScreen[] = {
 		"but can smear and shear it as you turn.",
 	},
 	{
+		"Hide black bars",
+		T_BOOL,
+		&g_cfg.cropBlackBars,
+		0,
+		1,
+		nullptr,
+		0,
+		"No black bands: films and menus show on a screen trimmed to the picture, and 3D cutscenes fill your view "
+		"without the dark bands above and below.",
+	},
+	{
 		"Screen distance",
 		T_FLOAT,
 		&g_cfg.distance,

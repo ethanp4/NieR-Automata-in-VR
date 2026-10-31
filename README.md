@@ -28,6 +28,8 @@ A mod that converts the game NieR: Automata into a VR mod!
 - Frame rates above 60 (experimental): 72, 80, 90, 120, the headset's own rate or unlimited, with the game kept at its normal speed, focused or not
 
 - Lens flare off by default, sun glow correct in both eyes
+- Sun shadows worked out for where your head looks, not where the game camera points, so they don't go missing when you turn your head
+- No black bars: films and menus show on a screen trimmed to the picture, and 3D cutscenes fill your view without the dark bands above and below (panel: Screen > Hide black bars)
 - The game's own anti-aliasing and motion blur are switched off for you at start (DLSS smooths the edges better, and the game's MSAA would stop DLSS), and its V-sync is ignored so the monitor can't hold back the headset's frame rate. `GameAntiAliasing=1`, `GameMotionBlur=1` or `GameVsync=1` in NieRVR.ini keep the game's own setting
 
 ## Install
@@ -88,6 +90,7 @@ trackpads = sticks.
   Ctrl+F6 / F7    camera closer / farther (stronger / weaker 3D)
   Ctrl+F9 / F10   world bigger / smaller
   Ctrl+Shift+F5   head culling on/off
+  Ctrl+Shift+F4   sun shadows follow your head on/off
 Diagnostics: F11 frame capture, Ctrl+F11 dump of the game's decrypted code.
 
 ## Useful resources

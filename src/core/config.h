@@ -36,6 +36,7 @@ struct Config {
 	int32_t afwMode;             // AFW stereo mode only: 0 combined (default), 1 this-frame warp only (gaps stretched)
 	int32_t asymmetricEyes;      // render each eye's own off-centre lens instead of a symmetric frustum covering it
 	int32_t screenInEyes;        // flat screen drawn into both eyes as a window in the room (0 = hand it over as a quad layer)
+	int32_t cropBlackBars;       // flat screen trimmed to the picture's rows (black bands above and below cut off)
 	float cameraDolly;           // metres to move the camera along its line of sight (towards the character)
 	int32_t firstPerson;         // eyes at the character's eyes (or the game camera's look-at target), not behind them
 	int32_t fpTracking;          // first person: the character tracks your headset and controllers, its head hidden
@@ -56,6 +57,9 @@ struct Config {
 	uint32_t fovRealCallers[8];  // exe offsets of fov getter callers that always get the real fov
 	int32_t fovRealCount;
 	int32_t headCulling;      // turn the culling frustum the way the headset looks
+	int32_t headShadows;      // turn the sun shadow cascades' camera the way the headset looks
+	float shadowLeadMs;       // the sun shadows' aim leads a turning head by this much
+	float shadowExtraFov;     // degrees added to the sun shadows' field of view (wider reach, softer shadows)
 	float headCullMargin;     // degrees added around the headset's view for the head-culling frustum
 	int32_t synchronized;     // both eyes rendered every frame (record + replay)
 	int32_t reuseShadows;     // Synchronized: the replay reuses the left eye's shadow map

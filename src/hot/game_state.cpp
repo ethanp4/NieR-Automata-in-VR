@@ -1,6 +1,7 @@
 // game_state.cpp - what the game is doing (cutscene, loading), read from its memory with the NieR:Automata autosplitter's offsets.
 #include "hot/game_state.h"
 #include "core/log.h"
+#include "hot/module.h"
 #include "core/safe_memory.h"
 #include <stdint.h>
 #include <string.h>
@@ -83,12 +84,20 @@ void ReadCutsceneName(char out[kNameLength + 1]) {
 		if (out[i] < 32 || out[i] > 126) out[i] = 0;
 }
 
+DWORD s_cutsceneStartTick;  // a 3D cutscene (not a film) started, not yet captured (NOTES A17)
+
 void LogChanges(const State& now) {
 	if (now.loading != s_last.loading) Log("game state: loading %s", now.loading ? "started" : "finished");
 	if (now.worldLoaded != s_last.worldLoaded) Log("game state: world %s", now.worldLoaded ? "loaded" : "unloaded");
-	if (now.cutscenePlaying != s_last.cutscenePlaying)
+	if (now.cutscenePlaying != s_last.cutscenePlaying) {
 		Log("game state: cutscene %s (%s)", now.cutscenePlaying ? "started" : "ended", now.cutsceneName[0] ? now.cutsceneName : "no name");
-	else if (strcmp(now.cutsceneName, s_last.cutsceneName))
+		s_cutsceneStartTick = now.cutscenePlaying && !strstr(now.cutsceneName, ".usm") ? GetTickCount() : 0;
+	}
+	// the bands may slide in: capture 1.5 s into it, if it is still playing
+	if (s_cutsceneStartTick && now.cutscenePlaying && GetTickCount() - s_cutsceneStartTick > 1500) {
+		s_cutsceneStartTick = 0;
+		RequestCapture("1.5 s into a 3D cutscene");
+	} else if (strcmp(now.cutsceneName, s_last.cutsceneName))
 		Log("game state: cutscene name now %s%s", now.cutsceneName[0] ? now.cutsceneName : "(none)", now.cutscenePlaying ? " (playing)" : "");
 	if (now.scriptedCamera != s_last.scriptedCamera) Log("game state: scripted camera %d -> %d", s_last.scriptedCamera, now.scriptedCamera);
 	if (now.followReady != s_last.followReady) Log("game state: follow camera %s", now.followReady ? "ready" : "reset");

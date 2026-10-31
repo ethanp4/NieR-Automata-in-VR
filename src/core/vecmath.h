@@ -263,6 +263,20 @@ inline float q_angle_deg(Q a, Q b) {
 	return 2 * fatan(fsqrt(1 - w * w) / w) * 57.29578f;
 }
 
+// `now` turned on by what it turned since `prev`, times k (k = 1: the same turn again), the extra
+// turn clamped to maxDeg; now's position is kept. Leads a head pose that is used later than it was taken.
+inline M4 m4_rotation_ahead(const M4& prev, const M4& now, float k, float maxDeg) {
+	Q q = q_from_m4(m4_mul(m4_rigid_inverse(prev), now));
+	if (q.w < 0) q = {-q.x, -q.y, -q.z, -q.w};
+	float s = fsqrt(q.x * q.x + q.y * q.y + q.z * q.z);
+	if (s < 1e-7f || !(k > 0) || q.w < 1e-6f) return now;
+	float angle = 2 * fatan(s / q.w) * k, maxAngle = maxDeg * 0.0174533f;
+	if (angle > maxAngle) angle = maxAngle;
+	float sn, cs;
+	fsincos(angle * 0.5f, &sn, &cs);
+	return m4_mul(now, m4_from_pose({q.x / s * sn, q.y / s * sn, q.z / s * sn, cs}, {0, 0, 0}));
+}
+
 // Pitch of a camera-to-world matrix's line of sight (-z), degrees: negative = looking down.
 inline float camera_pitch_deg(const M4& cam) {
 	float fx = -cam.at(0, 2), fy = -cam.at(1, 2), fz = -cam.at(2, 2);

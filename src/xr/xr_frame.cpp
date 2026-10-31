@@ -53,8 +53,10 @@ void HandleHotkeys() {
 	// Always poll so edge detection stays correct, only act while the game has focus.
 	bool recenter = KeyPressed(g_cfg.keyRecenter), smaller = KeyPressed(g_cfg.keySmaller), larger = KeyPressed(g_cfg.keyLarger),
 		 closer = KeyPressed(g_cfg.keyCloser), farther = KeyPressed(g_cfg.keyFarther), toggleStereo = KeyPressed(g_cfg.keyStereo),
-		 f5 = KeyPressed(VK_F5), toggleFirstPerson = KeyPressed(g_cfg.keyFirstPerson);
+		 f5 = KeyPressed(VK_F5), f4 = KeyPressed(VK_F4), toggleFirstPerson = KeyPressed(g_cfg.keyFirstPerson);
 	if (!foreground) return;
+	if (f4 && (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000))
+		CullingToggleHeadShadows();  // Ctrl+Shift+F4: sun shadows follow the head on/off
 	if (toggleFirstPerson) {
 		g_cfg.firstPerson = !g_cfg.firstPerson;
 		Log("first person %s", g_cfg.firstPerson ? "ON" : "OFF");
@@ -581,6 +583,7 @@ void Frame() {
 				proj.views = projViews;
 				layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&proj;
 				g_vr.statStereoFrames++;
+				WatchEyeBars(left.srv);  // logs black bands in the 3D picture (cutscenes)
 				// HUD: keyed out of the newest eye frame, on a transparent flat layer in front.
 				// (Synchronized: the right eye is replayed without UI, so the HUD comes from the left)
 				auto& hudSource = (left.seq > right.seq && !left.tag.noUI) || right.tag.noUI ? left : right;
@@ -614,7 +617,9 @@ void Frame() {
 								g_vr.recommendedW && g_vr.recommendedH;
 			if (screenInEyes && EnsureSwap(g_vr.screenEyeSwap[0], g_vr.recommendedW, g_vr.recommendedH, "left eye screen") &&
 				EnsureSwap(g_vr.screenEyeSwap[1], g_vr.recommendedW, g_vr.recommendedH, "right eye screen")) {
-				float screenW = g_cfg.width, screenH = g_cfg.width * (float)g_vr.gameH / (float)g_vr.gameW;
+				float rowTop, rowBottom;  // the picture between black bands (CropBlackBars)
+				ScreenPictureRows(g_vr.views[newest].srv, &rowTop, &rowBottom);
+				float screenW = g_cfg.width, screenH = g_cfg.width * (float)g_vr.gameH * (rowBottom - rowTop) / (float)g_vr.gameW;
 				pure::M4 screenPose = pure::m4_from_pose({g_vr.quadPose.orientation.x, g_vr.quadPose.orientation.y, g_vr.quadPose.orientation.z,
 														  g_vr.quadPose.orientation.w},
 														 {g_vr.quadPose.position.x, g_vr.quadPose.position.y, g_vr.quadPose.position.z});
@@ -628,6 +633,8 @@ void Frame() {
 					screen.outTan[3] = pure::ftan(view.fov.angleDown);
 					screen.half[0] = screenW * 0.5f;
 					screen.half[1] = screenH * 0.5f;
+					screen.half[2] = rowTop;
+					screen.half[3] = rowBottom;
 					pure::M4 eyePose = pure::m4_from_pose({view.pose.orientation.x, view.pose.orientation.y, view.pose.orientation.z, view.pose.orientation.w},
 														  {view.pose.position.x, view.pose.position.y, view.pose.position.z});
 					// into the screen's own space: R_screen^T R_eye, and where this eye is from the screen

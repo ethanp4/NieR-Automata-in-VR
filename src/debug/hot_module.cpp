@@ -3,6 +3,7 @@
 #include "core/config.h"
 #include "core/log.h"
 #include "core/main.h"
+#include "debug/frame_capture.h"
 #include "hot/hot_api.h"
 #include "xr/xr_thread.h"
 #include <windows.h>
@@ -20,7 +21,7 @@ DWORD s_checkedAt;
 
 void HostLog(const char* text) { Log("%s", text); }
 
-const HotHost s_host = {kHotApiVersion, sizeof(Config), HostLog, &g_cfg, g_modDir, GameIsForeground};
+const HotHost s_host = {kHotApiVersion, sizeof(Config), HostLog, &g_cfg, g_modDir, GameIsForeground, CaptureRequest};
 
 void ModPath(wchar_t* out, const wchar_t* name) {
 	lstrcpynW(out, g_modDir, MAX_PATH - 32);

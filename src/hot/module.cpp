@@ -29,6 +29,8 @@ void Log(const char* fmt, ...) {
 
 bool GameIsForeground() { return s_host->gameIsForeground(); }
 
+void RequestCapture(const char* why) { s_host->requestCapture(why); }
+
 extern "C" __declspec(dllexport) bool HotInit(const HotHost* host) {
 	if (host->version != kHotApiVersion || host->configSize != sizeof(Config)) return false;
 	s_host = host;

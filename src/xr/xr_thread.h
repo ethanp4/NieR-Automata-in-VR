@@ -189,7 +189,7 @@ inline bool IsSrgb(int64_t format) {
 // The flat screen drawn into an eye: the same 80-byte constant buffer as WarpParams.
 struct ScreenParams {
 	float outTan[4];  // shown eye: tangents of left, right, up, down
-	float half[4];    // the screen: half width, half height in metres (z, w spare)
+	float half[4];    // the screen: half width, half height in metres; z, w: the picture's rows shown (0..1, w > z, else all)
 	float m[3][4];    // rows of R_screen^T * R_eye, and in .w the eye's position in the screen's space
 };
 
@@ -213,6 +213,9 @@ bool InitDevice();     // created on the game's GPU as soon as the VR thread sta
 void ServiceShare();   // answers the game thread's request for capture textures
 void UpdateContent();  // copies newly finished game frames into views[]
 void MeasureUICoverage();
+// The flat screen's picture between black bands above and below (rows 0..1 from the top; 0, 1 = none or CropBlackBars=0)
+void ScreenPictureRows(ID3D11ShaderResourceView* srv, float* v0, float* v1);
+void WatchEyeBars(ID3D11ShaderResourceView* srv);  // logs black bands in the 3D picture (cutscenes)
 void Blit(ID3D11RenderTargetView* rtv, uint32_t width, uint32_t height, ID3D11ShaderResourceView* srv,
 		  ID3D11ShaderResourceView* scene, bool dstSrgb, const WarpParams* warp = nullptr, bool asScreen = false);
 ID3D11ShaderResourceView* KeySrv(const GameView& view);  // the scene image the HUD is cut out against

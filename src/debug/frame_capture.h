@@ -7,6 +7,8 @@
 void CaptureSetDevice(ID3D11Device* device, ID3D11DeviceContext* context);  // the game's (d3d_hooks.cpp)
 void CaptureBeforePresent();                                                // ends a capture; reads the hotkey
 void CaptureAfterPresent();                                                 // starts the capture the hotkey asked for
+// A capture taken by the mod itself (any thread): at most 3 a launch, 10 s apart; `why` goes to the log
+void CaptureRequest(const char* why);
 bool CaptureRecording(ID3D11DeviceContext* c);                              // a capture runs and `c` is the game's context
 
 // Called by the hooks while CaptureRecording(c)

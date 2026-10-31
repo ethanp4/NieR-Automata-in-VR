@@ -329,6 +329,12 @@ bool GameEffectsBeforeDraw(ID3D11DeviceContext* c, PixelShaderClass ps, uint64_t
 	return true;
 }
 
+bool GameEffectsDrawNothing(ID3D11DeviceContext* c) {
+	if (s_restoreShader || !NoPixelsShader(c)) return false;
+	SwapPixelShader(c, s_noPixelsShader);
+	return true;
+}
+
 void GameEffectsAfterDraw(ID3D11DeviceContext* c) {
 	if (!s_restoreShader) return;
 	s_restoreShader = false;

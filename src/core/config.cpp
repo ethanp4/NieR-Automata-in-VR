@@ -106,6 +106,15 @@ constexpr Setting kSettings[] = {
 		"1 = the flat screen (menus, loading screens, the title) is drawn into both of your eyes as a window\n"
 		"hanging in the room, so it stays still and square-on while you turn your head. 0 = hand it to your VR\n"
 		"software as a flat layer, which is cheaper but smears and shears on head turns with some of them"),
+	S_INT(
+		"Screen",
+		"CropBlackBars",
+		cropBlackBars,
+		1,
+		0,
+		1,
+		"1 = no black bands: the flat screen is trimmed to the picture of a film or menu (the game fits them into\n"
+		"its taller picture), and the dark bands of 3D cutscenes aren't drawn. 0 = the game's bands, as it draws them"),
 	S_FLT(
 		"Screen",
 		"Distance",
@@ -501,6 +510,33 @@ constexpr Setting kSettings[] = {
 		1,
 		"1 = the culling view (above) is turned the way your headset looks, not where the game camera\n"
 		"points, so turning your head doesn't make things vanish. Ctrl+Shift+F5 switches it in game"),
+	S_INT(
+		"Render",
+		"HeadShadows",
+		headShadows,
+		1,
+		0,
+		1,
+		"1 = the sun's shadows are worked out for where your headset looks, not where the game camera\n"
+		"points, so they don't go missing when you turn your head. Ctrl+Shift+F4 switches it in game"),
+	S_FLT(
+		"Render",
+		"ShadowLeadMs",
+		shadowLeadMs,
+		30,
+		0,
+		100,
+		"HeadShadows: the shadows are aimed this many milliseconds ahead of a turning head, so the edge of where\n"
+		"they are worked out stays outside your view on quick turns (0 = where the head was last seen)"),
+	S_FLT(
+		"Render",
+		"ShadowExtraFov",
+		shadowExtraFov,
+		0,
+		0,
+		30,
+		"HeadShadows: degrees added to how far around your view the sun's shadows reach. More reach spreads the\n"
+		"same shadow detail over a bigger area, so every shadow gets a little softer (10 = about a third softer)"),
 	S_TEXT(
 		"Render",
 		"FovRealCallers",

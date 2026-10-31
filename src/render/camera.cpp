@@ -70,6 +70,8 @@ pure::M4 s_lastGameCam;  // the game's own camera, camera-to-world
 // written by PatchScene, with the tick it was written at.
 SRWLOCK s_headRelLock = SRWLOCK_INIT;
 pure::M4 s_headRel;
+pure::M4 s_headCentre, s_headCentrePrev;  // middle of the head relative to the game camera (sun shadows), and the one before
+double s_headCentreMs, s_headCentrePrevMs;
 DWORD s_headRelTick;
 pure::M4 s_viewFix, s_viewFixInv;  // game view -> eye view, and back (this frame)
 pure::M4 s_lastViewFix[2];         // each eye's last game view -> eye view, for data the game uploads before its camera
@@ -473,9 +475,22 @@ void PatchScene(float* data) {
 	}
 	{
 		pure::M4 rel = pure::m4_relative(C, Ce);
+		// the middle of the head for the sun shadows: the eye's own outward turn (AsymmetricEyes) taken
+		// back out, so the shadows reach as far past both eyes' outer edges
+		pure::M4 head = Ce;
+		if (s_frame.turn[0] != 0 || s_frame.turn[1] != 0)
+			head = pure::m4_mul(Ce, pure::m4_rigid_inverse(pure::m4_turn_to(s_frame.centreX, s_frame.centreY)));
+		pure::M4 headRel = pure::m4_relative(C, head);
+		double now = NowMs();
 		ExclusiveLock guard(&s_headRelLock);
 		s_headRel = rel;
 		s_headRelTick = GetTickCount();
+		if (!s_secondEye) {
+			s_headCentrePrev = s_headCentre;
+			s_headCentrePrevMs = s_headCentreMs;
+			s_headCentre = headRel;
+			s_headCentreMs = now;
+		}
 	}
 	pure::M4 Ve = pure::m4_rigid_inverse(Ce);
 	pure::M4 Pe = pure::m4_frustum(P, s_frame.halfW, s_frame.halfH, s_frame.lensX, s_frame.lensY);
@@ -896,6 +911,16 @@ bool StereoHeadRelative(pure::M4* rel) {
 	if (ok) *rel = s_headRel;
 	ReleaseSRWLockShared(&s_headRelLock);
 	return ok && s_frame.active;
+}
+bool StereoHeadCentreRelative(pure::M4* rel, float leadMs) {
+	AcquireSRWLockShared(&s_headRelLock);
+	bool ok = s_headRelTick && GetTickCount() - s_headRelTick < 250 && s_headCentreMs > 0;
+	pure::M4 now = s_headCentre, prev = s_headCentrePrev;
+	double dt = s_headCentreMs - s_headCentrePrevMs;
+	ReleaseSRWLockShared(&s_headRelLock);
+	if (!ok || !s_frame.active) return false;
+	*rel = leadMs > 0 && s_headCentrePrevMs > 0 && dt > 1 && dt < 100 ? pure::m4_rotation_ahead(prev, now, (float)(leadMs / dt), 25) : now;
+	return true;
 }
 // Head culling: vertical fov (radians) of a culling view, centred on the eye's direction,
 // that holds the eye's whole view plus marginDeg on every side (game frames lag the head a little).

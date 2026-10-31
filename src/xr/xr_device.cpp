@@ -5,8 +5,10 @@
 #include "core/locks.h"
 #include "core/config.h"
 #include "core/log.h"
+#include "debug/frame_capture.h"
 #include "render/camera.h"
 #include <atomic>
+#include <stdlib.h>
 #include <string.h>
 #include <d3dcompiler.h>
 
@@ -66,6 +68,7 @@ float4 PSScreen(VSOut i) : SV_Target {
 	float2 hit = eye.xy + (-eye.z / dir.z) * dir.xy;
 	float2 uv = float2(hit.x / srcTan.x * 0.5 + 0.5, 0.5 - hit.y / srcTan.y * 0.5);
 	if (any(uv < 0) || any(uv > 1)) return float4(0, 0, 0, 1);
+	if (srcTan.w > srcTan.z) uv.y = lerp(srcTan.z, srcTan.w, uv.y);  // only the picture's rows (black bands cut off)
 	return float4(Convert(src.SampleLevel(samp, uv, 0).rgb), 1);
 }
 // HUD/menus. src = full frame, src2 = scene without UI, whose alpha channel holds the UI's real
@@ -545,4 +548,131 @@ void MeasureUICoverage() {
 	g_vr.coveragePending[g_vr.coverageNext] = true;
 	g_vr.coverageNext = (g_vr.coverageNext + 1) % 3;
 	g_vr.coverageMeasuredSeq = g_vr.views[newest].seq;
+}
+
+namespace {
+// Black bands above and below a picture. The game draws at the headset's (taller) shape and fits
+// films (16:9) and its menus (5:4) into the width, leaving black rows above and below. Each picture
+// is shrunk to kBarW x kBarH and read back a frame or two later; the rows with anything in them are
+// the picture. Symmetric bands only (a loading screen's text isn't a picture edge), and a new result
+// only counts once it held for kBarVotes readings (kNoBarVotes to drop the bands), so fades don't make the screen jump.
+// (readings come at the headset's rate: ~90 a second)
+constexpr int32_t kBarW = 32, kBarH = 256, kBarVotes = 20, kNoBarVotes = 90, kBarSlack = 3;
+struct BarMeter {
+	const char* what;
+	ID3D11Texture2D* tex;
+	ID3D11RenderTargetView* rtv;
+	ID3D11Texture2D* staging[3];
+	bool pending[3], failed;
+	int32_t next;
+	int32_t candTop, candBottom, votes;  // the latest reading and how many times in a row it came
+	int32_t top, bottom;                 // the rows in use (0, kBarH - 1 = no bands)
+};
+BarMeter s_screenBars = {"flat screen", nullptr, nullptr, {}, {}, false, 0, 0, kBarH - 1, 0, 0, kBarH - 1};
+BarMeter s_eyeBars = {"3D picture", nullptr, nullptr, {}, {}, false, 0, 0, kBarH - 1, 0, 0, kBarH - 1};
+
+bool EnsureBarTargets(BarMeter& m) {
+	if (m.tex) return true;
+	if (m.failed) return false;
+	D3D11_TEXTURE2D_DESC desc = {};
+	desc.Width = kBarW;
+	desc.Height = kBarH;
+	desc.MipLevels = desc.ArraySize = 1;
+	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+	HRESULT hr = g_vr.device->CreateTexture2D(&desc, nullptr, &m.tex);
+	if (SUCCEEDED(hr)) hr = g_vr.device->CreateRenderTargetView(m.tex, nullptr, &m.rtv);
+	desc.Usage = D3D11_USAGE_STAGING;
+	desc.BindFlags = 0;
+	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	for (int i = 0; i < 3 && SUCCEEDED(hr); i++) hr = g_vr.device->CreateTexture2D(&desc, nullptr, &m.staging[i]);
+	if (FAILED(hr)) {
+		Log("ERROR: black band targets (%s) failed 0x%08x", m.what, (unsigned)hr);
+		SafeRelease(m.rtv);
+		SafeRelease(m.tex);
+		for (auto& texture : m.staging) SafeRelease(texture);
+		m.failed = true;
+		return false;
+	}
+	return true;
+}
+
+// Reads back what is ready, measures `srv` again. True when the rows in use changed.
+bool MeasureBars(BarMeter& m, ID3D11ShaderResourceView* srv) {
+	if (!srv || !EnsureBarTargets(m)) return false;
+	bool changed = false;
+	for (int i = 0; i < 3; i++) {
+		if (!m.pending[i]) continue;
+		D3D11_MAPPED_SUBRESOURCE mapped;
+		if (g_vr.context->Map(m.staging[i], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped) != S_OK) continue;
+		int32_t top = -1, bottom = -1;
+		for (int y = 0; y < kBarH; y++) {
+			const uint8_t* row = (const uint8_t*)mapped.pData + y * mapped.RowPitch;
+			bool lit = false;
+			for (int x = 0; x < kBarW && !lit; x++) lit = row[x * 4] > 3 || row[x * 4 + 1] > 3 || row[x * 4 + 2] > 3;  // not alpha
+			if (lit) {
+				if (top < 0) top = y;
+				bottom = y;
+			}
+		}
+		g_vr.context->Unmap(m.staging[i], 0);
+		m.pending[i] = false;
+		if (top < 0) continue;  // all black (a fade): keep what is in use
+		bool bands = top >= 2 && kBarH - 1 - bottom >= 2 && abs(top - (kBarH - 1 - bottom)) <= 2 && bottom - top + 1 >= kBarH * 3 / 10;
+		if (!bands) top = 0, bottom = kBarH - 1;
+		// a reading within a few rows of the bands in use is the same picture (a dark edge row comes and goes)
+		bool inUseBands = m.top > 0 || m.bottom < kBarH - 1;
+		if (bands && inUseBands && abs(top - m.top) <= kBarSlack && abs(bottom - m.bottom) <= kBarSlack) top = m.top, bottom = m.bottom;
+		if (top == m.candTop && bottom == m.candBottom) m.votes++;
+		else m.candTop = top, m.candBottom = bottom, m.votes = 1;
+		// dropping the bands needs a full second of pictures reaching the edges (a bright flash or a dark
+		// frame in a film doesn't make the screen jump to full height)
+		int32_t need = bands ? kBarVotes : kNoBarVotes;
+		if (m.votes >= need && (top != m.top || bottom != m.bottom)) {
+			m.top = top;
+			m.bottom = bottom;
+			changed = true;
+		}
+	}
+	if (m.pending[m.next]) return changed;
+	Blit(m.rtv, kBarW, kBarH, srv, nullptr, false);
+	g_vr.context->CopyResource(m.staging[m.next], m.tex);
+	m.pending[m.next] = true;
+	m.next = (m.next + 1) % 3;
+	return changed;
+}
+
+// The part of the picture (0..1 from the top) between the bands; each row sample sits in the middle
+// of its band of the picture, so the edges are taken halfway into the first and last lit samples.
+void BarRows(const BarMeter& m, float* v0, float* v1) {
+	bool bands = m.top > 0 || m.bottom < kBarH - 1;
+	*v0 = bands ? (m.top + 0.5f) / kBarH : 0;
+	*v1 = bands ? (m.bottom + 0.5f) / kBarH : 1;
+}
+
+void LogBars(const BarMeter& m) {
+	float v0, v1;
+	BarRows(m, &v0, &v1);
+	if (v0 > 0) Log("black bands: %s has bands above and below; its picture is rows %.1f%%-%.1f%% (%.2f:1 at the game's shape)", m.what,
+					(double)(v0 * 100), (double)(v1 * 100), (double)((float)g_vr.gameW / ((float)g_vr.gameH * (v1 - v0))));
+	else Log("black bands: %s has none now", m.what);
+}
+}  // namespace
+
+void ScreenPictureRows(ID3D11ShaderResourceView* srv, float* v0, float* v1) {
+	if (!g_cfg.cropBlackBars) {
+		*v0 = 0;
+		*v1 = 1;
+		return;
+	}
+	if (MeasureBars(s_screenBars, srv)) LogBars(s_screenBars);
+	BarRows(s_screenBars, v0, v1);
+}
+
+void WatchEyeBars(ID3D11ShaderResourceView* srv) {
+	if (!MeasureBars(s_eyeBars, srv)) return;
+	LogBars(s_eyeBars);
+	if (s_eyeBars.top > 0) CaptureRequest("black bands appeared in the 3D picture");
 }

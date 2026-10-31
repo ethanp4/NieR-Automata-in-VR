@@ -162,6 +162,96 @@ extern "C" void nvr_head_cull_restore() {
 }
 
 namespace {
+// Sun shadows fitted to the head. The game's cascade builder (exe+0x77fea0, 4x per frame, one call
+// per cascade) cuts a slice of the camera's frustum for each cascade and draws into that cascade only
+// the objects in it, aimed by the same look-at block head culling turns (eye/target/up at
+// exe+0x1020880). Head culling puts the block back right after the camera's frustum builder, so the
+// cascades still followed the game camera: turn your head and the shadows there were missing (JJ
+// 2026-10-31). The block is turned again for the length of this call and put back after it.
+typedef uint64_t (*PFN_ShadowFit)(void* a, uint64_t b, uint64_t c, uint64_t d);
+PFN_ShadowFit o_ShadowFit;
+float* s_shadowLookAt;  // the look-at block the cascade builder reads (eye, target, up; 16 bytes apart)
+std::atomic<int32_t> s_shadowCalls, s_shadowTurned;
+std::atomic<DWORD> s_shadowThread;
+// Its two reads of the camera's fov (return addresses of its getter calls): ShadowExtraFov widens what they get.
+void* s_shadowFovReads[2];
+uint8_t* FindOnce(HMODULE exe, const uint8_t* pat, int len, int* matches);
+
+uint64_t H_ShadowFit(void* a, uint64_t b, uint64_t c, uint64_t d) {
+	++s_shadowCalls;
+	s_shadowThread = GetCurrentThreadId();
+	float* eye = s_shadowLookAt;
+	float* target = eye + 4;
+	float* up = eye + 8;
+	pure::M4 rel;
+	float turnedTarget[3], turnedUp[3];
+	if (!g_cfg.headShadows || !StereoHeadCentreRelative(&rel, g_cfg.shadowLeadMs) || !pure::head_lookat(eye, target, up, rel, turnedTarget, turnedUp))
+		return o_ShadowFit(a, b, c, d);
+	float saved[12];
+	memcpy(saved, eye, 48);
+	// first person: the slices start where your eyes are, as head culling does
+	if (g_cfg.firstPerson && StereoWatching())
+		for (int k = 0; k < 3; k++) {
+			float shift = target[k] - eye[k];
+			eye[k] += shift;
+			turnedTarget[k] += shift;
+		}
+	memcpy(target, turnedTarget, 12);
+	memcpy(up, turnedUp, 12);
+	float turned[12];
+	memcpy(turned, eye, 48);
+	uint64_t result = o_ShadowFit(a, b, c, d);
+	// put it back, unless the camera update wrote the block meanwhile (then its values stand)
+	if (memcmp(eye, turned, 48) == 0) memcpy(eye, saved, 48);
+	++s_shadowTurned;
+	return result;
+}
+
+constexpr uint8_t kShadowFitBytes[] = {0x48, 0x8b, 0xc4, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+									   0x48, 0x8d, 0xa8, 0x88, 0xfb, 0xff, 0xff, 0x48, 0x81, 0xec, 0x40, 0x05, 0x00, 0x00,
+									   0x48, 0xc7, 0x45, 0x40, 0xfe, 0xff, 0xff, 0xff, 0x48, 0x89, 0x58, 0x18, 0x0f, 0x29};
+
+// The address a `lea reg,[rip+disp32]` at p refers to, if p holds one with the given first two bytes.
+uint8_t* LeaTarget(const uint8_t* p, uint8_t rex, uint8_t modrm) {
+	if (p[0] != rex || p[1] != 0x8d || p[2] != modrm) return nullptr;
+	int32_t disp;
+	memcpy(&disp, p + 3, 4);
+	return (uint8_t*)p + 7 + disp;
+}
+
+void ShadowFitInstall(HMODULE exe) {
+	int matches = 0;
+	uint8_t* fn = FindOnce(exe, kShadowFitBytes, (int)sizeof(kShadowFitBytes), &matches);
+	if (!fn) {
+		Log("shadows: the sun shadow builder %s; shadows keep following the game camera",
+			matches ? "was found more than once" : "was not found (different game version?)");
+		return;
+	}
+	// its reads of the look-at: lea rdx (eye) at +0x3be, lea rdx (target) at +0x3ce, lea r9 (up) at +0x8fe
+	uint8_t* eye = LeaTarget(fn + 0x3be, 0x48, 0x15);
+	uint8_t* target = LeaTarget(fn + 0x3ce, 0x48, 0x15);
+	uint8_t* up = LeaTarget(fn + 0x8fe, 0x4c, 0x0d);
+	if (!eye || target != eye + 16 || up != eye + 32) {
+		Log("shadows: the sun shadow builder doesn't read the camera's look-at as expected; shadows keep following the game camera");
+		return;
+	}
+	s_shadowLookAt = (float*)eye;
+	// call fov getter at +0x948 and +0xa3a (returning to +0x94d / +0xa3f)
+	for (int i = 0; i < 2; i++) {
+		uint8_t* call = fn + (i ? 0xa3a : 0x948);
+		if (call[0] == 0xe8) s_shadowFovReads[i] = call + 5;
+	}
+	if (!s_shadowFovReads[0] || !s_shadowFovReads[1]) Log("shadows: the sun shadow builder's fov reads aren't where expected; ShadowExtraFov does nothing");
+	bool ok = HookFunction(fn, (void*)&H_ShadowFit, (void**)&o_ShadowFit, "sun shadow builder");
+	char where[300], block[300];
+	DescribeAddress(fn, where, sizeof(where));
+	DescribeAddress(eye, block, sizeof(block));
+	Log("shadows: sun shadow builder at %s %s (look-at at %s); HeadShadows=%d", where,
+		ok ? "hooked: its cascades can follow your head" : "could not be hooked", block, g_cfg.headShadows);
+}
+}  // namespace
+
+namespace {
 // The fov getter, `mov rax,[rcx]; movss xmm0,[rax+0x274]; ret`, is called ~11 times a frame from 5-6
 // places. Culling frusta are built from its result, so it has to return the wide fov. But the camera's
 // easing (the controller moving the fov towards its target) reads it too, and given the wide value it
@@ -225,7 +315,14 @@ float H_GetFov(void** cam) {
 	float v = o_GetFov(cam);
 	void* obj = nvr_fov_obj;
 	if (obj && cam && *cam == obj) {
-		GetterCaller* e = FindOrAddCaller(__builtin_return_address(0));
+		void* ra = __builtin_return_address(0);
+		// the sun shadow builder always gets the wide view: while the camera's easing is being looked for (again)
+		// every other reader gets the real one, and the shadows shrank to the game camera's view (JJ 2026-10-31)
+		if (g_cfg.headShadows && nvr_fov_wide > v && (ra == s_shadowFovReads[0] || ra == s_shadowFovReads[1])) {
+			float wider = nvr_fov_wide + (g_cfg.shadowExtraFov > 0 ? g_cfg.shadowExtraFov * 0.0174533f : 0);
+			return wider < 2.967f ? wider : 2.967f;  // 170 deg at most
+		}
+		GetterCaller* e = FindOrAddCaller(ra);
 		if (e) {
 			++e->calls;
 			if (GetCurrentThreadId() == s_setFovThread) s_lastReaderOnSetFovThread = e;
@@ -445,6 +542,7 @@ int32_t s_frameCount, s_slowFrames, s_headCullFrames;
 // Finds the setter by its exact bytes in the exe's code (so another build of the game either
 // matches exactly or is left alone).
 void CullingInstallHook() {
+	ShadowFitInstall(GetModuleHandleW(nullptr));
 	if (g_cfg.cullFov <= 1) {
 		Log("culling: CullingFov=0, game culling left as it is");
 		return;
@@ -512,6 +610,12 @@ void CullingUpdate(bool wide) {
 	static DWORD lastReport;
 	if (wide && s_setterHooked && GetTickCount() - lastReport > 30000) {  // a short report now and then
 		lastReport = GetTickCount();
+		if (o_ShadowFit) {
+			int32_t calls = s_shadowCalls.exchange(0), turned = s_shadowTurned.exchange(0);
+			Log("shadows: sun shadow cascades built %ld times in the last 30 s, %ld of them turned to your head "
+				"(HeadShadows=%d, ShadowLeadMs=%.0f, ShadowExtraFov=%.0f, thread %lu, camera fov setter thread %lu)",
+				(long)calls, (long)turned, g_cfg.headShadows, (double)g_cfg.shadowLeadMs, (double)g_cfg.shadowExtraFov, (unsigned long)s_shadowThread.load(), (unsigned long)s_setFovThread.load());
+		}
 		int32_t widened = s_widenedCount.exchange(0), leftAlone = s_leftAloneCount.exchange(0);
 		if (widened || leftAlone) Log("culling: %ld camera updates widened, %ld left alone (other cameras) in the last 30 s", (long)widened, (long)leftAlone);
 		if (s_frameCount) {
@@ -590,4 +694,13 @@ void CullingToggleHeadCulling() {
 		Log("culling: head direction culling %s", g_cfg.headCulling ? "ON (the culling view follows your head)"
 																	: "OFF (the culling view follows the game camera)");
 	ConfigSave(&g_cfg.headCulling);
+}
+
+// Ctrl+Shift+F4: sun shadows fitted to the head on/off (saved to NieRVR.ini).
+void CullingToggleHeadShadows() {
+	g_cfg.headShadows = !g_cfg.headShadows;
+	if (!o_ShadowFit) Log("shadows: the sun shadow builder isn't hooked with this game build (see the earlier log line)");
+	else
+		Log("shadows: sun shadows %s", g_cfg.headShadows ? "follow your head (HeadShadows=1)" : "follow the game camera (HeadShadows=0)");
+	ConfigSave(&g_cfg.headShadows);
 }

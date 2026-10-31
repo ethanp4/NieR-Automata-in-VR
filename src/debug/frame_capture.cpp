@@ -41,6 +41,9 @@ ID3D11Device* s_device;
 ID3D11DeviceContext* s_context;
 std::atomic<bool> s_capturing;
 bool s_armed;
+std::atomic<bool> s_requested;  // CaptureRequest
+std::atomic<int32_t> s_requestCount;
+std::atomic<DWORD> s_lastRequestTick;
 bool s_keyWasDown;
 uint32_t s_captureIndex;
 SRWLOCK s_recordLock = SRWLOCK_INIT;
@@ -349,7 +352,17 @@ void CaptureBeforePresent() {
 	}
 }
 
+void CaptureRequest(const char* why) {
+	DWORD now = GetTickCount();
+	if (!g_cfg.probe || s_requestCount >= 3 || (s_lastRequestTick && now - s_lastRequestTick < 10000)) return;
+	s_lastRequestTick = now;
+	++s_requestCount;
+	Log("capture: taking one by itself (%s)", why);
+	s_requested = true;
+}
+
 void CaptureAfterPresent() {
+	if (s_requested.exchange(false)) s_armed = true;
 	if (!s_armed || s_capturing) return;
 	s_armed = false;
 	s_recordsCap = 256u << 20;  // reserved+committed lazily by the OS as it is touched
