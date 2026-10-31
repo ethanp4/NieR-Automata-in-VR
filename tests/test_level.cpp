@@ -38,6 +38,10 @@ int main() {
 		check(std::fabs(pitchOf(e) + 65) < 0.2f && k > 0.999f, "65 deg fully kept with 45-60");
 		check(std::fabs(pure::camera_pitch_deg(camAt(yaw, -65)) + 65) < 0.1f, "camera_pitch_deg down");
 		check(std::fabs(pure::camera_pitch_deg(camAt(yaw, 30)) - 30) < 0.1f, "camera_pitch_deg up");
+		// low behind the character the camera looks UP steeply: still levelled, nothing kept
+		pure::M4 f = pure::m4_level_camera_adaptive(camAt(yaw, 55), 45, 60, &pd, &k);
+		check(std::fabs(pitchOf(f)) < 0.1f && k == 0, "upward view levelled (not a top-down view)");
+		check(std::fabs(std::remainder(yawOf(f) - yaw, 360.f)) < 0.3f, "heading kept (upward)");
 	}
 	std::printf(fails ? "level tests FAILED\n" : "level tests passed\n");
 	return fails != 0;

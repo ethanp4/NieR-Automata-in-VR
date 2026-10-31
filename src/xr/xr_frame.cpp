@@ -1,5 +1,6 @@
 // xr_frame.cpp - one headset frame: hotkeys, screen placement, the eye poses handed to the game,
 // and the layers submitted (stereo eyes, flat screen, HUD, stats overlay, settings menu).
+#include "game/frame_rate.h"
 #include "xr/xr_thread.h"
 #include "core/com.h"
 #include "core/locks.h"
@@ -52,8 +53,10 @@ void HandleHotkeys() {
 	// Always poll so edge detection stays correct, only act while the game has focus.
 	bool recenter = KeyPressed(g_cfg.keyRecenter), smaller = KeyPressed(g_cfg.keySmaller), larger = KeyPressed(g_cfg.keyLarger),
 		 closer = KeyPressed(g_cfg.keyCloser), farther = KeyPressed(g_cfg.keyFarther), toggleStereo = KeyPressed(g_cfg.keyStereo),
-		 f5 = KeyPressed(VK_F5), toggleFirstPerson = KeyPressed(g_cfg.keyFirstPerson);
+		 f5 = KeyPressed(VK_F5), f4 = KeyPressed(VK_F4), toggleFirstPerson = KeyPressed(g_cfg.keyFirstPerson);
 	if (!foreground) return;
+	if (f4 && (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000))
+		CullingToggleHeadShadows();  // Ctrl+Shift+F4: sun shadows follow the head on/off
 	if (toggleFirstPerson) {
 		g_cfg.firstPerson = !g_cfg.firstPerson;
 		Log("first person %s", g_cfg.firstPerson ? "ON" : "OFF");
@@ -62,11 +65,12 @@ void HandleHotkeys() {
 	if (f5) {
 		bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0, shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 		if (ctrlDown && shiftDown) CullingToggleHeadCulling();  // Ctrl+Shift+F5: head-direction culling on/off
-		else if (!ctrlDown && !shiftDown) {                     // F5: synchronized / alternating
-			g_cfg.synchronized = !g_cfg.synchronized;
-			Log("stereo mode: %s", !g_cfg.synchronized ? "alternating (one eye per game frame)"
-								   : ReplayAvailable() ? "synchronized (the game's frame is drawn again for the right eye)"
-													   : "synchronized, but not available (see the log above)");
+		else if (!ctrlDown && !shiftDown) {                     // F5: alternating -> synchronized -> AFW
+			g_cfg.synchronized = (g_cfg.synchronized + 1) % 3;
+			Log("stereo mode: %s", StereoAfw()             ? "AFW (one eye per game frame, the other built from it by its depth)"
+								   : !StereoSynchronized() ? "alternating (one eye per game frame)"
+								   : ReplayAvailable()     ? "synchronized (the game's frame is drawn again for the right eye)"
+														   : "synchronized, but not available (see the log above)");
 			ConfigSave(&g_cfg.synchronized);
 		}
 	}
@@ -214,7 +218,8 @@ void LogStats() {
 		g_vr.statCoverageCount ? 100.0 * g_vr.statCoverageSum / g_vr.statCoverageCount : 0.0, 100.0 * g_vr.statCoverageMax);
 	{
 		char info[160];
-		snprintf(info, sizeof(info), "Mode: %s", !g_vr.statStereoFrames ? "flat screen" : (g_cfg.synchronized ? "stereo, synchronized" : "stereo, alternating"));
+		snprintf(info, sizeof(info), "Mode: %s", !g_vr.statStereoFrames ? "flat screen" : (StereoAfw() ? "stereo, AFW" : StereoSynchronized() ? "stereo, synchronized"
+																																			  : "stereo, alternating"));
 		MenuSetInfo(INFO_MODE, info);
 		snprintf(info, sizeof(info), "Headset %.0f fps; game images per second: left %.0f, right %.0f, flat %.0f",
 				 g_vr.statFrames / secs, g_vr.statGameFrames[0] / secs, g_vr.statGameFrames[1] / secs, g_vr.statGameFrames[2] / secs);
@@ -344,11 +349,11 @@ void UpdateEyePoses(XrTime time) {
 }
 
 XrFovf FovFromTag(const FrameTag& tag) {
-	XrFovf fov;
-	fov.angleLeft = -pure::fatan(tag.tanHalfW);
-	fov.angleRight = pure::fatan(tag.tanHalfW);
-	fov.angleUp = pure::fatan(tag.tanHalfH);
-	fov.angleDown = -pure::fatan(tag.tanHalfH);
+	XrFovf fov;  // the lens centre is 0 unless AsymmetricEyes rendered an off-centre frustum
+	fov.angleLeft = pure::fatan(tag.tanCentreX - tag.tanHalfW);
+	fov.angleRight = pure::fatan(tag.tanCentreX + tag.tanHalfW);
+	fov.angleUp = pure::fatan(tag.tanCentreY + tag.tanHalfH);
+	fov.angleDown = pure::fatan(tag.tanCentreY - tag.tanHalfH);
 	return fov;
 }
 
@@ -356,7 +361,36 @@ bool UpdateMenu(XrTime time);
 bool UpdateOverlay();
 }  // namespace
 
+namespace {
+// [Stereo] RealFrameRate: only NEW game pictures are handed to the VR software. Otherwise the mod hands
+// it a picture every headset refresh, re-aiming the last game picture when no new one has come: the VR
+// software's own counter then always shows the headset's rate, and its frame synthesis (Virtual Desktop's
+// SSW) never engages because it never sees the game fall behind. Same idea as SKVR/AKVR FPSLOCK-SSW:
+// skip refreshes by waiting, never by resubmitting.
+void WaitForNewGameFrame() {
+	if (!g_cfg.realFrameRate || g_vr.state != XR_SESSION_STATE_FOCUSED) return;
+	const DWORD start = GetTickCount();
+	DWORD firstEyeAt = 0;
+	while (GetTickCount() - start < 40) {  // never hold the headset longer than this: loading screens, pauses
+		int32_t latest[3];
+		{
+			SectionLock guard(&g_share.lock);
+			for (int k = 0; k < 3; k++) latest[k] = g_share.latest[k].seq;
+		}
+		bool left = latest[0] > g_vr.views[0].seq, right = latest[1] > g_vr.views[1].seq, flat = latest[2] > g_vr.views[2].seq;
+		if (flat || (left && right)) return;
+		// one eye in: the other is published at the same Present, a moment later (a few ms at most)
+		if (left || right) {
+			if (!firstEyeAt) firstEyeAt = GetTickCount();
+			else if (GetTickCount() - firstEyeAt > 3) return;
+		}
+		Sleep(1);
+	}
+}
+}  // namespace
+
 void Frame() {
+	WaitForNewGameFrame();
 	XrFrameState frameState = {};
 	frameState.type = XR_TYPE_FRAME_STATE;
 	XrFrameWaitInfo waitInfo = {};
@@ -365,6 +399,7 @@ void Frame() {
 		Sleep(5);
 		return;
 	}
+	FrameRateNoteHeadsetFrame(frameState.predictedDisplayPeriod);  // the headset's rhythm, for "Game frame rate: headset"
 	XrFrameBeginInfo beginInfo = {};
 	beginInfo.type = XR_TYPE_FRAME_BEGIN_INFO;
 	if (!XR_CHECK_FRAME(g_vr.xrBeginFrame(g_vr.session, &beginInfo))) return;
@@ -453,7 +488,8 @@ void Frame() {
 					warp.outTan[3] = pure::ftan(shown.fov.angleDown);
 					warp.srcTan[0] = tag.tanHalfW;
 					warp.srcTan[1] = tag.tanHalfH;
-					warp.srcTan[2] = warp.srcTan[3] = 0;
+					warp.srcTan[2] = tag.tanCentreX;
+					warp.srcTan[3] = tag.tanCentreY;
 					pure::M4 renderRot = pure::m4_from_pose({tag.rot[0], tag.rot[1], tag.rot[2], tag.rot[3]}, {0, 0, 0});
 					pure::M4 shownRot = pure::m4_from_pose({shown.pose.orientation.x, shown.pose.orientation.y, shown.pose.orientation.z,
 															shown.pose.orientation.w},
@@ -547,6 +583,7 @@ void Frame() {
 				proj.views = projViews;
 				layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&proj;
 				g_vr.statStereoFrames++;
+				WatchEyeBars(left.srv);  // logs black bands in the 3D picture (cutscenes)
 				// HUD: keyed out of the newest eye frame, on a transparent flat layer in front.
 				// (Synchronized: the right eye is replayed without UI, so the HUD comes from the left)
 				auto& hudSource = (left.seq > right.seq && !left.tag.noUI) || right.tag.noUI ? left : right;
@@ -572,6 +609,63 @@ void Frame() {
 			int newest = mono.hasFrame && (mono.seq > left.seq || mono.seq > right.seq) ? 2 : -1;
 			for (int i = 0; i < 2 && newest < 0; i++)
 				if (g_vr.views[i].hasFrame && (newest < 0 || g_vr.views[i].seq > g_vr.views[newest].seq)) newest = i;
+			// The screen as a window hanging in the room, drawn into both eyes (ScreenInEyes, the
+			// default): a quad layer is composited from one picture for both eyes, and VR software
+			// that streams to the headset smears and shears it while the head turns. Drawn here,
+			// each eye sees the window through its own lens from where that eye really is.
+			bool screenInEyes = g_cfg.screenInEyes && g_vr.screenPs && g_vr.displayViewsValid && g_vr.screenPlaced && newest >= 0 &&
+								g_vr.recommendedW && g_vr.recommendedH;
+			if (screenInEyes && EnsureSwap(g_vr.screenEyeSwap[0], g_vr.recommendedW, g_vr.recommendedH, "left eye screen") &&
+				EnsureSwap(g_vr.screenEyeSwap[1], g_vr.recommendedW, g_vr.recommendedH, "right eye screen")) {
+				float rowTop, rowBottom;  // the picture between black bands (CropBlackBars)
+				ScreenPictureRows(g_vr.views[newest].srv, &rowTop, &rowBottom);
+				float screenW = g_cfg.width, screenH = g_cfg.width * (float)g_vr.gameH * (rowBottom - rowTop) / (float)g_vr.gameW;
+				pure::M4 screenPose = pure::m4_from_pose({g_vr.quadPose.orientation.x, g_vr.quadPose.orientation.y, g_vr.quadPose.orientation.z,
+														  g_vr.quadPose.orientation.w},
+														 {g_vr.quadPose.position.x, g_vr.quadPose.position.y, g_vr.quadPose.position.z});
+				bool ok = true;
+				for (int eye = 0; eye < 2 && ok; eye++) {
+					const XrView& view = g_vr.displayViews[eye];
+					ScreenParams screen = {};
+					screen.outTan[0] = pure::ftan(view.fov.angleLeft);
+					screen.outTan[1] = pure::ftan(view.fov.angleRight);
+					screen.outTan[2] = pure::ftan(view.fov.angleUp);
+					screen.outTan[3] = pure::ftan(view.fov.angleDown);
+					screen.half[0] = screenW * 0.5f;
+					screen.half[1] = screenH * 0.5f;
+					screen.half[2] = rowTop;
+					screen.half[3] = rowBottom;
+					pure::M4 eyePose = pure::m4_from_pose({view.pose.orientation.x, view.pose.orientation.y, view.pose.orientation.z, view.pose.orientation.w},
+														  {view.pose.position.x, view.pose.position.y, view.pose.position.z});
+					// into the screen's own space: R_screen^T R_eye, and where this eye is from the screen
+					pure::M4 toScreen = pure::m4_mul(pure::m4_rigid_inverse(screenPose), eyePose);
+					for (int row = 0; row < 3; row++)
+						for (int col = 0; col < 4; col++) screen.m[row][col] = toScreen.at(row, col);
+					ok = RenderScreenInto(g_vr.screenEyeSwap[eye], g_vr.views[newest].srv, screen);
+					projViews[eye].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+					projViews[eye].pose = view.pose;
+					projViews[eye].fov = view.fov;
+					projViews[eye].subImage.swapchain = g_vr.screenEyeSwap[eye].handle;
+					projViews[eye].subImage.imageRect.offset = {0, 0};
+					projViews[eye].subImage.imageRect.extent = {(int32_t)g_vr.screenEyeSwap[eye].w, (int32_t)g_vr.screenEyeSwap[eye].h};
+				}
+				if (ok) {
+					proj.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION;
+					proj.space = g_vr.localSpace;
+					proj.viewCount = 2;
+					proj.views = projViews;
+					layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&proj;
+					g_vr.statQuadFrames++;
+					newest = -1;  // done: no quad as well
+					static int loggedScreen = -1;
+					if (loggedScreen != 1) {
+						loggedScreen = 1;
+						Log("flat screen: drawn into both eyes as a %.2f x %.2f m window in the room, %ux%u per eye "
+							"(ScreenInEyes=1; 0 hands it to the VR software as a quad layer)",
+							(double)screenW, (double)screenH, g_vr.screenEyeSwap[0].w, g_vr.screenEyeSwap[0].h);
+					}
+				}
+			}
 			if (g_vr.screenPlaced && newest >= 0 && EnsureSwap(g_vr.screenSwap, g_vr.gameW, g_vr.gameH, "screen") &&
 				RenderInto(g_vr.screenSwap, g_vr.views[newest].srv)) {
 				quad.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
@@ -733,7 +827,8 @@ void GatherOverlayNumbers(OverlayNumbers& numbers) {
 	bool stereoOn = g_stereo.enabled;
 	ReleaseSRWLockShared(&g_stereo.lock);
 	snprintf(numbers.mode, sizeof(numbers.mode), "%s",
-			 !stereoOn || g_vr.menuMode ? "flat screen" : (g_cfg.synchronized ? "synchronized" : "alternating"));
+			 !stereoOn || g_vr.menuMode ? "flat screen" : (StereoAfw() ? "AFW" : StereoSynchronized() ? "synchronized"
+																									  : "alternating"));
 	numbers.gameW = g_vr.gameW;
 	numbers.gameH = g_vr.gameH;
 	numbers.sceneW = g_vr.sceneW;

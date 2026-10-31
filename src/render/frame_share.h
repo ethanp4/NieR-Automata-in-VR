@@ -8,7 +8,8 @@ struct FrameTag {          // what a captured game frame shows
 	bool patched;          // the camera was rewritten for that eye
 	bool hasScene;         // a scene-only (no UI) image was captured too
 	float pos[3], rot[4];  // eye pose (LOCAL) it was rendered from
-	float tanHalfW, tanHalfH;
+	float tanHalfW, tanHalfH;        // half-extents of the frustum it was rendered with
+	float tanCentreX, tanCentreY;    // where that frustum points (AsymmetricEyes; 0 = straight ahead)
 	uint32_t pairId;    // Synchronized: left and right image of one game frame share it (0 = single)
 	bool noUI;          // drawn without UI (the replayed second eye): don't key the HUD from it
 	bool hasWorld;      // worldRot is valid (the scene camera was patched)

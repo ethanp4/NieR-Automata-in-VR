@@ -9,3 +9,4 @@ float CullingGameFov();  // the field of view (deg) the game last asked for, bef
 // if there is one (*matched), else the newest. False if none in the last 250 ms.
 bool CullingLookAt(const float camPos[3], float eye[3], float target[3], bool* matched);
 void CullingToggleHeadCulling();  // Ctrl+Shift+F5: head-direction culling on/off (saved)
+void CullingToggleHeadShadows();  // Ctrl+Shift+F4: sun shadows fitted to the head on/off (saved)

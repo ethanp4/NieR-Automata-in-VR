@@ -158,6 +158,39 @@ inline M4 m4_symmetric_projection(const M4& game, float tanHalfW, float tanHalfH
 	return r;
 }
 
+// Off-centre ("asymmetric") version of the above: the frustum still reaches tanHalfW/tanHalfH to
+// each side, but around (centreX, centreY) in tangent units instead of around straight ahead. That
+// lets an eye's own lopsided field of view be rendered without the pixels a symmetric frustum
+// wastes on its narrow sides. The centre goes into the same clip-space terms the upscaler's jitter
+// shifts, so a point at tangent (centreX, centreY) lands in the middle of the image.
+inline M4 m4_frustum(const M4& game, float tanHalfW, float tanHalfH, float centreX, float centreY) {
+	M4 r = m4_symmetric_projection(game, tanHalfW, tanHalfH);
+	r.at(0, 2) = -game.at(3, 2) * centreX / tanHalfW;  // game.at(3,2) = -1: w = -z
+	r.at(1, 2) = -game.at(3, 2) * centreY / tanHalfH;
+	return r;
+}
+
+// Rotation that turns a camera to look at (tanX, tanY) in its own frame: yaw about its up axis,
+// then pitch. Straight ahead (0, 0, -1) ends up at that direction, so a symmetric frustum built
+// around it covers a field of view the eye sees lopsidedly. Built from the tangents alone
+// (cos = 1 / sqrt(1 + tan^2)), no trig.
+inline M4 m4_turn_to(float tanX, float tanY) {
+	float cosYaw = 1 / fsqrt(1 + tanX * tanX), sinYaw = tanX * cosYaw;
+	// the yaw happens first, so the pitch needed to reach tanY is measured in the yawed frame
+	float pitch = tanY * cosYaw;
+	float cosPitch = 1 / fsqrt(1 + pitch * pitch), sinPitch = pitch * cosPitch;
+	M4 r = m4_identity();
+	r.at(0, 0) = cosYaw;
+	r.at(0, 1) = -sinYaw * sinPitch;
+	r.at(0, 2) = -sinYaw * cosPitch;
+	r.at(1, 1) = cosPitch;
+	r.at(1, 2) = -sinPitch;
+	r.at(2, 0) = sinYaw;
+	r.at(2, 1) = cosYaw * sinPitch;
+	r.at(2, 2) = cosYaw * cosPitch;
+	return r;
+}
+
 // Pose of `eye` relative to `ref` (both in the same space): inverse(ref) * eye.
 inline M4 m4_relative(const M4& ref, const M4& eye) { return m4_mul(m4_rigid_inverse(ref), eye); }
 
@@ -230,6 +263,20 @@ inline float q_angle_deg(Q a, Q b) {
 	return 2 * fatan(fsqrt(1 - w * w) / w) * 57.29578f;
 }
 
+// `now` turned on by what it turned since `prev`, times k (k = 1: the same turn again), the extra
+// turn clamped to maxDeg; now's position is kept. Leads a head pose that is used later than it was taken.
+inline M4 m4_rotation_ahead(const M4& prev, const M4& now, float k, float maxDeg) {
+	Q q = q_from_m4(m4_mul(m4_rigid_inverse(prev), now));
+	if (q.w < 0) q = {-q.x, -q.y, -q.z, -q.w};
+	float s = fsqrt(q.x * q.x + q.y * q.y + q.z * q.z);
+	if (s < 1e-7f || !(k > 0) || q.w < 1e-6f) return now;
+	float angle = 2 * fatan(s / q.w) * k, maxAngle = maxDeg * 0.0174533f;
+	if (angle > maxAngle) angle = maxAngle;
+	float sn, cs;
+	fsincos(angle * 0.5f, &sn, &cs);
+	return m4_mul(now, m4_from_pose({q.x / s * sn, q.y / s * sn, q.z / s * sn, cs}, {0, 0, 0}));
+}
+
 // Pitch of a camera-to-world matrix's line of sight (-z), degrees: negative = looking down.
 inline float camera_pitch_deg(const M4& cam) {
 	float fx = -cam.at(0, 2), fy = -cam.at(1, 2), fz = -cam.at(2, 2);
@@ -239,9 +286,10 @@ inline float camera_pitch_deg(const M4& cam) {
 }
 
 // Camera levelling that adapts to steep views. Pitch and roll are removed while the camera looks
-// roughly horizontally (|pitch| <= lo degrees); above that more and more of the pitch is kept, all
-// of it from hi degrees (top-down sections: the arena then lies in front of you instead of at your
-// feet). The heading comes from forward and up together, so it stays stable even when the camera
+// roughly horizontally or UP; looking down more than lo degrees, more and more of the pitch is kept,
+// all of it from hi degrees (top-down sections: the arena then lies in front of you instead of at your
+// feet). Upward views stay level: low behind the character the game camera tilts up 45-60 deg, and
+// keeping part of that tilt made the view nod with every bob of the camera near the ground (JJ 2026-10-28). The heading comes from forward and up together, so it stays stable even when the camera
 // looks straight down. *pitchDeg / *kept report the camera pitch and the fraction kept.
 inline M4 m4_level_camera_adaptive(const M4& cam, float lo, float hi, float* pitchDeg, float* kept) {
 	V3 fwd{-cam.at(0, 2), -cam.at(1, 2), -cam.at(2, 2)};
@@ -252,7 +300,7 @@ inline M4 m4_level_camera_adaptive(const M4& cam, float lo, float hi, float* pit
 	V3 dir{fwd.x - sgn * up.x, fwd.y - sgn * up.y, fwd.z - sgn * up.z};
 	Q yaw;
 	if (!yaw_from_forward(dir, &yaw) && !yaw_from_forward(fwd, &yaw)) yaw = Q{0, 0, 0, 1};
-	float deg = pitch * 57.29578f, a = deg < 0 ? -deg : deg;
+	float deg = pitch * 57.29578f, a = deg < 0 ? -deg : 0;  // only looking down counts as steep
 	float t = hi > lo ? (a - lo) / (hi - lo) : (a >= hi ? 1.0f : 0.0f);
 	t = t < 0 ? 0 : (t > 1 ? 1 : t);
 	float k = t * t * (3 - 2 * t);  // smoothstep

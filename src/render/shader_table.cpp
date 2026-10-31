@@ -17,7 +17,8 @@ struct ShaderEntry {
 	bool shadowMask;  // screen-space shadow pass: reads "ShadowView_Buffer", not "ScatterParam"
 	bool scatter;     // light scattering (fog, light shafts): "ScatterParam" (also reads the shadow map)
 	bool vignette;    // tone mapping: "g_VignettoParam"
-	bool effect;      // effect system: "EffectParameterIndex"
+	bool effect;      // effect system: particles, screen filters: "EffectParameterIndex"
+	bool glare;       // the glare (bloom) around the sun: "g_GlareParam" (its only parameters)
 	ComputeShaderClass computeClass;
 	uint32_t sampled;  // texture registers it samples (bit mask)
 };
@@ -93,6 +94,8 @@ void ShaderTableRemember(void* shader, const void* bytecode, SIZE_T len, ShaderS
 			entry.shadowMask = !entry.scatter && Contains(copy, size, "ShadowView_Buffer");
 			entry.vignette = Contains(copy, size, "g_VignettoParam");
 			entry.effect = Contains(copy, size, "EffectParameterIndex");
+			// a pass of its own, with nothing in it but the flare: g_GlareColor, g_GlareParam, one texture
+			entry.glare = Contains(copy, size, "g_GlareParam");
 		}
 		return;
 	}
@@ -117,6 +120,7 @@ PixelShaderClass ShaderTableClassifyPixel(void* pixelShader, uint32_t* sampled, 
 		else if (entry->vignette) kind = PS_TONE_MAPPING;
 		else if (entry->effect) kind = PS_EFFECT;
 		else if (entry->scatter) kind = PS_LIGHT_SCATTERING;
+		else if (entry->glare) kind = PS_GLARE;
 	}
 	*sampled = entry ? entry->sampled : 0;
 	*hash = entry ? entry->hash : 0;

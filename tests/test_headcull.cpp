@@ -44,6 +44,20 @@ int main() {
 	check(!pure::head_lookat(eye, target, upAlong, pure::m4_identity(), t, u), "up along the look refused");
 	pure::M4 zero = {};
 	check(!pure::head_lookat(eye, target, up, zero, t, u), "non-rotation refused");
+	// leading a turning head: 10 deg turned since the last pose, k = 0.5 -> 5 deg further; clamped; position kept
+	{
+		pure::M4 prev = rot(0, 0), now = rot(10, 0);
+		now.at(0, 3) = 1;
+		pure::M4 ahead = pure::m4_rotation_ahead(prev, now, 0.5f, 25);
+		check(std::fabs(pure::q_angle_deg(pure::q_from_m4(ahead), pure::q_from_m4(rot(15, 0)))) < 0.01f, "half a turn ahead");
+		check(ahead.at(0, 3) == 1, "position kept");
+		pure::M4 clamped = pure::m4_rotation_ahead(prev, now, 10, 20);
+		check(std::fabs(pure::q_angle_deg(pure::q_from_m4(clamped), pure::q_from_m4(rot(30, 0)))) < 0.01f, "clamped to 20 deg");
+		pure::M4 still = pure::m4_rotation_ahead(now, now, 1, 20);
+		check(pure::q_angle_deg(pure::q_from_m4(still), pure::q_from_m4(now)) < 0.01f, "no turn, no lead");
+		pure::M4 pitch = pure::m4_rotation_ahead(rot(0, 0), rot(0, -8), 1, 20);
+		check(pure::q_angle_deg(pure::q_from_m4(pitch), pure::q_from_m4(rot(0, -16))) < 0.01f, "pitch leads too");
+	}
 	std::printf(fails ? "head culling tests FAILED\n" : "head culling tests passed\n");
 	return fails != 0;
 }

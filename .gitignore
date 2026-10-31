@@ -3,3 +3,7 @@ build/
 build-clang/
 .deps/
 docs/
+evidence/
+build-*/
+dist/
+__pycache__/

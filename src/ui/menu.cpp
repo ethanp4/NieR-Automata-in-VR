@@ -1,5 +1,6 @@
 // menu.cpp - the in-headset settings menu.
 #include "ui/menu.h"
+#include "render/game_resolution.h"
 #include "core/locks.h"
 #include "core/config.h"
 #include "core/log.h"
@@ -26,6 +27,7 @@ enum ItemFlags { F_RESTART = 1,
 				 F_RECENTER = 4,
 				 F_ALTERNATING = 8,
 				 F_SYNCHRONIZED = 16 };  // ALTERNATING/SYNCHRONIZED: only used in that mode
+constexpr DWORD kStickHoldMs = 600;  // both sticks held this long opens or closes the panel
 enum ItemAction { A_RECENTER = 1,
 				  A_SYNCHRONIZED_STATS,
 				  A_DLSS_FILE };
@@ -45,11 +47,25 @@ Item kView[] = {
 		T_CHOICE,
 		&g_cfg.synchronized,
 		0,
-		1,
-		"Alternating|Synchronized",
+		2,
+		"Alternating|Synchronized|AFW",
 		0,
-		"Alternating renders one eye per game frame; Synchronized renders both, so they always match, for about "
-		"twice the graphics work. Also F5.",
+		"Alternating draws one eye per game frame and moves the other eye's last picture to the new camera. "
+		"Synchronized draws both, so they always match, for about twice the graphics work. AFW draws one eye per frame "
+		"and builds the other from it by its depth, so both show the same moment. Also F5 (cycles).",
+	},
+	{
+		"Show VR software the real frame rate",
+		T_BOOL,
+		&g_cfg.realFrameRate,
+		0,
+		1,
+		nullptr,
+		0,
+		"Off: the mod hands your VR software a picture every headset refresh, re-aiming the last game picture to your "
+		"head when there is no new one - so Virtual Desktop's overlay always shows the headset's rate. On: only new game "
+		"pictures are handed over, so its overlay shows the game's real rate, and with SSW turned on in Virtual Desktop "
+		"it fills in the frames in between itself.",
 	},
 	{
 		"World scale",
@@ -124,8 +140,8 @@ Item kView[] = {
 		1,
 		nullptr,
 		0,
-		"Removes the game camera's up/down tilt so the horizon stays level (comfort). Steep top-down views keep "
-		"their tilt (see below).",
+		"Removes the game camera's up/down tilt so the horizon stays level (comfort). Steep views looking down "
+		"(top-down sections) keep their tilt (see below). Off: the right stick tilts your view up and down.",
 	},
 	{
 		"Keep tilt from",
@@ -169,6 +185,18 @@ Item kView[] = {
 		"game falls behind. Less is faster: every pixel of the game and the upscaler costs. 1.10 is the default.",
 	},
 	{
+		"Fit the lens to each eye",
+		T_BOOL,
+		&g_cfg.asymmetricEyes,
+		0,
+		1,
+		nullptr,
+		0,
+		"Your eyes look outwards, so drawing each one straight ahead needs a picture about a third wider than that eye "
+		"can see. This turns each eye camera to the middle of its own view instead, which spends those pixels on what "
+		"you actually see: pick a resolution a step or two lower for the same sharpness, and the game draws fewer pixels.",
+	},
+	{
 		"Recenter",
 		T_ACTION,
 		(void*)A_RECENTER,
@@ -193,6 +221,43 @@ Item kRender[] = {
 		"Needs an NVIDIA RTX or GTX 16 card.",
 	},
 	{
+		"Game frame rate (experimental)",
+		T_CHOICE,
+		&g_cfg.gameFrameRate,
+		0,
+		6,
+		"60 (the game's own)|72|80|90|120|Headset rate|Unlimited",
+		0,
+		"Lets the game run faster than its 60 frames a second, so the world moves more smoothly in the headset. Some "
+		"things in the game may run too fast at a higher rate: back up your saves first. Your graphics card must also "
+		"keep up: if the rate shown in the headset stays lower, pick a lower rate or a lower resolution. Headset rate: the "
+		"game runs at exactly your headset's refresh rate and in step with it, so no hitches - set the headset to a rate "
+		"your graphics card can hold (72 or 80 Hz in Virtual Desktop, or 90 with the OFXR bridge). Unlimited: as fast as "
+		"your graphics card goes (up to 250) - for the alternating modes, where each frame draws only one eye.",
+	},
+	{
+		"Keep game speed",
+		T_BOOL,
+		&g_cfg.gameSpeedFix,
+		0,
+		1,
+		nullptr,
+		0,
+		"With a higher frame rate: the game moves at its normal speed. Off: everything runs faster, as the game expects "
+		"exactly 60 frames a second (to compare).",
+	},
+	{
+		"Keep animation speed",
+		T_BOOL,
+		&g_cfg.gameStepFix,
+		0,
+		1,
+		nullptr,
+		0,
+		"With a higher frame rate: 2B's running and other animations play at their normal speed. Off: they play too "
+		"fast (to compare).",
+	},
+	{
 		"Upscaler (experimental)",
 		T_CHOICE,
 		&g_cfg.upscaler,
@@ -201,9 +266,20 @@ Item kRender[] = {
 		"Off|DLSS",
 		0,
 		"DLSS turns the game's image into a sharp one at the size your headset wants, without jagged, shimmering edges. "
-		"As in other games, the game's resolution picks the mode: lower it for more speed (Quality, Balanced, "
-		"Performance). The Info page shows which resolution gives which mode. Needs an NVIDIA RTX "
-		"card and nvngx_dlss.dll in the game's folder.",
+		"The mod sets the resolution the game renders for you, from the two settings below - nothing to change in the "
+		"game's own settings. Needs an NVIDIA RTX card and nvngx_dlss.dll in the game's folder.",
+	},
+	{
+		"DLSS quality",
+		T_CHOICE,
+		&g_cfg.upscaleQuality,
+		0,
+		3,
+		"Sharpest|Quality|Balanced|Fastest",
+		F_RESTART,
+		"How much work the graphics card does, without changing the Resolution you get: Sharpest draws every pixel "
+		"(DLSS only cleans up the edges); the others draw fewer and let DLSS fill them in - Fastest draws a quarter as "
+		"many. The mod sets the game's own resolution to match; it takes effect when the game next starts.",
 	},
 	{
 		"DLSS file",
@@ -216,15 +292,16 @@ Item kRender[] = {
 		"Download nvngx_dlss.dll from the DLSS repo, since apparently im not allowed to ship it. It will get placed next to the exe is about 60 mb",
 	},
 	{
-		"Upscaler output",
+		"Resolution",
 		T_FLOAT,
 		&g_cfg.upscaleOutput,
 		50,
 		150,
 		"%.0f%% of the headset's detail",
-		0,
-		"Size of the image DLSS makes, compared with what your headset recommends (100% = its own). It stays put while "
-		"you change the game's resolution. Less is a little faster, more is sharper (supersampling).",
+		F_RESTART,
+		"How sharp the picture in your headset is, as a share of the detail it asks for (100% = its own; more is "
+		"supersampling). Independent of DLSS quality: changing one never changes the other. Takes effect when the "
+		"game next starts.",
 	},
 	{
 		"DLSS model",
@@ -343,6 +420,29 @@ Item kRender[] = {
 	},
 };
 Item kScreen[] = {
+	{
+		"Steady flat screen",
+		T_BOOL,
+		&g_cfg.screenInEyes,
+		0,
+		1,
+		nullptr,
+		0,
+		"Draws the flat screen (menus, loading screens, the title) into both of your eyes as a window hanging in the "
+		"room, so it stays still while you turn your head. Off hands it to your VR software instead, which costs less "
+		"but can smear and shear it as you turn.",
+	},
+	{
+		"Hide black bars",
+		T_BOOL,
+		&g_cfg.cropBlackBars,
+		0,
+		1,
+		nullptr,
+		0,
+		"No black bands: films and menus show on a screen trimmed to the picture, and 3D cutscenes fill your view "
+		"without the dark bands above and below.",
+	},
 	{
 		"Screen distance",
 		T_FLOAT,
@@ -511,13 +611,17 @@ struct Page {
 	const char* name;
 	Item* items;
 	int32_t count;
+	int32_t noteFirst;  // live Info lines shown above the settings (-1: none)
+	int32_t noteCount;
 };
-Page s_pages[] = {{"View", kView, std::size(kView)},
-				  {"Rendering", kRender, std::size(kRender)},
-				  {"Screen", kScreen, std::size(kScreen)},
-				  {"Controls", kInput, std::size(kInput)},
-				  {"Other", kOther, std::size(kOther)},
-				  {"Info", nullptr, 0}};
+Page s_pages[] = {{"View", kView, std::size(kView), -1, 0},
+				  // the upscaler's state and the game resolution for each of its modes, where the
+				  // upscaler settings are: it takes two numbers to land on a mode, so show both
+				  {"Rendering", kRender, std::size(kRender), INFO_PANEL_RESOLUTION, 2},
+				  {"Screen", kScreen, std::size(kScreen), -1, 0},
+				  {"Controls", kInput, std::size(kInput), -1, 0},
+				  {"Other", kOther, std::size(kOther), -1, 0},
+				  {"Info", nullptr, 0, -1, 0}};
 constexpr int32_t kPageCount = std::size(s_pages);
 
 char s_infoText[INFO_LINE_COUNT][160];
@@ -624,8 +728,8 @@ const char* ItemTag(const Item& item) {
 		if (file.state == DF_UPDATE_AVAILABLE) return "(update available)";
 		return file.state == DF_MISSING && file.text[0] ? file.text : nullptr;  // why the last download failed
 	}
-	if ((item.flags & F_ALTERNATING) && g_cfg.synchronized) return "(not used: synchronized mode)";
-	if ((item.flags & F_SYNCHRONIZED) && !g_cfg.synchronized) return "(not used: alternating mode)";
+	if ((item.flags & F_ALTERNATING) && StereoSynchronized()) return "(not used: synchronized mode)";
+	if ((item.flags & F_SYNCHRONIZED) && !StereoSynchronized()) return "(not used: alternating or AFW mode)";
 	if (item.flags & F_RESTART) return "(restart)";
 	return nullptr;
 }
@@ -752,11 +856,27 @@ bool ItemWidget(Item& item) {
 	}
 }
 
+// Resolution and DLSS quality are a percentage and a name: say under them what they come to in pixels.
+const char* ItemDetail(const Item& item) {
+	static char text[96];
+	uint32_t drawW, drawH, headsetW, headsetH;
+	if (item.value != &g_cfg.upscaleOutput && item.value != &g_cfg.upscaleQuality) return nullptr;
+	if (!GameResolutionSizes(&drawW, &drawH, &headsetW, &headsetH)) return nullptr;
+	if (item.value == &g_cfg.upscaleOutput) snprintf(text, sizeof(text), "your headset gets %ux%u", headsetW, headsetH);
+	else snprintf(text, sizeof(text), "the game draws %ux%u", drawW, drawH);
+	return text;
+}
+
 void ItemRow(Item& item, int index) {
 	ImGui::TableNextRow();
 	ImGui::TableSetColumnIndex(0);
 	ImGui::AlignTextToFramePadding();
 	ImGui::TextUnformatted(item.label);
+	if (const char* detail = ItemDetail(item)) {
+		ImGui::PushFont(nullptr, kSmall);
+		ImGui::TextDisabled("%s", detail);
+		ImGui::PopFont();
+	}
 	if (const char* tag = ItemTag(item)) {
 		ImGui::SameLine();
 		ImGui::PushFont(nullptr, kSmall);
@@ -772,6 +892,11 @@ void ItemRow(Item& item, int index) {
 		s_focusFirst = false;
 	}
 	bool focused = ImGui::IsItemFocused();
+	// back on the first setting: scroll to the very top, so the page's info lines above it come back into view
+	// (navigation only scrolls far enough to show the setting itself - JJ 2026-10-28)
+	static int focusedRow = -1;
+	if (focused && index == 0 && focusedRow != 0) ImGui::SetScrollY(0.0f);
+	if (focused) focusedRow = index;
 	bool done = item.type == T_BOOL ? changed : ImGui::IsItemDeactivatedAfterEdit();  // sliders: when let go
 	if (item.type == T_BOOL) {
 		ImGui::SameLine();
@@ -808,6 +933,11 @@ void PageContents(const Page& page, bool isInfo) {
 		ImGui::SetScrollY(ImGui::GetScrollY() - s_infoScroll * kInfoScrollSpeed * ImGui::GetIO().DeltaTime);
 		s_focusFirst = false;
 		return;
+	}
+	if (page.noteFirst >= 0) {
+		SharedLock guard(&s_infoLock);
+		for (int32_t i = page.noteFirst; i < page.noteFirst + page.noteCount && i < INFO_LINE_COUNT; i++)
+			if (s_infoText[i][0]) ImGui::TextWrapped("%s", s_infoText[i]);
 	}
 	if (!ImGui::BeginTable("items", 2, ImGuiTableFlags_None)) return;
 	ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch);
@@ -953,7 +1083,20 @@ void MenuTick(bool foreground) {
 	if (havePad && pad.bRightTrigger > 160) rightTriggerHeld = true;
 	else if (!havePad || pad.bRightTrigger < 64) rightTriggerHeld = false;
 
-	// open / close. Gamepad: hold B, then press A. Closing: B, Start or the menu key.
+	// open / close. Gamepad: press both sticks in and hold, or hold B then press A. Closing: B, Start
+	// or the menu key. Both sticks held is the same gesture as the other VR mods in this family.
+	constexpr DWORD kBothSticks = XINPUT_GAMEPAD_LEFT_THUMB | XINPUT_GAMEPAD_RIGHT_THUMB;
+	static DWORD s_bothSticksSince;  // GetTickCount when both went down (0 = not held)
+	bool bothSticks = (buttons & kBothSticks) == kBothSticks;
+	bool sticksFire = false;
+	if (!bothSticks) {
+		s_bothSticksSince = 0;
+	} else if (!s_bothSticksSince) {
+		s_bothSticksSince = GetTickCount() | 1;
+	} else if (s_bothSticksSince != 1 && GetTickCount() - s_bothSticksSince > kStickHoldMs) {
+		sticksFire = true;
+		s_bothSticksSince = 1;  // fired: wait for a release before it can fire again
+	}
 	if (!(buttons & XINPUT_GAMEPAD_B)) s_comboLocked = false;
 	bool comboFire = !s_comboLocked && (buttons & XINPUT_GAMEPAD_B) && (pressed & XINPUT_GAMEPAD_A);
 	bool keyToggle = KeyEdge(g_cfg.keyMenu, foreground);
@@ -961,8 +1104,8 @@ void MenuTick(bool foreground) {
 	bool deleteKey = KeyEdge(VK_DELETE, foreground), backKey = KeyEdge(VK_BACK, foreground);  // both read every frame
 	bool resetKey = deleteKey || backKey;
 	if (!s_open) {
-		if (keyToggle || comboFire) SetOpen(true);
-	} else if (keyToggle || (!s_sliderActive && (pressed & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START)))) {
+		if (keyToggle || comboFire || sticksFire) SetOpen(true);
+	} else if (keyToggle || sticksFire || (!s_sliderActive && (pressed & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START)))) {
 		SetOpen(false);
 		if (buttons & XINPUT_GAMEPAD_B) s_comboLocked = true;  // else A with B still down reopens it at once
 	}

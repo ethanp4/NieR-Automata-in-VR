@@ -53,11 +53,15 @@ SetViewportRatesFn s_setViewportRates;
 bool s_checked, s_supported;
 bool s_on;          // VRS is on in the context now
 bool s_sceneOver;   // this frame's scene is done (the UI, our own passes)
-int32_t s_strength;  // the map's
-UINT s_mapW, s_mapH;
-float s_mapHalfW, s_mapHalfH;
-ID3D11Texture2D* s_map;
-IUnknown* s_mapView;
+// One map per lens: with AsymmetricEyes the two eyes look outwards, so the full-detail middle sits
+// on a different side in each of them. Slot 0 = lens pointing left, 1 = straight ahead or right.
+int32_t s_strength;  // the maps'
+UINT s_mapW[2], s_mapH[2];
+float s_mapHalfW[2], s_mapHalfH[2], s_mapCentreX[2], s_mapCentreY[2];
+ID3D11Texture2D* s_map[2];
+IUnknown* s_mapView[2];
+int32_t s_slot;          // the one this frame's eye uses
+IUnknown* s_boundView;   // the map handed to the driver last: never free this one while it is bound
 bool s_loggedOn;
 UINT s_gameW, s_gameH;
 
@@ -85,34 +89,45 @@ bool Supported(ID3D11Device* device) {
 	return s_supported;
 }
 
+// The map must be re-bound whenever the eye changes, not only when the rates go on and off: each eye
+// has its own map, and leaving the other eye's bound would hand the driver a map we are free to
+// destroy a moment later (2026-10-27: that freed map was read inside the D3D11 runtime).
 void SetRates(ID3D11DeviceContext* c, bool on) {
-	if (on == s_on) return;
+	IUnknown* want = on ? s_mapView[s_slot] : nullptr;
+	if (on == s_on && want == s_boundView) return;
 	NvViewportRates viewport = {true, {}};
 	for (int32_t& rate : viewport.table) rate = NV_RATE_X1;
 	viewport.table[pure::FOVEATION_HALF] = NV_RATE_2X2;
 	viewport.table[pure::FOVEATION_QUARTER] = NV_RATE_4X4;
 	NvViewportsRates desc = {NvVersion(sizeof(NvViewportsRates), 1), on ? 1u : 0u, &viewport};
-	if (on) s_setRateView(c, s_mapView);
-	s_setViewportRates(c, &desc);
+	if (on) s_setRateView(c, want);
+	if (on != s_on) s_setViewportRates(c, &desc);
+	s_boundView = want;
 	s_on = on;
 }
 
-void ReleaseMap() {
-	SafeRelease(s_mapView);
-	SafeRelease(s_map);
+// Only ever called with the rates switched off for this slot (see EnsureMap).
+void ReleaseMap(int32_t slot) {
+	SafeRelease(s_mapView[slot]);
+	SafeRelease(s_map[slot]);
 }
 
 // The rate map for a width x height target and this frame's eye field of view (rebuilt when they change)
-bool EnsureMap(ID3D11Device* device, UINT width, UINT height) {
+bool EnsureMap(ID3D11DeviceContext* c, ID3D11Device* device, UINT width, UINT height) {
 	float halfW, halfH;
-	if (!StereoEyeTangents(&halfW, &halfH)) return false;
-	bool same = s_map && s_mapW == width && s_mapH == height && s_strength == g_cfg.foveated && fabsf(halfW - s_mapHalfW) < 0.01f * s_mapHalfW &&
-				fabsf(halfH - s_mapHalfH) < 0.01f * s_mapHalfH;
+	float centre[2] = {0, 0};
+	if (!StereoEyeTangents(&halfW, &halfH, centre)) return false;
+	s_slot = centre[0] < 0 ? 0 : 1;
+	bool same = s_map[s_slot] && s_mapW[s_slot] == width && s_mapH[s_slot] == height && s_strength == g_cfg.foveated &&
+				fabsf(halfW - s_mapHalfW[s_slot]) < 0.01f * s_mapHalfW[s_slot] && fabsf(halfH - s_mapHalfH[s_slot]) < 0.01f * s_mapHalfH[s_slot] &&
+				fabsf(centre[0] - s_mapCentreX[s_slot]) < 0.002f && fabsf(centre[1] - s_mapCentreY[s_slot]) < 0.002f;
 	if (same) return true;
-	ReleaseMap();
+	// the driver still holds the old map if it is the bound one: take it back before freeing it
+	if (s_mapView[s_slot] && s_mapView[s_slot] == s_boundView) SetRates(c, false);
+	ReleaseMap(s_slot);
 	int32_t tilesX = pure::foveation_tiles((int32_t)width), tilesY = pure::foveation_tiles((int32_t)height);
 	std::vector<uint8_t> rates((size_t)(tilesX * tilesY));
-	pure::foveation_map((int32_t)width, (int32_t)height, halfW, halfH, pure::foveation_rings(g_cfg.foveated), rates.data());
+	pure::foveation_map((int32_t)width, (int32_t)height, halfW, halfH, centre[0], centre[1], pure::foveation_rings(g_cfg.foveated), rates.data());
 	D3D11_TEXTURE2D_DESC desc = {};
 	desc.Width = (UINT)tilesX;
 	desc.Height = (UINT)tilesY;
@@ -123,16 +138,18 @@ bool EnsureMap(ID3D11Device* device, UINT width, UINT height) {
 	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 	D3D11_SUBRESOURCE_DATA data = {rates.data(), (UINT)tilesX, 0};
 	NvRateViewDesc viewDesc = {NvVersion(sizeof(NvRateViewDesc), 1), DXGI_FORMAT_R8_UINT, 4, 0, {}};
-	if (FAILED(device->CreateTexture2D(&desc, &data, &s_map)) || s_createRateView(device, s_map, &viewDesc, &s_mapView) != 0) {
-		ReleaseMap();
+	if (FAILED(device->CreateTexture2D(&desc, &data, &s_map[s_slot])) || s_createRateView(device, s_map[s_slot], &viewDesc, &s_mapView[s_slot]) != 0) {
+		ReleaseMap(s_slot);
 		Log("foveated shading: off (the rate map could not be made)");
 		s_supported = false;
 		return false;
 	}
-	s_mapW = width;
-	s_mapH = height;
-	s_mapHalfW = halfW;
-	s_mapHalfH = halfH;
+	s_mapW[s_slot] = width;
+	s_mapH[s_slot] = height;
+	s_mapHalfW[s_slot] = halfW;
+	s_mapHalfH[s_slot] = halfH;
+	s_mapCentreX[s_slot] = centre[0];
+	s_mapCentreY[s_slot] = centre[1];
 	s_strength = g_cfg.foveated;
 	if (!s_loggedOn) {
 		s_loggedOn = true;
@@ -176,7 +193,7 @@ void FoveatedOnTargets(ID3D11DeviceContext* c, UINT count, ID3D11RenderTargetVie
 	if (want) {
 		ComPtr<ID3D11Device> device;
 		c->GetDevice(&device);
-		want = device && Supported(device.Get()) && EnsureMap(device.Get(), width, height);
+		want = device && Supported(device.Get()) && EnsureMap(c, device.Get(), width, height);
 	}
 	if (want || s_on) SetRates(c, want);
 }

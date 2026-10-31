@@ -170,8 +170,8 @@ void SetRect(float* r, float x0, float y0, float x1, float y1) {
 }  // namespace
 
 void DesktopMirrorCompose(ID3D11DeviceContext* c, ID3D11Texture2D* backbuffer, ID3D11Texture2D* scene, HWND window) {
-	float halfW, halfH;
-	if (!scene || !StereoEyeTangents(&halfW, &halfH)) return;
+	float halfW, halfH, lensCentre[2];  // the mirror shows the image as drawn; the lens centre is not needed
+	if (!scene || !StereoEyeTangents(&halfW, &halfH, lensCentre)) return;
 	ComPtr<ID3D11Device> device;
 	c->GetDevice(&device);
 	D3D11_TEXTURE2D_DESC desc;

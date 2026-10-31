@@ -6,6 +6,7 @@
 #include "debug/gpu_timing.h"
 #include "render/camera.h"
 #include "render/foveated.h"
+#include "render/game_effects.h"
 #include "render/replay.h"
 #include "render/reproject.h"
 #include "render/upscale.h"
@@ -38,13 +39,16 @@ int32_t s_finalPassSlot;
 DrawArgs s_finalPassArgs;
 
 // Parameters of UI draws: the first 96 bytes of the UIParam / cbUIParam cbuffers (both start with
-// g_WorldMatrix, g_Color0, g_Color1, g_DispRate), remembered per buffer.
+// g_WorldMatrix, g_Color0, g_Color1, g_DispRate), remembered per buffer. NieR fills ~470 of these buffers a
+// frame, some (the cutscene bands) right at its start and drawn at its end: a 32-entry ring had long forgotten
+// them by then (capture 2026-10-31, NOTES A17). So a table by buffer that holds a whole frame and more.
 struct UiParams {
 	ID3D11Resource* buffer;
 	float floats[24];
 };
-UiParams s_uiParams[32];
-int32_t s_uiParamsNext;
+constexpr int32_t kUiParamSlots = 4096;  // a power of two
+UiParams s_uiParams[kUiParamSlots];
+int32_t s_uiParamsUsed;
 struct PendingUiMap {
 	ID3D11Resource* res;
 	const float* data;
@@ -70,22 +74,36 @@ ID3D11Device* DeviceOf(ID3D11DeviceContext* c) {
 	c->GetDevice(&device);
 	return device.Get();
 }
+uint32_t UiParamSlot(ID3D11Resource* res) { return (uint32_t)(((uintptr_t)res >> 4) * 0x9E3779B97F4A7C15ull >> 52) & (kUiParamSlots - 1); }
+
 void StoreUiParams(ID3D11Resource* res, const float* data) {
-	for (auto& e : s_uiParams)
+	for (uint32_t i = UiParamSlot(res), n = 0; n < kUiParamSlots; i = (i + 1) & (kUiParamSlots - 1), n++) {
+		UiParams& e = s_uiParams[i];
 		if (e.buffer == res) {
 			memcpy(e.floats, data, sizeof(e.floats));
 			return;
 		}
-	UiParams& e = s_uiParams[s_uiParamsNext];
-	s_uiParamsNext = (s_uiParamsNext + 1) % 32;
-	e.buffer = res;
-	memcpy(e.floats, data, sizeof(e.floats));
+		if (!e.buffer) {
+			if (s_uiParamsUsed >= kUiParamSlots * 3 / 4) {  // nearly full (buffers come and go): start again
+				memset(s_uiParams, 0, sizeof(s_uiParams));
+				s_uiParamsUsed = 0;
+				StoreUiParams(res, data);
+				return;
+			}
+			e.buffer = res;
+			memcpy(e.floats, data, sizeof(e.floats));
+			s_uiParamsUsed++;
+			return;
+		}
+	}
 }
 
 const float* FindUiParams(ID3D11Resource* res) {
 	if (!res) return nullptr;
-	for (auto& e : s_uiParams)
-		if (e.buffer == res) return e.floats;
+	for (uint32_t i = UiParamSlot(res), n = 0; n < kUiParamSlots; i = (i + 1) & (kUiParamSlots - 1), n++) {
+		if (s_uiParams[i].buffer == res) return s_uiParams[i].floats;
+		if (!s_uiParams[i].buffer) return nullptr;
+	}
 	return nullptr;
 }
 
@@ -191,6 +209,41 @@ bool IsScreenEffect(const float* params) {
 		   params[16] > 0.95f && params[17] > 0.95f && params[18] > 0.95f;
 }
 
+// A cutscene's letterbox band: an unscaled rectangle centred across the UI canvas, dark brown (0.035 0.024 0.008)
+// at any opacity (0.41 when shown), near the top or bottom: at the canvas edges (y 0 / 1280) in 3D cutscenes, at
+// the film's own edges (y 190 / 1090) over pre-rendered films (captures 2026-10-31, NOTES A17).
+bool IsCutsceneBand(const float* params) {
+	auto within = [](float a, float b, float e) { return a > b - e && a < b + e; };
+	return within(params[0], 1, 0.01f) && within(params[5], 1, 0.01f) && within(params[3], 800, 0.5f) &&
+		   (params[7] < 300 || params[7] > 850) && within(params[16], 0.0353f, 0.006f) &&
+		   within(params[17], 0.0235f, 0.006f) && within(params[18], 0.0078f, 0.006f);
+}
+// Cutscene band draws in the last 10 s: seen, hidden, and why the rest weren't (logged by UiBeginFrame).
+uint32_t s_bandSeen, s_bandHidden, s_bandOff, s_bandMenu, s_bandSwapFailed;
+DWORD s_bandReportTick;
+
+// HideBlackBars (CropBlackBars=1): the cutscene's bands draw nothing - except while the flat menu screen is up.
+bool HideCutsceneBand(ID3D11DeviceContext* c, const float* params) {
+	if (!params || !IsCutsceneBand(params)) return false;
+	++s_bandSeen;
+	if (!g_cfg.cropBlackBars) return ++s_bandOff, false;
+	if (g_stereo.menuMode) return ++s_bandMenu, false;  // (a plain read: a frame late at worst)
+	if (!GameEffectsDrawNothing(c)) return ++s_bandSwapFailed, false;
+	++s_bandHidden;
+	return true;
+}
+
+void ReportBands() {
+	DWORD now = GetTickCount();
+	if (now - s_bandReportTick < 10000) return;
+	s_bandReportTick = now;
+	if (s_bandSeen)
+		Log("cutscene bands (10 s): %u band draws, %u drawn as nothing; kept: %u switched off (CropBlackBars=0), %u flat menu, "
+			"%u shader swap failed (3D picture %s)",
+			s_bandSeen, s_bandHidden, s_bandOff, s_bandMenu, s_bandSwapFailed, StereoActive() ? "on" : "off");
+	s_bandSeen = s_bandHidden = s_bandOff = s_bandMenu = s_bandSwapFailed = 0;
+}
+
 // Our scene texture: backbuffer-sized, with an RTV like the game's final-pass view of the
 // backbuffer (the default view until that pass has been seen once).
 bool EnsureScene(ID3D11Device* device, const D3D11_RENDER_TARGET_VIEW_DESC* rtvDesc) {
@@ -261,6 +314,7 @@ void UiSetBackbuffer(ID3D11Texture2D* backbuffer) {
 void UiOnResizeBuffers() { s_backbuffer = nullptr; }
 
 void UiBeginFrame() {
+	ReportBands();
 	if (s_uiStarted) s_framesWithUI++;
 	if (s_uiStarted && !s_sceneReady && !s_loggedNoFinal && s_framesWithUI > 120) {
 		s_loggedNoFinal = true;
@@ -364,8 +418,9 @@ bool UiBeforeDraw(ID3D11DeviceContext* c) {
 		}
 		const float* params = FindUiParams(s_vsSlot1Buffer);
 		bool effect = params && IsScreenEffect(params);
+		bool band = HideCutsceneBand(c, params);
 		s_drawIntoPreUi = effect && s_preUiRtv;
-		s_drawIntoCoverage = !effect && s_sceneRtv && CurrentTarget(c) == s_uiTarget;
+		s_drawIntoCoverage = !effect && !band && s_sceneRtv && CurrentTarget(c) == s_uiTarget;
 		return false;
 	}
 	ID3D11Resource* target = CurrentTarget(c);
@@ -424,8 +479,9 @@ bool UiBeforeDraw(ID3D11DeviceContext* c) {
 	}
 	const float* params = FindUiParams(s_vsSlot1Buffer);
 	bool effect = params && IsScreenEffect(params);
+	bool band = HideCutsceneBand(c, params);
 	s_drawIntoPreUi = effect && s_preUiRtv;
-	s_drawIntoCoverage = !effect && s_sceneRtv;
+	s_drawIntoCoverage = !effect && !band && s_sceneRtv;
 	return false;
 }
 

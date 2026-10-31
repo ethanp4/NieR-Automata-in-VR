@@ -16,6 +16,7 @@
 #include "render/replay.h"
 #include "render/reproject.h"
 #include "render/shader_table.h"
+#include "render/texture_tags.h"
 #include "render/viewfix.h"
 
 namespace {
@@ -42,6 +43,7 @@ enum {
 	CTX_CSSetUnorderedAccessViews = 68,
 	CTX_CSSetShader = 69,
 	CTX_CSSetConstantBuffers = 71,
+	DEV_CreateTexture2D = 5,
 	DEV_CreateVertexShader = 12,
 	DEV_CreatePixelShader = 15,
 	DEV_CreateComputeShader = 18,
@@ -73,6 +75,8 @@ typedef void(STDMETHODCALLTYPE* PFN_SetUnorderedAccessViews)(ID3D11DeviceContext
 															 const UINT*);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateShader)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, void**);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateDeferredContext)(ID3D11Device*, UINT, ID3D11DeviceContext**);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateTexture2D)(ID3D11Device*, const D3D11_TEXTURE2D_DESC*, const D3D11_SUBRESOURCE_DATA*,
+														ID3D11Texture2D**);
 
 PFN_SetConstantBuffers o_SetConstantBuffers[4];
 PFN_SetShader o_VSSetShader, o_PSSetShader, o_CSSetShader;
@@ -91,6 +95,7 @@ PFN_SetShaderResources o_PSSetShaderResources, o_CSSetShaderResources;
 PFN_SetUnorderedAccessViews o_CSSetUnorderedAccessViews;
 PFN_CreateShader o_CreateVertexShader, o_CreatePixelShader, o_CreateComputeShader;
 PFN_CreateDeferredContext o_CreateDeferredContext;
+PFN_CreateTexture2D o_CreateTexture2D;
 
 bool IsConstantBuffer(ID3D11Resource* res, UINT* byteWidth) {
 	D3D11_RESOURCE_DIMENSION dim;
@@ -100,6 +105,17 @@ bool IsConstantBuffer(ID3D11Resource* res, UINT* byteWidth) {
 	((ID3D11Buffer*)res)->GetDesc(&desc);
 	*byteWidth = desc.ByteWidth;
 	return (desc.BindFlags & D3D11_BIND_CONSTANT_BUFFER) != 0;
+}
+
+// A buffer shaders read as a resource (the effect system's per-object structured buffers): recorded by the capture only.
+bool IsShaderBuffer(ID3D11Resource* res, UINT* byteWidth) {
+	D3D11_RESOURCE_DIMENSION dim;
+	res->GetType(&dim);
+	if (dim != D3D11_RESOURCE_DIMENSION_BUFFER) return false;
+	D3D11_BUFFER_DESC desc;
+	((ID3D11Buffer*)res)->GetDesc(&desc);
+	*byteWidth = desc.ByteWidth;
+	return (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0;
 }
 
 // The game's current pixel and compute shaders
@@ -136,7 +152,10 @@ void STDMETHODCALLTYPE H_PSSetShader(ID3D11DeviceContext* c, void* shader, ID3D1
 		PixelShaderClass previous = s_psClass;
 		s_psClass = ShaderTableClassifyPixel(shader, &s_psSampledSlots, &s_psHash);
 		// GPU timing: the expensive full-screen passes get their own marks
-		static const char* const kNames[6] = {nullptr, "AO (SAO)", "shadow mask", nullptr, nullptr, "light scattering"};
+		// One entry per class: a table shorter than the enum read past its end when PS_GLARE was added,
+		// handing a garbage label to the timing code, which crashed in ucrtbase (2026-10-27).
+		static const char* const kNames[] = {nullptr, "AO (SAO)", "shadow mask", nullptr, nullptr, "light scattering", nullptr};
+		static_assert(sizeof(kNames) / sizeof(kNames[0]) == PS_CLASS_COUNT, "a name (or nullptr) for every pixel shader class");
 		if (s_psClass != previous) {
 			const char* name = kNames[s_psClass];
 			if (name) GpuTimingMark(c, name);
@@ -152,9 +171,16 @@ bool BeforeDraw(ID3D11DeviceContext* c) {
 	CapturePollMidFrame();
 	StereoCountDraw();
 	if (FirstPersonSkipDraw()) return true;
-	if (GameEffectsBeforeDraw(c, s_psClass)) return true;
-	if (UiBeforeDraw(c)) return true;
-	if (s_psClass == PS_EFFECT && GameEffectsSkipEffectDraw(c, s_psSampledSlots, s_psHash)) return true;
+	// the game's own shader: a replacement swapped in below is classified as another kind
+	PixelShaderClass ps = s_psClass;
+	uint32_t sampled = s_psSampledSlots;
+	uint64_t hash = s_psHash;
+	if (GameEffectsBeforeDraw(c, ps, hash)) return true;
+	// skipped after all: the pixel shader GameEffectsBeforeDraw may have swapped in goes back now
+	if (UiBeforeDraw(c) || (ps == PS_EFFECT && GameEffectsSkipEffectDraw(c, sampled, hash))) {
+		GameEffectsAfterDraw(c);
+		return true;
+	}
 	FirstPersonBeforeDraw(c);
 	GpuTimingDraw();
 	return false;
@@ -214,7 +240,10 @@ HRESULT STDMETHODCALLTYPE H_Map(ID3D11DeviceContext* c, ID3D11Resource* res, UIN
 	if (SUCCEEDED(hr) && ShouldRecord(c)) RecMap(res, sub, type, flags, mapped);
 	UINT byteWidth;
 	if (c != s_context || FAILED(hr) || !mapped || !res || type == D3D11_MAP_READ) return hr;
-	if (!IsConstantBuffer(res, &byteWidth)) return hr;
+	if (!IsConstantBuffer(res, &byteWidth)) {
+		if (CaptureRecording(c) && IsShaderBuffer(res, &byteWidth)) CaptureMap(res, mapped->pData, byteWidth);
+		return hr;
+	}
 	if (StereoWatching()) StereoOnMap(res, mapped->pData, byteWidth);
 	FirstPersonOnMap(res, mapped->pData, byteWidth);
 	GameEffectsOnMap(res, mapped->pData, byteWidth);
@@ -241,13 +270,16 @@ void STDMETHODCALLTYPE H_UpdateSubresource(ID3D11DeviceContext* c, ID3D11Resourc
 	if (g_replaying) return o_UpdateSubresource(c, res, sub, box, data, rowPitch, depthPitch);
 	if (ShouldRecord(c)) RecUpdate(res, sub, box, data, rowPitch, depthPitch);
 	UINT byteWidth;
-	float patched[64];
+	float patched[kPatchScratchFloats];
 	if (c == s_context && res && data && !box && IsConstantBuffer(res, &byteWidth)) {
 		// Constant buffers can only be updated whole, so `data` holds byteWidth bytes.
 		if (StereoWatching()) data = StereoPatchUpdate(byteWidth, data, patched);
 		data = GameEffectsPatchUpdate(res, data, byteWidth, patched);
 		UiOnUpdate(res, data, byteWidth);
 		if (CaptureRecording(c)) CaptureUpdate(res, data, byteWidth);
+	} else if (c == s_context && res && data && CaptureRecording(c) && IsShaderBuffer(res, &byteWidth)) {
+		UINT offset = box ? box->left : 0;
+		CaptureBufferUpdate(res, offset, data, box ? box->right - box->left : byteWidth - offset);
 	}
 	o_UpdateSubresource(c, res, sub, box, data, rowPitch, depthPitch);
 }
@@ -344,6 +376,12 @@ HRESULT STDMETHODCALLTYPE H_CreateComputeShader(ID3D11Device* device, const void
 	if (device == s_device && SUCCEEDED(hr) && out) ShaderTableRemember(*out, bytecode, bytecodeLength, ST_CS);
 	return hr;
 }
+HRESULT STDMETHODCALLTYPE H_CreateTexture2D(ID3D11Device* device, const D3D11_TEXTURE2D_DESC* desc, const D3D11_SUBRESOURCE_DATA* data,
+											ID3D11Texture2D** out) {
+	HRESULT hr = o_CreateTexture2D(device, desc, data, out);
+	if (device == s_device && SUCCEEDED(hr) && out) TextureTagsOnCreate(*out, desc, data);
+	return hr;
+}
 HRESULT STDMETHODCALLTYPE H_CreateDeferredContext(ID3D11Device* device, UINT flags, ID3D11DeviceContext** out) {
 	HRESULT hr = o_CreateDeferredContext(device, flags, out);
 	if (device == s_device && SUCCEEDED(hr)) {
@@ -403,6 +441,7 @@ void D3dHooksInstall(ID3D11Device* gameDevice) {
 		total++;
 		hooked += HookFunction(vtable[index], detour, (void**)original, name);
 	};
+	hook(deviceVtable, DEV_CreateTexture2D, (void*)&H_CreateTexture2D, &o_CreateTexture2D, "CreateTexture2D");
 	hook(deviceVtable, DEV_CreateVertexShader, (void*)&H_CreateVertexShader, &o_CreateVertexShader, "CreateVertexShader");
 	hook(deviceVtable, DEV_CreatePixelShader, (void*)&H_CreatePixelShader, &o_CreatePixelShader, "CreatePixelShader");
 	hook(deviceVtable, DEV_CreateComputeShader, (void*)&H_CreateComputeShader, &o_CreateComputeShader, "CreateComputeShader");

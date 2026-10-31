@@ -210,6 +210,8 @@ void DestroyPanel(Panel& panel) {
 
 void DestroyAllSwaps() {
 	DestroySwap(g_vr.screenSwap);
+	DestroySwap(g_vr.screenEyeSwap[0]);
+	DestroySwap(g_vr.screenEyeSwap[1]);
 	DestroySwap(g_vr.eyeSwap[0]);
 	DestroySwap(g_vr.eyeSwap[1]);
 	DestroySwap(g_vr.hudSwap);
@@ -355,7 +357,7 @@ bool EnsureSwap(Swapchain& swap, uint32_t width, uint32_t height, const char* wh
 	return true;
 }
 
-bool RenderInto(Swapchain& swap, ID3D11ShaderResourceView* srv, ID3D11ShaderResourceView* scene, const WarpParams* warp) {
+bool RenderInto(Swapchain& swap, ID3D11ShaderResourceView* srv, ID3D11ShaderResourceView* scene, const WarpParams* warp, bool asScreen) {
 	uint32_t imageIndex = 0;
 	XrSwapchainImageAcquireInfo acquireInfo = {};
 	acquireInfo.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
@@ -365,11 +367,15 @@ bool RenderInto(Swapchain& swap, ID3D11ShaderResourceView* srv, ID3D11ShaderReso
 	waitInfo.timeout = XR_INFINITE_DURATION;
 	bool waited = XR_CHECK_FRAME(g_vr.xrWaitSwapchainImage(swap.handle, &waitInfo));
 	if (!waited) return false;  // spec: an image may only be released after a successful wait
-	if (imageIndex < swap.count) Blit(swap.rtv[imageIndex], swap.w, swap.h, srv, scene, IsSrgb(g_vr.swapFormat), warp);
+	if (imageIndex < swap.count) Blit(swap.rtv[imageIndex], swap.w, swap.h, srv, scene, IsSrgb(g_vr.swapFormat), warp, asScreen);
 	XrSwapchainImageReleaseInfo releaseInfo = {};
 	releaseInfo.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
 	XR_CHECK_FRAME(g_vr.xrReleaseSwapchainImage(swap.handle, &releaseInfo));
 	return true;
+}
+
+bool RenderScreenInto(Swapchain& swap, ID3D11ShaderResourceView* srv, const ScreenParams& screen) {
+	return RenderInto(swap, srv, nullptr, (const WarpParams*)&screen, true);
 }
 
 namespace {

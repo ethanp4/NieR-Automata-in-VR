@@ -13,12 +13,21 @@
 #include <d3dcompiler.h>
 
 namespace {
+// cbuffer P in the shader below, the constants struct that fills it and the buffer it is copied
+// into are all this size: a shader whose cbuffer is larger than the buffer bound to it reads past the
+// end (a garbage pointer deep inside the D3D11 runtime, 2026-10-27).
+constexpr UINT kWarpConstantsSize = 176;
 constexpr char kHlsl[] = R"(
 cbuffer P : register(b0) {
-	row_major float4x4 T;   // old eye view -> eye view now
-	float4 proj;            // x scale, y scale, P22, P23 (z_ndc = (P22 z + P23) / -z)
+	row_major float4x4 T;   // source eye view -> destination eye view
+	float4 proj;            // source projection: x scale, y scale, P22, P23 (z_ndc = (P22 z + P23) / -z)
 	float4 size;            // width, height, grid step, grid width in cells
 	float4 dscale;          // depth pixels per colour pixel (x, y): 1, or less for an upscaled colour image
+	float4 lens;            // source lens centre as clip-space terms (AsymmetricEyes=2; 0 when centred)
+	float4 projDst;         // destination projection (the same as proj when an eye is moved to its own new view)
+	float4 lensDst;         // destination lens centre
+	float4 edge;            // x: depth ratio and y: stretch (grid steps) above which a triangle spans a gap;
+	                        // z > 0: such triangles are dropped (AFW combined: the previous-frame picture fills them)
 };
 Texture2D<float> dep : register(t0);
 Texture2D col : register(t1);
@@ -26,25 +35,54 @@ SamplerState smp : register(s0);
 struct V {
 	float4 pos : SV_Position;
 	float2 uv : TEXCOORD0;
+	nointerpolation float gap : TEXCOORD1;
 };
-// one grid corner: the old image's pixel there, moved into the eye's view as it is now
+// one grid corner: the source image's pixel there, moved into the destination view
+void Corner(uint2 c, out float4 clip, out float2 uv, out float dist) {
+	float2 px = min(float2(c) * size.z, size.xy - 1);
+	float d = dep.Load(int3(px * dscale.xy, 0));
+	uv = (px + 0.5) / size.xy;
+	float2 ndc = float2(uv.x * 2 - 1, 1 - uv.y * 2);
+	float z = proj.w / (-d - proj.z);  // view-space z (negative in front)
+	float3 p = float3((ndc.x + lens.x) * -z / proj.x, (ndc.y + lens.y) * -z / proj.y, z);
+	float3 q = mul(T, float4(p, 1)).xyz;
+	clip = float4(q.x * projDst.x + lensDst.x * q.z, q.y * projDst.y + lensDst.y * q.z, projDst.z * q.z + projDst.w, -q.z);
+	dist = -z;
+}
 V vs(uint id : SV_VertexID) {
 	uint cell = id / 6, k = id % 6, j = k % 3;
 	uint gw = (uint)size.w;
-	uint2 corners[6] = {uint2(0, 0), uint2(1, 0), uint2(0, 1), uint2(1, 0), uint2(1, 1), uint2(0, 1)};
-	uint2 c = uint2(cell % gw, cell / gw) + corners[k];
-	float2 px = min(float2(c) * size.z, size.xy - 1);
-	float d = dep.Load(int3(px * dscale.xy, 0));
+	uint2 c = uint2(cell % gw, cell / gw);
+	// each vertex works out its whole triangle, so all three agree on whether it spans a gap
+	uint2 c0 = k < 3 ? uint2(0, 0) : uint2(1, 0);
+	uint2 c1 = k < 3 ? uint2(1, 0) : uint2(1, 1);
+	uint2 c2 = uint2(0, 1);
+	float4 p0, p1, p2;
+	float2 u0, u1, u2;
+	float d0, d1, d2;
+	Corner(c + c0, p0, u0, d0);
+	Corner(c + c1, p1, u1, d1);
+	Corner(c + c2, p2, u2, d2);
+	bool gap = false;
+	if (edge.x > 0 && p0.w > 0 && p1.w > 0 && p2.w > 0) {
+		// a depth edge in the source that the move pulled open: something the destination eye sees and
+		// the source eye did not (0.4.1's test, its thresholds)
+		float dmin = min(d0, min(d1, d2)), dmax = max(d0, max(d1, d2));
+		float2 h = 0.5 * size.xy;
+		float2 s0 = p0.xy / p0.w * h, s1 = p1.xy / p1.w * h, s2 = p2.xy / p2.w * h;
+		float e = max(length(s0 - s1), max(length(s1 - s2), length(s2 - s0)));
+		gap = dmax > dmin * edge.x && e > size.z * edge.y;
+	}
 	V o;
-	o.uv = (px + 0.5) / size.xy;
-	float2 ndc = float2(o.uv.x * 2 - 1, 1 - o.uv.y * 2);
-	float z = proj.w / (-d - proj.z);                   // view-space z (negative in front)
-	float3 p = float3(ndc.x * -z / proj.x, ndc.y * -z / proj.y, z);
-	float3 q = mul(T, float4(p, 1)).xyz;
-	o.pos = float4(q.x * proj.x, q.y * proj.y, proj.z * q.z + proj.w, -q.z);
+	o.pos = j == 0 ? p0 : (j == 1 ? p1 : p2);
+	o.uv = j == 0 ? u0 : (j == 1 ? u1 : u2);
+	o.gap = gap ? 1 : 0;
 	return o;
 }
-float4 ps(V i) : SV_Target { return col.SampleLevel(smp, i.uv, 0); }
+float4 ps(V i) : SV_Target {
+	if (i.gap > 0.5 && edge.z > 0) discard;
+	return col.SampleLevel(smp, i.uv, 0);
+}
 )";
 
 ID3D11VertexShader* s_warpVs;
@@ -122,7 +160,7 @@ bool CreateGpuObjects(ID3D11Device* dev) {
 	if (psBlob) psBlob->Release();
 	if (err) err->Release();
 	D3D11_BUFFER_DESC bd = {};
-	bd.ByteWidth = 112;
+	bd.ByteWidth = kWarpConstantsSize;
 	bd.Usage = D3D11_USAGE_DEFAULT;
 	bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 	if (SUCCEEDED(hr)) hr = dev->CreateBuffer(&bd, nullptr, &s_warpConstants);
@@ -275,7 +313,7 @@ bool EnsureColor(ID3D11Device* dev, const D3D11_TEXTURE2D_DESC& src) {
 // From the OMSetRenderTargets hook (game thread): remember the game's full-size depth buffer (also
 // for the upscaler, upscale.cpp).
 void ReprojectNoteDsv(ID3D11DepthStencilView* dsv) {
-	if (!((g_cfg.depthReproject && !g_cfg.synchronized) || UpscaleWantsDepth()) || !dsv || !s_backbufferW) return;
+	if (!((g_cfg.depthReproject && !StereoSynchronized()) || UpscaleWantsDepth()) || !dsv || !s_backbufferW) return;
 	ComPtr<ID3D11Resource> r;
 	dsv->GetResource(&r);
 	if (!r) return;
@@ -291,7 +329,7 @@ void ReprojectNoteDsv(ID3D11DepthStencilView* dsv) {
 // At the first UI draw: the scene is finished; copy its depth for next frame's reprojection.
 void ReprojectAtUiStart(ID3D11DeviceContext* c) {
 	int eye = StereoFrameEye();
-	if (!g_cfg.depthReproject || g_cfg.synchronized || eye < 0 || !s_sceneDepth) return;
+	if (!g_cfg.depthReproject || StereoSynchronized() || eye < 0 || !s_sceneDepth) return;
 	ComPtr<ID3D11Device> dev;
 	c->GetDevice(&dev);
 	if (!dev) return;
@@ -332,7 +370,7 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
 		s_backbufferH = b.Height;
 	}
 	int eye = StereoFrameEye();
-	if (!g_cfg.depthReproject || g_cfg.synchronized || eye < 0) {
+	if (!g_cfg.depthReproject || StereoSynchronized() || eye < 0) {
 		s_eyes[0].sceneValid = s_eyes[1].sceneValid = false;
 		return nullptr;
 	}
@@ -345,39 +383,55 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
 	src->GetDesc(&sceneDesc);
 	if (!EnsureColor(dev.Get(), sceneDesc)) return nullptr;
 	int other = 1 - eye;
-	float T[16], proj[4];
+	// alternating: the other eye's previous picture (AFW's mode 2); AFW: combined (3) or the drawn eye only (1)
+	int mode = !StereoAfw() ? 2 : (g_cfg.afwMode == 1 ? 1 : 3);
 	ID3D11Texture2D* result = nullptr;
 	EyeState& otherEye = s_eyes[other];
-	int skip = !otherEye.sceneValid                               ? SKIP_NO_IMAGE
-			   : !otherEye.depthValid                             ? SKIP_NO_DEPTH
-			   : otherEye.depthPresentCount + 1 != s_presentCount ? SKIP_OLD_DEPTH
-			   : !SameShape(s_depthCopyDesc, sceneDesc)           ? SKIP_SIZE_MISMATCH
-			   : !StereoReprojectParams(other, T, proj, tag)      ? SKIP_NO_CAMERA
-																  : -1;
-	bool ready = skip < 0;
+	EyeState& thisEye = s_eyes[eye];
+	// AFW's this-frame warp samples this frame's picture: keep it first (it is also next frame's previous picture)
+	c->CopyResource(thisEye.sceneCopy, src);
+	thisEye.sceneValid = true;
+
+	// previous-frame warp (modes 2 and 3): the other eye's last picture moved to this frame's camera
+	float prevT[16], prevProj[4], prevLens[2];
+	FrameTag prevTag;
+	int skip = mode == 1                                                            ? -1
+			   : !otherEye.sceneValid                                               ? SKIP_NO_IMAGE
+			   : !otherEye.depthValid                                               ? SKIP_NO_DEPTH
+			   : otherEye.depthPresentCount + 1 != s_presentCount                   ? SKIP_OLD_DEPTH
+			   : !SameShape(s_depthCopyDesc, sceneDesc)                             ? SKIP_SIZE_MISMATCH
+			   : !StereoReprojectParams(other, prevT, prevProj, prevLens, &prevTag) ? SKIP_NO_CAMERA
+																					: -1;
+	bool prevReady = mode != 1 && skip < 0;
 	if (skip >= 0) s_skipCounts[skip]++;
-	if (ready) {
+	// this-frame warp (modes 1 and 3): THIS frame's eye moved into the other eye's view by its own depth
+	float thisT[16], thisProj[4], thisLens[2], dstProj[4], dstLens[2];
+	FrameTag thisTag;
+	bool thisReady = mode != 2 && thisEye.depthValid && thisEye.depthPresentCount == s_presentCount && SameShape(s_depthCopyDesc, sceneDesc) &&
+					 StereoAfwParams(eye, thisT, thisProj, thisLens, dstProj, dstLens, &thisTag);
+
+	if (prevReady || thisReady) {
 		struct {
 			float T[16];
 			float proj[4];
 			float size[4];
 			float dscale[4];
-		} constants;
-		static_assert(sizeof(constants) == 112, "cbuffer P");
+			float lens[4];
+			float projDst[4];
+			float lensDst[4];
+			float edge[4];
+		} constants = {};
+		static_assert(sizeof(constants) == kWarpConstantsSize, "cbuffer P");
 		const float gridStep = 4;
 		UINT gridW = (sceneDesc.Width + 3) / 4, gridH = (sceneDesc.Height + 3) / 4;
-		memcpy(constants.T, T, 64);
-		memcpy(constants.proj, proj, 16);
 		constants.size[0] = (float)sceneDesc.Width;
 		constants.size[1] = (float)sceneDesc.Height;
 		constants.size[2] = gridStep;
 		constants.size[3] = (float)gridW;
 		constants.dscale[0] = (float)s_depthCopyDesc.Width / (float)sceneDesc.Width;
 		constants.dscale[1] = (float)s_depthCopyDesc.Height / (float)sceneDesc.Height;
-		constants.dscale[2] = constants.dscale[3] = 0;
 		g_replaying = true;  // our own calls: the hooks pass them straight through
 		StateSaveTemp(c);
-		c->UpdateSubresource(s_warpConstants, 0, nullptr, &constants, 0, 0);
 		const FLOAT black[4] = {0, 0, 0, 1};
 		c->ClearRenderTargetView(s_warpedImageRtv, black);
 		c->ClearDepthStencilView(s_warpedDepthDsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
@@ -386,9 +440,7 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
 		c->VSSetShader(s_warpVs, nullptr, 0);
 		c->PSSetShader(s_warpPs, nullptr, 0);
 		c->VSSetConstantBuffers(0, 1, &s_warpConstants);
-		ID3D11ShaderResourceView* srvs[2] = {otherEye.depthCopySrv, otherEye.sceneCopySrv};
-		c->VSSetShaderResources(0, 2, srvs);
-		c->PSSetShaderResources(0, 2, srvs);
+		c->PSSetConstantBuffers(0, 1, &s_warpConstants);
 		c->PSSetSamplers(0, 1, &s_linearSampler);
 		D3D11_VIEWPORT vp = {0, 0, (float)sceneDesc.Width, (float)sceneDesc.Height, 0, 1};
 		c->RSSetViewports(1, &vp);
@@ -396,23 +448,44 @@ ID3D11Texture2D* ReprojectOtherEye(ID3D11DeviceContext* c, ID3D11Texture2D* scen
 		c->OMSetDepthStencilState(s_nearestWinsDepth, 0);
 		c->OMSetBlendState(s_opaqueBlend, nullptr, 0xffffffff);
 		c->OMSetRenderTargets(1, &s_warpedImageRtv, s_warpedDepthDsv);
-		c->Draw(gridW * gridH * 6, 0);
+		auto draw = [&](ID3D11ShaderResourceView* depth, ID3D11ShaderResourceView* colour, const float* T, const float* proj,
+						const float* lens, const float* projDst, const float* lensDst, bool dropGaps) {
+			memcpy(constants.T, T, 64);
+			memcpy(constants.proj, proj, 16);
+			memcpy(constants.projDst, projDst, 16);
+			constants.lens[0] = lens[0], constants.lens[1] = lens[1];
+			constants.lensDst[0] = lensDst[0], constants.lensDst[1] = lensDst[1];
+			constants.edge[0] = dropGaps ? 1.03f : 0.f;  // 0.4.1's thresholds
+			constants.edge[1] = 2.5f;
+			constants.edge[2] = dropGaps ? 1.f : 0.f;
+			c->UpdateSubresource(s_warpConstants, 0, nullptr, &constants, 0, 0);
+			ID3D11ShaderResourceView* srvs[2] = {depth, colour};
+			c->VSSetShaderResources(0, 2, srvs);
+			c->PSSetShaderResources(0, 2, srvs);
+			c->Draw(gridW * gridH * 6, 0);
+		};
+		if (prevReady) draw(otherEye.depthCopySrv, otherEye.sceneCopySrv, prevT, prevProj, prevLens, prevProj, prevLens, false);
+		if (thisReady) {
+			// combined: this frame's eye wins wherever it has real surface; its gaps keep the previous-frame picture
+			if (prevReady) c->ClearDepthStencilView(s_warpedDepthDsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
+			draw(thisEye.depthCopySrv, thisEye.sceneCopySrv, thisT, thisProj, thisLens, dstProj, dstLens, prevReady);
+		}
 		StateRestoreTemp(c);
 		g_replaying = false;
 		result = s_warpedImage;
+		*tag = thisReady ? thisTag : prevTag;
 		s_warpedCount++;
 		if (!s_loggedWorking) {
 			s_loggedWorking = true;
-			Log("depth reprojection: working (%ux%u, depth format %d, grid every %.0f pixels); the older eye now follows "
-				"the camera",
-				sceneDesc.Width, sceneDesc.Height, (int)s_depthCopyDesc.Format, (double)gridStep);
+			Log("depth reprojection: working (%ux%u, depth format %d, grid every %.0f pixels), %s", sceneDesc.Width, sceneDesc.Height,
+				(int)s_depthCopyDesc.Format, (double)gridStep,
+				mode == 1   ? "AFW this-frame: the drawn eye is moved into the other eye's view"
+				: mode == 3 ? "AFW combined: the drawn eye moved into the other eye, gaps from its previous picture"
+							: "the older eye follows the camera");
 		}
 	} else {
 		s_skippedCount++;
 	}
-	// this eye's scene, for the next frame
-	c->CopyResource(s_eyes[eye].sceneCopy, src);
-	s_eyes[eye].sceneValid = true;
 	if (GetTickCount() - s_lastReportTick > 30000) {
 		s_lastReportTick = GetTickCount();
 		if (s_warpedCount || s_skippedCount) {

@@ -5,8 +5,10 @@
 #include "core/locks.h"
 #include "core/config.h"
 #include "core/log.h"
+#include "debug/frame_capture.h"
 #include "render/camera.h"
 #include <atomic>
+#include <stdlib.h>
 #include <string.h>
 #include <d3dcompiler.h>
 
@@ -38,7 +40,8 @@ float4 PS(VSOut i) : SV_Target {
 // Late warp: the eye image re-aimed to the headset's pose for this frame, covering exactly
 // the eye's own field of view. Output pixel -> direction in the shown eye (outTan: tangents of left,
 // right, up, down) -> rotated into the eye the image was rendered from (m0..m2 = R_render^T R_shown)
-// -> its symmetric frustum (srcTan: tangent half-width, half-height). Rotation is exact; the small
+// -> the frustum it was rendered with (srcTan: tangent half-width, half-height, and where that lens
+// points when AsymmetricEyes is on). Rotation is exact; the small
 // eye translation between the two poses is ignored, as a compositor's rotational reprojection does.
 cbuffer Warp : register(b1) { float4 outTan; float4 srcTan; float4 m0; float4 m1; float4 m2; };
 float4 PSWarp(VSOut i) : SV_Target {
@@ -46,8 +49,26 @@ float4 PSWarp(VSOut i) : SV_Target {
 	float3 r = float3(dot(m0.xyz, d), dot(m1.xyz, d), dot(m2.xyz, d));
 	if (r.z > -1e-4) return float4(0, 0, 0, 1);
 	float2 t = r.xy / -r.z;
-	float2 uv = float2(t.x / srcTan.x * 0.5 + 0.5, 0.5 - t.y / srcTan.y * 0.5);
+	float2 uv = float2((t.x - srcTan.z) / srcTan.x * 0.5 + 0.5, 0.5 - (t.y - srcTan.w) / srcTan.y * 0.5);
 	if (any(uv < 0) || any(uv > 1)) return float4(0, 0, 0, 1);
+	return float4(Convert(src.SampleLevel(samp, uv, 0).rgb), 1);
+}
+// The flat screen (menus, loading screens, the title) as a window hanging in the room, drawn into
+// both eyes of a projection layer instead of handed over as a quad layer. A quad layer is composited
+// by the VR software from one picture for both eyes, which smears and shears it while the head turns;
+// drawn here, each eye sees the window through its own lens, from where that eye really is, so it
+// stays still and square-on. Output pixel -> direction in the shown eye -> the screen's own space
+// (m0..m2: rows of R_screen^T R_eye, and in .w where that eye is in the screen's space) -> the point
+// where the ray crosses the screen's plane (half: its half width and height in metres).
+float4 PSScreen(VSOut i) : SV_Target {
+	float3 d = float3(lerp(outTan.x, outTan.y, i.uv.x), lerp(outTan.z, outTan.w, i.uv.y), -1);
+	float3 dir = float3(dot(m0.xyz, d), dot(m1.xyz, d), dot(m2.xyz, d));
+	float3 eye = float3(m0.w, m1.w, m2.w);
+	if (dir.z > -1e-6 || eye.z < 1e-4) return float4(0, 0, 0, 1);  // behind the screen, or facing away
+	float2 hit = eye.xy + (-eye.z / dir.z) * dir.xy;
+	float2 uv = float2(hit.x / srcTan.x * 0.5 + 0.5, 0.5 - hit.y / srcTan.y * 0.5);
+	if (any(uv < 0) || any(uv > 1)) return float4(0, 0, 0, 1);
+	if (srcTan.w > srcTan.z) uv.y = lerp(srcTan.z, srcTan.w, uv.y);  // only the picture's rows (black bands cut off)
 	return float4(Convert(src.SampleLevel(samp, uv, 0).rgb), 1);
 }
 // HUD/menus. src = full frame, src2 = scene without UI, whose alpha channel holds the UI's real
@@ -110,11 +131,20 @@ bool CompileShaders() {
 		SafeRelease(errors);
 		if (SUCCEEDED(warpResult)) g_vr.device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_vr.lateWarpPs);
 		SafeRelease(psBlob);
+		HRESULT screenResult = compile(kShader, sizeof(kShader) - 1, "niervr_screen", nullptr, nullptr, "PSScreen", "ps_4_0",
+									   D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psBlob, &errors);
+		if (FAILED(screenResult)) Log("flat screen: shader compile 0x%08x: %s", (unsigned)screenResult, errors ? (const char*)errors->GetBufferPointer() : "");
+		SafeRelease(errors);
+		if (SUCCEEDED(screenResult)) g_vr.device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_vr.screenPs);
+		SafeRelease(psBlob);
 		D3D11_BUFFER_DESC warpDesc = {};
 		warpDesc.ByteWidth = 80;
 		warpDesc.Usage = D3D11_USAGE_DEFAULT;
 		warpDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-		if (g_vr.lateWarpPs && FAILED(g_vr.device->CreateBuffer(&warpDesc, nullptr, &g_vr.lateWarpConstants))) SafeRelease(g_vr.lateWarpPs);
+		if ((g_vr.lateWarpPs || g_vr.screenPs) && FAILED(g_vr.device->CreateBuffer(&warpDesc, nullptr, &g_vr.lateWarpConstants))) {
+			SafeRelease(g_vr.lateWarpPs);
+			SafeRelease(g_vr.screenPs);
+		}
 	}
 	if (FAILED(hr)) {
 		Log("ERROR: CreateShader 0x%08x", (unsigned)hr);
@@ -398,7 +428,7 @@ void UpdateContent() {
 }
 
 void Blit(ID3D11RenderTargetView* rtv, uint32_t width, uint32_t height, ID3D11ShaderResourceView* srv,
-		  ID3D11ShaderResourceView* scene, bool dstSrgb, const WarpParams* warp) {
+		  ID3D11ShaderResourceView* scene, bool dstSrgb, const WarpParams* warp, bool asScreen) {
 	int mode = (!g_vr.gameImageLinear && dstSrgb) ? 1 : ((g_vr.gameImageLinear && !dstSrgb) ? 2 : 0);
 	// key thresholds on the difference between full and scene-only frames (0..1 colour units)
 	float params[4] = {(float)mode, 0.004f, 0.03f, 0};
@@ -418,10 +448,13 @@ void Blit(ID3D11RenderTargetView* rtv, uint32_t width, uint32_t height, ID3D11Sh
 	g_vr.context->VSSetShader(g_vr.blitVs, nullptr, 0);
 	if (warp) {
 		static_assert(sizeof(WarpParams) == 80, "matches the Warp cbuffer");
+		static_assert(sizeof(ScreenParams) == sizeof(WarpParams), "the screen shader shares it");
 		g_vr.context->UpdateSubresource(g_vr.lateWarpConstants, 0, nullptr, warp, 0, 0);
 		g_vr.context->PSSetConstantBuffers(1, 1, &g_vr.lateWarpConstants);
 	}
-	g_vr.context->PSSetShader(warp ? g_vr.lateWarpPs : (scene ? g_vr.hudKeyPs : g_vr.blitPs), nullptr, 0);
+	g_vr.context->PSSetShader(asScreen ? g_vr.screenPs : warp ? g_vr.lateWarpPs
+															  : (scene ? g_vr.hudKeyPs : g_vr.blitPs),
+							  nullptr, 0);
 	ID3D11ShaderResourceView* srvs[2] = {srv, scene};
 	g_vr.context->PSSetShaderResources(0, 2, srvs);
 	g_vr.context->PSSetSamplers(0, 1, &g_vr.linearSampler);
@@ -515,4 +548,131 @@ void MeasureUICoverage() {
 	g_vr.coveragePending[g_vr.coverageNext] = true;
 	g_vr.coverageNext = (g_vr.coverageNext + 1) % 3;
 	g_vr.coverageMeasuredSeq = g_vr.views[newest].seq;
+}
+
+namespace {
+// Black bands above and below a picture. The game draws at the headset's (taller) shape and fits
+// films (16:9) and its menus (5:4) into the width, leaving black rows above and below. Each picture
+// is shrunk to kBarW x kBarH and read back a frame or two later; the rows with anything in them are
+// the picture. Symmetric bands only (a loading screen's text isn't a picture edge), and a new result
+// only counts once it held for kBarVotes readings (kNoBarVotes to drop the bands), so fades don't make the screen jump.
+// (readings come at the headset's rate: ~90 a second)
+constexpr int32_t kBarW = 32, kBarH = 256, kBarVotes = 20, kNoBarVotes = 90, kBarSlack = 3;
+struct BarMeter {
+	const char* what;
+	ID3D11Texture2D* tex;
+	ID3D11RenderTargetView* rtv;
+	ID3D11Texture2D* staging[3];
+	bool pending[3], failed;
+	int32_t next;
+	int32_t candTop, candBottom, votes;  // the latest reading and how many times in a row it came
+	int32_t top, bottom;                 // the rows in use (0, kBarH - 1 = no bands)
+};
+BarMeter s_screenBars = {"flat screen", nullptr, nullptr, {}, {}, false, 0, 0, kBarH - 1, 0, 0, kBarH - 1};
+BarMeter s_eyeBars = {"3D picture", nullptr, nullptr, {}, {}, false, 0, 0, kBarH - 1, 0, 0, kBarH - 1};
+
+bool EnsureBarTargets(BarMeter& m) {
+	if (m.tex) return true;
+	if (m.failed) return false;
+	D3D11_TEXTURE2D_DESC desc = {};
+	desc.Width = kBarW;
+	desc.Height = kBarH;
+	desc.MipLevels = desc.ArraySize = 1;
+	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+	HRESULT hr = g_vr.device->CreateTexture2D(&desc, nullptr, &m.tex);
+	if (SUCCEEDED(hr)) hr = g_vr.device->CreateRenderTargetView(m.tex, nullptr, &m.rtv);
+	desc.Usage = D3D11_USAGE_STAGING;
+	desc.BindFlags = 0;
+	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	for (int i = 0; i < 3 && SUCCEEDED(hr); i++) hr = g_vr.device->CreateTexture2D(&desc, nullptr, &m.staging[i]);
+	if (FAILED(hr)) {
+		Log("ERROR: black band targets (%s) failed 0x%08x", m.what, (unsigned)hr);
+		SafeRelease(m.rtv);
+		SafeRelease(m.tex);
+		for (auto& texture : m.staging) SafeRelease(texture);
+		m.failed = true;
+		return false;
+	}
+	return true;
+}
+
+// Reads back what is ready, measures `srv` again. True when the rows in use changed.
+bool MeasureBars(BarMeter& m, ID3D11ShaderResourceView* srv) {
+	if (!srv || !EnsureBarTargets(m)) return false;
+	bool changed = false;
+	for (int i = 0; i < 3; i++) {
+		if (!m.pending[i]) continue;
+		D3D11_MAPPED_SUBRESOURCE mapped;
+		if (g_vr.context->Map(m.staging[i], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped) != S_OK) continue;
+		int32_t top = -1, bottom = -1;
+		for (int y = 0; y < kBarH; y++) {
+			const uint8_t* row = (const uint8_t*)mapped.pData + y * mapped.RowPitch;
+			bool lit = false;
+			for (int x = 0; x < kBarW && !lit; x++) lit = row[x * 4] > 3 || row[x * 4 + 1] > 3 || row[x * 4 + 2] > 3;  // not alpha
+			if (lit) {
+				if (top < 0) top = y;
+				bottom = y;
+			}
+		}
+		g_vr.context->Unmap(m.staging[i], 0);
+		m.pending[i] = false;
+		if (top < 0) continue;  // all black (a fade): keep what is in use
+		bool bands = top >= 2 && kBarH - 1 - bottom >= 2 && abs(top - (kBarH - 1 - bottom)) <= 2 && bottom - top + 1 >= kBarH * 3 / 10;
+		if (!bands) top = 0, bottom = kBarH - 1;
+		// a reading within a few rows of the bands in use is the same picture (a dark edge row comes and goes)
+		bool inUseBands = m.top > 0 || m.bottom < kBarH - 1;
+		if (bands && inUseBands && abs(top - m.top) <= kBarSlack && abs(bottom - m.bottom) <= kBarSlack) top = m.top, bottom = m.bottom;
+		if (top == m.candTop && bottom == m.candBottom) m.votes++;
+		else m.candTop = top, m.candBottom = bottom, m.votes = 1;
+		// dropping the bands needs a full second of pictures reaching the edges (a bright flash or a dark
+		// frame in a film doesn't make the screen jump to full height)
+		int32_t need = bands ? kBarVotes : kNoBarVotes;
+		if (m.votes >= need && (top != m.top || bottom != m.bottom)) {
+			m.top = top;
+			m.bottom = bottom;
+			changed = true;
+		}
+	}
+	if (m.pending[m.next]) return changed;
+	Blit(m.rtv, kBarW, kBarH, srv, nullptr, false);
+	g_vr.context->CopyResource(m.staging[m.next], m.tex);
+	m.pending[m.next] = true;
+	m.next = (m.next + 1) % 3;
+	return changed;
+}
+
+// The part of the picture (0..1 from the top) between the bands; each row sample sits in the middle
+// of its band of the picture, so the edges are taken halfway into the first and last lit samples.
+void BarRows(const BarMeter& m, float* v0, float* v1) {
+	bool bands = m.top > 0 || m.bottom < kBarH - 1;
+	*v0 = bands ? (m.top + 0.5f) / kBarH : 0;
+	*v1 = bands ? (m.bottom + 0.5f) / kBarH : 1;
+}
+
+void LogBars(const BarMeter& m) {
+	float v0, v1;
+	BarRows(m, &v0, &v1);
+	if (v0 > 0) Log("black bands: %s has bands above and below; its picture is rows %.1f%%-%.1f%% (%.2f:1 at the game's shape)", m.what,
+					(double)(v0 * 100), (double)(v1 * 100), (double)((float)g_vr.gameW / ((float)g_vr.gameH * (v1 - v0))));
+	else Log("black bands: %s has none now", m.what);
+}
+}  // namespace
+
+void ScreenPictureRows(ID3D11ShaderResourceView* srv, float* v0, float* v1) {
+	if (!g_cfg.cropBlackBars) {
+		*v0 = 0;
+		*v1 = 1;
+		return;
+	}
+	if (MeasureBars(s_screenBars, srv)) LogBars(s_screenBars);
+	BarRows(s_screenBars, v0, v1);
+}
+
+void WatchEyeBars(ID3D11ShaderResourceView* srv) {
+	if (!MeasureBars(s_eyeBars, srv)) return;
+	LogBars(s_eyeBars);
+	if (s_eyeBars.top > 0) CaptureRequest("black bands appeared in the 3D picture");
 }

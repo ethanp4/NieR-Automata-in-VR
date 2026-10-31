@@ -18,6 +18,7 @@ enum InfoLine {
 	INFO_HEAD_POSE,                        // xr_frame.cpp
 	INFO_RESOLUTION,                       // xr_frame.cpp
 	INFO_MOTION_CONTROLS,                  // vr_controllers.cpp
+	INFO_PANEL_RESOLUTION,                 // game_resolution.cpp
 	INFO_UPSCALER,                         // upscale.cpp
 	INFO_UPSCALE_ADVICE,                   // upscale.cpp
 	INFO_LINE_COUNT

@@ -1,5 +1,6 @@
 // extra_resolutions.cpp - adds headset-shaped resolutions to the game's list.
 #include "render/extra_resolutions.h"
+#include "render/game_resolution.h"
 #include "core/com.h"
 #include "core/config.h"
 #include "core/hook.h"
@@ -52,13 +53,14 @@ int32_t s_earlyHookCount;                   // user32/dxgi hooks installed at lo
 std::atomic<int32_t> s_factoryLogs, s_systemMetricsLogs, s_monitorInfoLogs, s_currentModeLogs, s_userModeListLogs;
 std::atomic<int32_t> s_dxgiModeListLogs, s_findClosestLogs, s_swapChainLogs, s_fullscreenLogs, s_resizeTargetLogs, s_windowClampLogs;
 
-// The extra sizes: the headset's own shape, 50-100% of its full detail (pure::headset_sizes).
-constexpr int32_t kMaxExtraSizes = pure::kHeadsetScaleCount;
+// The extra sizes: the headset's own shape, one per upscaler mode (pure::headset_sizes), measured
+// against the picture the headset is actually sent (its full detail x [Upscaler] Output).
+constexpr int32_t kMaxExtraSizes = pure::kHeadsetScaleCount + 2;  // the headset's sizes, the game's own and the panel's
 
 // The headset sizes offered this session (the ini can change while the game runs; the game picked
 // from these).
 struct HeadsetSizes {
-	uint32_t width[pure::kHeadsetScaleCount], height[pure::kHeadsetScaleCount];
+	uint32_t width[kMaxExtraSizes], height[kMaxExtraSizes];
 	int32_t count;
 } s_headsetSizes;
 
@@ -93,9 +95,27 @@ bool IsHeadsetSize(UINT width, UINT height) {
 // show it as a display mode, so it stays windowed and isn't snapped to a real mode.
 bool IsExtraSize(HWND hwnd, UINT width, UINT height) { return LargerThanMonitor(hwnd, width, height) || IsHeadsetSize(width, height); }
 
-// The headset sizes the list doesn't have yet.
+// The headset sizes the list doesn't have yet, plus the size the game itself is set to.
+// The headset's full detail changes when the lens does, so the sizes worked out from it move: without
+// the game's own size in here, a game whose saved resolution came from an earlier list cannot find it
+// any more. NieR reads the missing entry as -1 and dies on the title screens (2026-10-27).
 int HeadsetSizesNotListed(const uint32_t* listed, int listedCount, uint32_t* extraW, uint32_t* extraH) {
-	return pure::headset_sizes((uint32_t)g_cfg.headsetWidth, (uint32_t)g_cfg.headsetHeight, listed, listedCount, extraW, extraH);
+	int count = pure::headset_sizes((uint32_t)g_cfg.headsetWidth, (uint32_t)g_cfg.headsetHeight, listed, listedCount, extraW, extraH);
+	auto add = [&](uint32_t w, uint32_t h) {
+		if (w < 640 || h < 480 || count >= kMaxExtraSizes) return;
+		uint32_t key = (w & 0xffff) << 16 | (h & 0xffff);
+		for (int i = 0; i < listedCount; i++)
+			if (listed[i] == key) return;
+		for (int i = 0; i < count; i++)
+			if (extraW[i] == w && extraH[i] == h) return;
+		extraW[count] = w;
+		extraH[count] = h;
+		count++;
+	};
+	add((uint32_t)g_cfg.gameWidth, (uint32_t)g_cfg.gameHeight);  // what the game has saved
+	uint32_t panelW, panelH;
+	if (GameResolutionPanelSize(&panelW, &panelH)) add(panelW, panelH);  // what the panel has just written for it
+	return count;
 }
 
 // --- DXGI mode list --------------------------------------------------------------------------
@@ -222,10 +242,25 @@ HRESULT STDMETHODCALLTYPE H_FindClosestMatchingMode(IDXGIOutput* output, const D
 }
 
 // --- swapchain -------------------------------------------------------------------------------
+}  // namespace
+
+// Remembered whenever the game picks a size, so the next run still offers it.
+void RememberGameSize(UINT width, UINT height) {
+	if (width < 640 || height < 480 || ((int32_t)width == g_cfg.gameWidth && (int32_t)height == g_cfg.gameHeight)) return;
+	g_cfg.gameWidth = (int32_t)width;
+	g_cfg.gameHeight = (int32_t)height;
+	ConfigSave(&g_cfg.gameWidth);
+	ConfigSave(&g_cfg.gameHeight);
+	Log("display: the game is rendering %ux%u; its own list will keep offering that size", width, height);
+}
+
+namespace {
+
 HRESULT STDMETHODCALLTYPE H_CreateSwapChain(IDXGIFactory* factory, IUnknown* device, DXGI_SWAP_CHAIN_DESC* desc,
 											IDXGISwapChain** swapChain) {
 	if (desc && desc->BufferDesc.Width >= 640) {
 		s_gameWindow = desc->OutputWindow;
+		RememberGameSize(desc->BufferDesc.Width, desc->BufferDesc.Height);
 		if (g_cfg.extraResolutions && !desc->Windowed &&
 			IsExtraSize(desc->OutputWindow, desc->BufferDesc.Width, desc->BufferDesc.Height)) {
 			Log("display: %ux%u is not one of the monitor's modes - creating the swapchain windowed instead of "

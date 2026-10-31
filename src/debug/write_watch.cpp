@@ -1,4 +1,5 @@
 // write_watch.cpp - [Debug] which instructions write a few addresses (hardware write breakpoints, like Cheat Engine's "find out what writes to this address").
+#include "core/hook.h"
 #include "debug/write_watch.h"
 #include "core/log.h"
 #include <atomic>
@@ -60,8 +61,12 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
 DWORD WINAPI SetAllThreads(LPVOID param) {
 	bool on = param != nullptr;
 	DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
+	ThreadSuspendLock();  // never at the same time as another thread suspender (core/hook.h)
 	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-	if (snapshot == INVALID_HANDLE_VALUE) return 0;
+	if (snapshot == INVALID_HANDLE_VALUE) {
+		ThreadSuspendUnlock();
+		return 0;
+	}
 	THREADENTRY32 entry = {sizeof(entry)};
 	for (BOOL more = Thread32First(snapshot, &entry); more; more = Thread32Next(snapshot, &entry)) {
 		if (entry.th32OwnerProcessID != pid || entry.th32ThreadID == self) continue;
@@ -85,6 +90,7 @@ DWORD WINAPI SetAllThreads(LPVOID param) {
 		CloseHandle(thread);
 	}
 	CloseHandle(snapshot);
+	ThreadSuspendUnlock();
 	return 0;
 }
 

@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include "core/config.h"
 
-constexpr uint32_t kHotApiVersion = 1;  // raise when HotHost changes
+constexpr uint32_t kHotApiVersion = 2;  // raise when HotHost changes
 
 struct HotHost {
 	uint32_t version, configSize;  // kHotApiVersion, sizeof(Config): both DLLs built from the same headers
@@ -11,6 +11,7 @@ struct HotHost {
 	const Config* cfg;
 	const wchar_t* modDir;
 	bool (*gameIsForeground)();
+	void (*requestCapture)(const char* why);  // CaptureRequest
 };
 
 using HotInitFn = bool (*)(const HotHost* host);  // false: built from different headers
